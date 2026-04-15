@@ -1,0 +1,5 @@
+{
+  "name": "XANDEFLIX",
+  "description": "Plataforma de streaming MVP com foco em experiência de TV (D-Pad navigation, HLS player).",
+  "requestFramePermissions": []
+}

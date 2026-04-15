@@ -1,0 +1,20 @@
+node_modules/
+build/
+dist/
+coverage/
+.DS_Store
+*.log
+.env*
+!.env.example
+
+# Android / Build items
+.gradle-user/
+*.apk
+*.png
+
+# Debug & Dumps
+android_logcat_*.txt
+tablet_*.txt
+*.xml
+dist-check/
+__vp_numbered.txt

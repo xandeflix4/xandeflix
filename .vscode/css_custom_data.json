@@ -1,0 +1,29 @@
+{
+  "version": 1.1,
+  "atDirectives": [
+    {
+      "name": "@theme",
+      "description": "Tailwind CSS v4 theme variables"
+    },
+    {
+      "name": "@layer",
+      "description": "Tailwind CSS cascade layers"
+    },
+    {
+      "name": "@tailwind",
+      "description": "Tailwind CSS old import style"
+    },
+    {
+      "name": "@plugin",
+      "description": "Tailwind CSS v4 plugins"
+    },
+    {
+      "name": "@utility",
+      "description": "Tailwind CSS v4 utilities"
+    },
+    {
+      "name": "@custom-variant",
+      "description": "Tailwind CSS v4 custom variants"
+    }
+  ]
+}

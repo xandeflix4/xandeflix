@@ -1,0 +1,572 @@
+import { useEffect, useCallback, useRef, useSyncExternalStore } from 'react';
+import { useStore } from '../store/useStore';
+
+interface NavCallbacks {
+  onFocus?: () => void;
+  onEnter?: () => void;
+  onBack?: () => void;
+  disableAutoScroll?: boolean;
+}
+
+interface NavNode {
+  id: string;
+  ref: HTMLElement | null;
+  section: string;
+  onFocus?: () => void;
+  onEnter?: () => void;
+  onBack?: () => void;
+  disableAutoScroll?: boolean;
+}
+
+interface RegisterNodeObject extends NavCallbacks {
+  id: string;
+  type?: string;
+  section?: string;
+  ref?: HTMLElement | null;
+}
+
+const navNodes: Map<string, NavNode> = new Map();
+let focusedNodeId: string | null = null;
+const focusListeners = new Set<() => void>();
+
+const DPAD_KEY_MAP: Record<number, string> = {
+  4: 'Back',
+  19: 'ArrowUp',
+  20: 'ArrowDown',
+  21: 'ArrowLeft',
+  22: 'ArrowRight',
+  23: 'Enter',
+  27: 'Escape',
+  66: 'Enter',
+};
+
+const normalizeTvKey = (e: KeyboardEvent) => {
+  const keyCode = (e as KeyboardEvent & { keyCode?: number; which?: number }).keyCode
+    ?? (e as KeyboardEvent & { which?: number }).which
+    ?? 0;
+
+  if (e.key === 'Right') return 'ArrowRight';
+  if (e.key === 'Left') return 'ArrowLeft';
+  if (e.key === 'Up') return 'ArrowUp';
+  if (e.key === 'Down') return 'ArrowDown';
+  if (e.key === 'Select' || e.key === 'OK') return 'Enter';
+
+  return DPAD_KEY_MAP[keyCode] || e.key;
+};
+
+const isNaturallyFocusable = (element: HTMLElement) => {
+  const tag = element.tagName.toLowerCase();
+  if (tag === 'button' || tag === 'input' || tag === 'select' || tag === 'textarea') {
+    return true;
+  }
+  if (tag === 'a' && element.hasAttribute('href')) {
+    return true;
+  }
+  return element.hasAttribute('contenteditable');
+};
+
+const ensureFocusable = (element: HTMLElement | null) => {
+  if (!element) return;
+  if (!isNaturallyFocusable(element) && !element.hasAttribute('tabindex')) {
+    element.tabIndex = 0;
+  }
+};
+
+const applyNavMetadata = (element: HTMLElement | null, id: string, section: string) => {
+  if (!element) return;
+  ensureFocusable(element);
+  element.dataset.navId = id;
+  element.dataset.navSection = section;
+  if (!element.id) {
+    element.id = id;
+  }
+};
+
+const findElementByNavId = (id: string): HTMLElement | null => {
+  if (typeof document === 'undefined') {
+    return null;
+  }
+
+  const escapedId = id.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+  const byDataAttr = document.querySelector(`[data-nav-id="${escapedId}"]`) as HTMLElement | null;
+  if (byDataAttr) {
+    return byDataAttr;
+  }
+
+  return document.getElementById(id);
+};
+
+const getNavIdFromElement = (element: HTMLElement | null): string | null => {
+  if (!element) {
+    return null;
+  }
+
+  const navTarget = element.closest?.('[data-nav-id]') as HTMLElement | null;
+  const navId = navTarget?.dataset?.navId;
+  if (navId) {
+    return navId;
+  }
+
+  const idTarget = element.closest?.('[id]') as HTMLElement | null;
+  const elementId = idTarget?.id;
+  if (elementId && navNodes.has(elementId)) {
+    return elementId;
+  }
+
+  return null;
+};
+
+const resolveNodeRef = (node: NavNode): HTMLElement | null => {
+  if (node.ref && node.ref.isConnected) {
+    return node.ref;
+  }
+
+  if (typeof document === 'undefined') {
+    return null;
+  }
+
+  const queried = findElementByNavId(node.id);
+  if (queried) {
+    ensureFocusable(queried);
+    node.ref = queried;
+    navNodes.set(node.id, node);
+  }
+
+  return queried;
+};
+
+const getActiveNavId = (): string | null => {
+  if (typeof document === 'undefined') {
+    return null;
+  }
+
+  const activeElement = document.activeElement as HTMLElement | null;
+  return getNavIdFromElement(activeElement);
+};
+
+const subscribeFocusedId = (listener: () => void) => {
+  focusListeners.add(listener);
+  return () => focusListeners.delete(listener);
+};
+
+const getFocusedIdSnapshot = () => focusedNodeId;
+const getFocusedIdServerSnapshot = () => null;
+
+const emitFocusedId = (id: string | null) => {
+  focusedNodeId = id;
+  focusListeners.forEach((listener) => listener());
+};
+
+const getFirstNavigableNode = (): NavNode | null => {
+  for (const node of navNodes.values()) {
+    const ref = resolveNodeRef(node);
+    if (ref && !ref.closest('[aria-hidden="true"]')) {
+      return node;
+    }
+  }
+
+  return null;
+};
+
+const focusNode = (
+  node: NavNode,
+  preventEventDefault?: () => void,
+  smoothScroll?: boolean,
+): boolean => {
+  const ref = resolveNodeRef(node);
+  if (!ref) return false;
+
+  ensureFocusable(ref);
+  if (preventEventDefault) preventEventDefault();
+
+  ref.focus({ preventScroll: true });
+  if (!node.disableAutoScroll) {
+    ref.scrollIntoView({
+      behavior: 'smooth',
+      block: 'center',
+      inline: 'center',
+    });
+  }
+
+  node.onFocus?.();
+  return true;
+};
+
+export const useTvNavigation = (options?: { onBack?: () => void; isActive?: boolean; subscribeFocused?: boolean }) => {
+  const onBack = options?.onBack;
+  const isActive = options?.isActive !== false;
+  const subscribeFocused = options?.subscribeFocused === true;
+  const isTvMode = useStore((state) => state.isTvMode);
+  const lastKeyTime = useRef<number>(0);
+  const focusedIdRef = useRef<string | null>(null);
+  const shouldHandleTvKeys = isActive && isTvMode;
+
+  const setFocusedId = useCallback(
+    (id: string | null) => {
+      if (id == null || id === '') {
+        if (typeof document !== 'undefined' && document.activeElement instanceof HTMLElement) {
+          document.activeElement.blur();
+        }
+        focusedIdRef.current = null;
+        emitFocusedId(null);
+        return;
+      }
+
+      const node = navNodes.get(id);
+      if (node && focusNode(node, undefined, !isTvMode)) {
+        focusedIdRef.current = id;
+        emitFocusedId(id);
+        return;
+      }
+
+      if (typeof document === 'undefined') {
+        return;
+      }
+
+      const element = findElementByNavId(id);
+      if (!element) return;
+
+      ensureFocusable(element);
+      element.focus({ preventScroll: true });
+      if (!node?.disableAutoScroll) {
+        element.scrollIntoView({
+          behavior: 'smooth',
+          block: 'center',
+          inline: 'center',
+        });
+      }
+      focusedIdRef.current = id;
+      emitFocusedId(id);
+    },
+    [isTvMode],
+  );
+
+  const registerNode = useCallback(
+    (
+      idOrObject: string | RegisterNodeObject,
+      ref?: HTMLElement | null,
+      section: string = 'default',
+      callbacks?: NavCallbacks,
+    ) => {
+      let id = '';
+      let nodeRef: HTMLElement | null | undefined = ref;
+      let nodeSection = section;
+      let nodeCallbacks: NavCallbacks | undefined = callbacks;
+
+      if (typeof idOrObject === 'string') {
+        id = idOrObject;
+      } else {
+        id = idOrObject.id;
+        nodeSection = idOrObject.section || idOrObject.type || 'default';
+        nodeRef = idOrObject.ref;
+        nodeCallbacks = {
+          onFocus: idOrObject.onFocus,
+          onEnter: idOrObject.onEnter,
+          onBack: idOrObject.onBack,
+          disableAutoScroll: idOrObject.disableAutoScroll,
+        };
+      }
+
+      if (!id) {
+        return () => {};
+      }
+
+      // Cleanup call pattern: registerNode(id, null)
+      const wantsCleanup = nodeRef == null && !nodeCallbacks?.onFocus && !nodeCallbacks?.onEnter && !nodeCallbacks?.onBack;
+      if (wantsCleanup) {
+        const existingNode = navNodes.get(id);
+        if (existingNode?.ref) {
+          if (existingNode.ref.dataset.navId === id) {
+            delete existingNode.ref.dataset.navId;
+          }
+          if (existingNode.ref.dataset.navSection) {
+            delete existingNode.ref.dataset.navSection;
+          }
+        }
+        navNodes.delete(id);
+        return () => navNodes.delete(id);
+      }
+
+      const existingNode = navNodes.get(id);
+      const normalizedRef = nodeRef ?? existingNode?.ref ?? null;
+      applyNavMetadata(normalizedRef, id, nodeSection);
+
+      navNodes.set(id, {
+        id,
+        ref: normalizedRef,
+        section: nodeSection,
+        ...nodeCallbacks,
+      });
+
+      return () => {
+        navNodes.delete(id);
+      };
+    },
+    [],
+  );
+
+  const calculateDistance = (rect1: DOMRect, rect2: DOMRect, direction: string) => {
+    const center1 = { x: rect1.left + rect1.width / 2, y: rect1.top + rect1.height / 2 };
+    const center2 = { x: rect2.left + rect2.width / 2, y: rect2.top + rect2.height / 2 };
+
+    const dx = Math.abs(center1.x - center2.x);
+    const dy = Math.abs(center1.y - center2.y);
+
+    if (direction === 'ArrowLeft' || direction === 'ArrowRight') {
+      return dx + (dy * 2);
+    }
+
+    return dy + (dx * 2);
+  };
+
+  const handleKeyDown = useCallback(
+    (e: KeyboardEvent) => {
+      const now = Date.now();
+      if (now - lastKeyTime.current < 120) return;
+      lastKeyTime.current = now;
+
+      const key = normalizeTvKey(e);
+      const currentFocusedId = getActiveNavId() ?? focusedIdRef.current;
+      const currentNode = currentFocusedId ? navNodes.get(currentFocusedId) : null;
+
+      if (key === 'Escape' || key === 'Back') {
+        if (currentNode?.onBack) {
+          e.preventDefault();
+          currentNode.onBack();
+          return;
+        }
+
+        if (onBack) {
+          e.preventDefault();
+          onBack();
+        }
+        return;
+      }
+
+      if (!currentFocusedId || !currentNode) {
+        const firstNode = getFirstNavigableNode();
+        if (firstNode && focusNode(firstNode, () => e.preventDefault(), !isTvMode)) {
+          focusedIdRef.current = firstNode.id;
+          emitFocusedId(firstNode.id);
+        }
+        return;
+      }
+
+      const currentRef = resolveNodeRef(currentNode);
+      if (!currentRef) {
+        const firstNode = getFirstNavigableNode();
+        if (firstNode && focusNode(firstNode, () => e.preventDefault(), !isTvMode)) {
+          focusedIdRef.current = firstNode.id;
+          emitFocusedId(firstNode.id);
+        }
+        return;
+      }
+
+      const currentRect = currentRef.getBoundingClientRect();
+
+      // Fast path for carousel body items.
+      const itemMatch = currentFocusedId.match(/^item-(\d+)-(\d+)$/);
+      if (itemMatch && (key === 'ArrowLeft' || key === 'ArrowRight' || key === 'ArrowUp' || key === 'ArrowDown')) {
+        const row = Number(itemMatch[1]);
+        const column = Number(itemMatch[2]);
+        const candidateIds: string[] = [];
+
+        if (key === 'ArrowLeft') {
+          if (column > 0) {
+            candidateIds.push(`item-${row}-${column - 1}`);
+          } else {
+            const activeMenuId = `menu-${useStore.getState().activeFilter || 'home'}`;
+            candidateIds.push(activeMenuId, 'menu-home', 'menu-search', 'menu-live', 'menu-movie', 'menu-series');
+          }
+        } else if (key === 'ArrowRight') {
+          candidateIds.push(`item-${row}-${column + 1}`, `see-all-${row}`);
+        } else if (key === 'ArrowUp') {
+          if (row > 0) {
+            candidateIds.push(`item-${row - 1}-${column}`);
+          } else {
+            // Row 0 -> VAI PARA OS BOTÕES DO HERO
+            candidateIds.push('hero-play', 'hero-info', 'menu-home');
+          }
+        } else if (key === 'ArrowDown') {
+          candidateIds.push(`item-${row + 1}-${column}`, `see-all-${row + 1}`);
+        }
+
+        for (const candidateId of candidateIds) {
+          const candidate = navNodes.get(candidateId);
+          if (!candidate) continue;
+          const didFocus = focusNode(
+            candidate,
+            () => e.preventDefault(),
+            !isTvMode,
+          );
+          if (didFocus) {
+            if (!isTvMode) {
+              const idTarget = resolveNodeRef(candidate);
+              idTarget?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            }
+            focusedIdRef.current = candidate.id;
+            emitFocusedId(candidate.id);
+            return;
+          }
+        }
+      }
+
+      // Fast path for menu vertical navigation.
+      if (currentNode.section === 'menu' && (key === 'ArrowUp' || key === 'ArrowDown')) {
+        const menuNodes = Array.from(navNodes.values())
+          .filter((node) => node.section === 'menu' && resolveNodeRef(node))
+          .sort((a, b) => {
+            const aRect = resolveNodeRef(a)?.getBoundingClientRect();
+            const bRect = resolveNodeRef(b)?.getBoundingClientRect();
+            if (!aRect || !bRect) return 0;
+            if (aRect.top === bRect.top) return aRect.left - bRect.left;
+            return aRect.top - bRect.top;
+          });
+
+        const currentIndex = menuNodes.findIndex((node) => node.id === currentNode.id);
+        if (currentIndex >= 0) {
+          const nextIndex =
+            key === 'ArrowUp'
+              ? Math.max(0, currentIndex - 1)
+              : Math.min(menuNodes.length - 1, currentIndex + 1);
+          const target = menuNodes[nextIndex];
+          if (target && target.id !== currentNode.id) {
+            const didFocus = focusNode(target, () => e.preventDefault(), !isTvMode);
+            if (didFocus) {
+              focusedIdRef.current = target.id;
+              emitFocusedId(target.id);
+              return;
+            }
+          }
+        }
+      }
+
+      // Fast path for menu right navigation (entering Hero or main content).
+      if (currentNode.section === 'menu' && key === 'ArrowRight') {
+        const candidateIds = ['hero-play', 'hero-info', 'item-0-0', 'item-1-0'];
+        for (const candidateId of candidateIds) {
+          const candidate = navNodes.get(candidateId);
+          if (!candidate) continue;
+
+          if (focusNode(candidate, () => e.preventDefault(), !isTvMode)) {
+            focusedIdRef.current = candidate.id;
+            emitFocusedId(candidate.id);
+            return;
+          }
+        }
+      }
+
+      // Fast path for Hero button navigation (D-Pad navigation from hero-play / hero-info).
+      if (currentNode.section === 'hero' && (key === 'ArrowDown' || key === 'ArrowLeft' || key === 'ArrowRight')) {
+        const candidateIds: string[] = [];
+
+        if (key === 'ArrowDown') {
+          // Hero → first media row
+          candidateIds.push('item-0-0', 'item-0-1', 'item-0-2', 'item-1-0');
+        } else if (key === 'ArrowLeft') {
+          if (currentFocusedId === 'hero-info') {
+            // info → play
+            candidateIds.push('hero-play');
+          } else {
+            // play → sidebar menu
+            const activeMenuId = `menu-${useStore.getState().activeFilter || 'home'}`;
+            candidateIds.push(activeMenuId, 'menu-home', 'menu-search', 'menu-live', 'menu-movie', 'menu-series');
+          }
+        } else if (key === 'ArrowRight') {
+          if (currentFocusedId === 'hero-play') {
+            // play → info
+            candidateIds.push('hero-info');
+          }
+        }
+
+        for (const candidateId of candidateIds) {
+          const candidate = navNodes.get(candidateId);
+          if (!candidate) continue;
+
+          if (focusNode(candidate, () => e.preventDefault(), !isTvMode)) {
+            focusedIdRef.current = candidate.id;
+            emitFocusedId(candidate.id);
+            return;
+          }
+        }
+      }
+
+      let bestNode: NavNode | null = null;
+      let minDistance = Infinity;
+
+      navNodes.forEach((node) => {
+        if (node.id === currentFocusedId) return;
+
+        const nodeRef = resolveNodeRef(node);
+        if (!nodeRef) return;
+
+        const nodeRect = nodeRef.getBoundingClientRect();
+        if (nodeRect.width === 0 && nodeRect.height === 0) return;
+
+        let isEligible = false;
+        if (key === 'ArrowRight') isEligible = nodeRect.left >= currentRect.right - 5;
+        if (key === 'ArrowLeft') isEligible = nodeRect.right <= currentRect.left + 5;
+        if (key === 'ArrowDown') isEligible = nodeRect.top >= currentRect.bottom - 5;
+        if (key === 'ArrowUp') isEligible = nodeRect.bottom <= currentRect.top + 5;
+
+        if (!isEligible) return;
+
+        const distance = calculateDistance(currentRect, nodeRect, key);
+        if (distance < minDistance) {
+          minDistance = distance;
+          bestNode = node;
+        }
+      });
+
+      if (bestNode) {
+        const didFocus = focusNode(bestNode, () => e.preventDefault(), !isTvMode);
+        if (didFocus) {
+          focusedIdRef.current = bestNode.id;
+          emitFocusedId(bestNode.id);
+          return;
+        }
+      }
+
+      if (key === 'Enter') {
+        if (currentNode.onEnter) {
+          e.preventDefault();
+          currentNode.onEnter();
+          return;
+        }
+
+        currentRef.click();
+      }
+    },
+    [isTvMode, onBack],
+  );
+
+  useEffect(() => {
+    if (!isActive || typeof window === 'undefined') {
+      return;
+    }
+
+    const handleFocusIn = (event: FocusEvent) => {
+      const target = event.target as HTMLElement | null;
+      focusedIdRef.current = getNavIdFromElement(target);
+      emitFocusedId(focusedIdRef.current);
+    };
+
+    window.addEventListener('focusin', handleFocusIn);
+    return () => window.removeEventListener('focusin', handleFocusIn);
+  }, [isActive]);
+
+  useEffect(() => {
+    if (shouldHandleTvKeys) {
+      window.addEventListener('keydown', handleKeyDown);
+      return () => window.removeEventListener('keydown', handleKeyDown);
+    }
+  }, [handleKeyDown, shouldHandleTvKeys]);
+
+  const focusedId = useSyncExternalStore(
+    subscribeFocused ? subscribeFocusedId : () => () => {},
+    subscribeFocused ? getFocusedIdSnapshot : () => null,
+    subscribeFocused ? getFocusedIdServerSnapshot : () => null,
+  );
+
+  return { registerNode, focusedId, setFocusedId };
+};

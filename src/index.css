@@ -1,0 +1,267 @@
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
+  --font-display: "Outfit", sans-serif;
+}
+
+:root {
+  --netflix-red: #E50914;
+  --bg-dark: #050505;
+  --glass-bg: rgba(20, 20, 20, 0.7);
+  --glass-border: rgba(255, 255, 255, 0.1);
+}
+
+html, body {
+  margin: 0;
+  padding: 0;
+  background-color: var(--bg-dark);
+  color: white;
+  font-family: var(--font-sans);
+  height: 100%;
+  width: 100%;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: none;
+  touch-action: pan-y;
+}
+
+.main-scrollview {
+  overflow-y: auto !important;
+  height: 100% !important;
+  width: 100% !important;
+  scroll-behavior: smooth;
+  -webkit-overflow-scrolling: touch;
+}
+
+/* Hero Section Fixes */
+.hero-container {
+  position: relative !important;
+  overflow: hidden !important;
+  z-index: 10;
+  border-radius: 12px;
+}
+
+.hero-content {
+  position: relative;
+  z-index: 20;
+}
+
+.hero-synopsis {
+  max-width: 60%;
+  line-height: 1.4;
+  text-shadow: 0 2px 4px rgba(0,0,0,0.8);
+}
+
+.hero-gradient-overlay {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 50%;
+  height: 100%;
+  pointer-events: none;
+  z-index: 1;
+  background: linear-gradient(
+    to right,
+    rgba(5, 5, 5, 0.96) 0%,
+    rgba(5, 5, 5, 0.9) 45%,
+    rgba(5, 5, 5, 0.55) 75%,
+    rgba(5, 5, 5, 0) 100%
+  );
+}
+
+/* Custom scrollbar for a Netflix-like look */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: #050505;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #333;
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #E50914;
+}
+
+.scrollbar-hide {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
+.scrollbar-hide::-webkit-scrollbar {
+  display: none;
+}
+
+/* Estilos de Scrollbar Personalizada para TV */
+.custom-scrollbar::-webkit-scrollbar {
+  width: 4px;
+}
+.custom-scrollbar::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.1);
+  border-radius: 10px;
+}
+.custom-scrollbar {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.1) transparent;
+}
+
+/* Redução de Escala Global para Sidebar e Textos */
+.sidebar-text {
+  font-size: 0.9rem !important;
+}
+.sidebar-icon {
+  width: 18px !important;
+  height: 18px !important;
+}
+
+/* Force smooth scrolling for ALL carousel containers and components */
+div[class*="carousel-flatlist"], 
+.carousel-flatlist,
+.smooth-scroll-container div,
+div[style*="overflow-x: scroll"] {
+  scroll-behavior: smooth !important;
+  -webkit-overflow-scrolling: touch !important;
+}
+
+.smooth-scroll-container {
+  overflow: visible !important;
+}
+
+/* Card scaling and displacement transition */
+div[class*="cardContainer"], 
+.media-card-transition {
+  transition: transform 0.15s cubic-bezier(0.25, 1, 0.5, 1), outline 0.1s ease-out !important;
+  transform: translate3d(0, 0, 0);
+}
+
+div[class*="cardFocused"] {
+  transform: translate3d(0, -10px, 0) scale(1.08) !important;
+  z-index: 50 !important;
+  box-shadow: 0 20px 40px rgba(0,0,0,0.8), 0 0 20px rgba(229,9,20,0.4) !important;
+}
+
+/* Inputs/textareas with TV focus get a visible red ring too */
+input[data-nav-id]:focus,
+textarea[data-nav-id]:focus {
+  box-shadow:
+    0 0 0 2px rgba(255, 255, 255, 0.9),
+    0 0 0 5px rgba(229, 9, 20, 1),
+    0 0 20px rgba(229, 9, 20, 0.5) !important;
+  border-color: #E50914 !important;
+  outline: none !important;
+  transform: none; /* inputs don't scale well */
+}
+
+/* ================================================
+   TV / REMOTE NAVIGATION — "10-Foot UI" Focus
+   ================================================ */
+
+/* Global Focus Reset */
+:focus {
+  outline: none;
+}
+
+/* Base focus ring: Ultra-visible for Smart TV screens */
+[data-nav-id]:focus-visible,
+[data-nav-id]:focus {
+  outline: 4px solid #E50914 !important;
+  outline-offset: 2px;
+  box-shadow: 0 0 15px rgba(229, 9, 20, 0.6) !important;
+  z-index: 100 !important;
+  position: relative;
+  transition: transform 0.2s cubic-bezier(0.25, 1, 0.5, 1), outline-color 0.15s ease-out !important;
+}
+
+/* Media cards: Dramatic "pop-out" scale for unmistakable selection */
+.media-card-transition:focus-visible,
+.media-card-transition:focus,
+[data-nav-id].media-card-transition:focus-visible,
+[data-nav-id].media-card-transition:focus {
+  transform: translate3d(0, -8px, 0) scale(1.10) !important;
+  outline: 4px solid #E50914 !important;
+  outline-offset: 4px;
+  box-shadow: 
+    0 15px 35px rgba(0, 0, 0, 0.8),
+    0 0 25px rgba(229, 9, 20, 0.5) !important;
+  z-index: 100 !important;
+  transition: transform 0.25s cubic-bezier(0.25, 1, 0.5, 1), box-shadow 0.25s ease-out !important;
+  will-change: transform;
+}
+
+/* Specific scaling for focused state in CategoryRow */
+div[class*="cardFocused"] {
+  transform: translate3d(0, -12px, 0) scale(1.12) !important;
+  z-index: 50 !important;
+  box-shadow: 
+    0 25px 50px rgba(0,0,0,0.85), 
+    0 0 30px rgba(229,9,20,0.6) !important;
+}
+
+/* Hero buttons: Premium focus state */
+[data-nav-id="hero-play"]:focus,
+[data-nav-id="hero-play"]:focus-visible,
+[data-nav-id="hero-info"]:focus,
+[data-nav-id="hero-info"]:focus-visible {
+  outline: 5px solid #E50914 !important;
+  outline-offset: 4px;
+  box-shadow: 0 0 25px rgba(229, 9, 20, 0.7) !important;
+  transform: scale(1.08) !important;
+  z-index: 110 !important;
+}
+/* ================================================
+   SKELETON & LOADING EFFECTS
+   ================================================ */
+
+@keyframes shimmer {
+  0% { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+}
+
+.shimmer {
+  background: linear-gradient(
+    90deg,
+    rgba(255, 255, 255, 0.03) 25%,
+    rgba(255, 255, 255, 0.08) 50%,
+    rgba(255, 255, 255, 0.03) 75%
+  );
+  background-size: 200% 100%;
+  animation: shimmer 2s infinite linear;
+}
+
+.skeleton {
+  background-color: rgba(255, 255, 255, 0.05);
+  position: relative;
+  overflow: hidden;
+}
+
+.skeleton::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  background: linear-gradient(
+    90deg,
+    transparent 25%,
+    rgba(255, 255, 255, 0.04) 50%,
+    transparent 75%
+  );
+  background-size: 200% 100%;
+  animation: shimmer 2s infinite linear;
+}
+
+.image-fade-in {
+  opacity: 0;
+  transition: opacity 0.5s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.image-loaded {
+  opacity: 1;
+}
