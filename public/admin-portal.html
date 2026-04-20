@@ -134,7 +134,11 @@
                 </div>
                 <div>
                     <label class="text-[9px] font-black text-gray-500 uppercase italic mb-1 block ml-2">Configuração M3U Privada</label>
-                    <input type="text" id="addUPlaylist" class="input-dark text-left font-mono text-[9px]" placeholder="URL M3U Master">
+                    <input type="text" id="addUPlaylist" oninput="syncEpgFromPlaylist()" class="input-dark text-left font-mono text-[9px]" placeholder="URL M3U Master">
+                </div>
+                <div>
+                    <label class="text-[9px] font-black text-gray-500 uppercase italic mb-1 block ml-2">URL EPG (XMLTV)</label>
+                    <input type="text" id="addUEpg" class="input-dark text-left font-mono text-[9px]" placeholder="URL EPG XMLTV">
                 </div>
                 <button onclick="saveUserForm()" id="btnSaveUser" class="btn-primary w-full py-4 mt-4 rounded-2xl font-black uppercase text-xs text-white shadow-xl">Gravar Alterações</button>
             </div>
@@ -388,6 +392,44 @@
         }
 
         function closeDetailsModal() { document.getElementById('scannerDetailsModal').classList.remove('modal-open'); }
+
+        function deriveEpgUrlFromPlaylist(playlistUrl) {
+            const raw = String(playlistUrl || '').trim();
+            if (!raw) return '';
+
+            try {
+                const parsed = new URL(raw);
+                const username = parsed.searchParams.get('username') || '';
+                const password = parsed.searchParams.get('password') || '';
+                if (!username || !password) return '';
+
+                if (/\/get\.php$/i.test(parsed.pathname)) {
+                    parsed.pathname = parsed.pathname.replace(/\/get\.php$/i, '/xmltv.php');
+                } else if (/\/player_api\.php$/i.test(parsed.pathname)) {
+                    parsed.pathname = parsed.pathname.replace(/\/player_api\.php$/i, '/xmltv.php');
+                } else if (!/\/xmltv\.php$/i.test(parsed.pathname)) {
+                    parsed.pathname = parsed.pathname.replace(/\/+$/, '') + '/xmltv.php';
+                }
+
+                const next = new URL(parsed.origin + parsed.pathname);
+                next.searchParams.set('username', username);
+                next.searchParams.set('password', password);
+                return next.toString();
+            } catch (_) {
+                return '';
+            }
+        }
+
+        function syncEpgFromPlaylist() {
+            const playlistInput = document.getElementById('addUPlaylist');
+            const epgInput = document.getElementById('addUEpg');
+            if (!playlistInput || !epgInput) return;
+
+            const derived = deriveEpgUrlFromPlaylist(playlistInput.value);
+            if (derived) {
+                epgInput.value = derived;
+            }
+        }
         
         function openAddModal() {
             document.getElementById('editUserId').value = '';
@@ -395,6 +437,7 @@
             document.getElementById('addUUser').value = '';
             document.getElementById('addUPass').value = '';
             document.getElementById('addUPlaylist').value = '';
+            document.getElementById('addUEpg').value = '';
             document.getElementById('addUserRole').value = 'user';
             document.getElementById('modalUserTitle').innerText = 'Novo Perfil';
             document.getElementById('btnSaveUser').innerText = 'Criar Perfil';
@@ -411,6 +454,7 @@
             document.getElementById('addUUser').value = u.email || u.username || '';
             document.getElementById('addUPass').value = ''; // Mantém oculto
             document.getElementById('addUPlaylist').value = u.playlist_url || '';
+            document.getElementById('addUEpg').value = u.epg_url || deriveEpgUrlFromPlaylist(u.playlist_url || '');
             document.getElementById('addUserRole').value = u.role || 'user';
             document.getElementById('modalUserTitle').innerText = 'Editar Perfil';
             document.getElementById('btnSaveUser').innerText = 'Mudar Dados';
@@ -435,6 +479,7 @@
             let pw = document.getElementById('addUPass').value.trim();
             const rl = document.getElementById('addUserRole').value;
             const pl = document.getElementById('addUPlaylist').value.trim();
+            let epg = document.getElementById('addUEpg').value.trim();
             const btn = document.getElementById('btnSaveUser');
 
             if (!nm || !un) return;
@@ -442,6 +487,7 @@
             
             try {
                 let updates = { name: nm, username: un, role: rl };
+                if (!epg && pl) epg = deriveEpgUrlFromPlaylist(pl);
                 if (pw) {
                     if (!(window.dcodeIO && window.dcodeIO.bcrypt)) {
                         throw new Error('Biblioteca de hash indisponivel no navegador.');
@@ -455,9 +501,26 @@
                     });
                 }
                 if (pl) updates.playlist_url = pl;
+                if (epg) updates.epg_url = epg;
 
-                if (id) { await client.from('xandeflix_users').update(updates).eq('id', id); }
-                else { await client.from('xandeflix_users').insert([updates]); }
+                let writeError = null;
+                if (id) {
+                    const { error } = await client.from('xandeflix_users').update(updates).eq('id', id);
+                    writeError = error;
+                } else {
+                    const { error } = await client.from('xandeflix_users').insert([updates]);
+                    writeError = error;
+                }
+
+                if (writeError && String(writeError.message || '').toLowerCase().includes('epg_url')) {
+                    // Banco antigo sem coluna epg_url: persiste demais campos e segue.
+                    delete updates.epg_url;
+                    if (id) await client.from('xandeflix_users').update(updates).eq('id', id);
+                    else await client.from('xandeflix_users').insert([updates]);
+                } else if (writeError) {
+                    throw writeError;
+                }
+
                 closeModal(); refreshUsers();
             } catch(e) { alert('Erro: ' + e.message); } 
             finally { btn.disabled = false; }
