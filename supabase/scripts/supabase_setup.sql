@@ -193,7 +193,7 @@ set search_path = public
 as $$
   select xu.id
   from public.xandeflix_users xu
-  where xu.auth_user_id = coalesce(p_auth_user_id, auth.uid())
+  where xu.auth_user_id = auth.uid()
   limit 1;
 $$;
 
@@ -209,12 +209,14 @@ as $$
   select exists (
     select 1
     from public.xandeflix_users xu
-    where xu.auth_user_id = coalesce(p_auth_user_id, auth.uid())
+    where xu.auth_user_id = auth.uid()
       and xu.role = 'admin'
       and xu.is_blocked = false
   );
 $$;
 
+revoke all on function public.current_xandeflix_user_id(uuid) from public, anon;
+revoke all on function public.is_xandeflix_admin(uuid) from public, anon;
 grant execute on function public.current_xandeflix_user_id(uuid) to authenticated, service_role;
 grant execute on function public.is_xandeflix_admin(uuid) to authenticated, service_role;
 
@@ -416,10 +418,9 @@ begin
   )::citext;
 
   v_access_id := nullif(trim(new.raw_user_meta_data ->> 'access_id'), '')::citext;
-  v_role := case
-    when lower(coalesce(new.raw_user_meta_data ->> 'role', 'user')) = 'admin' then 'admin'
-    else 'user'
-  end;
+  -- Nunca confiamos em role vindo de metadata de signup.
+  -- Promocao para admin deve ser processo explicito no painel/SQL.
+  v_role := 'user';
 
   select xu.id
   into v_existing_user_id
@@ -497,6 +498,14 @@ declare
   v_linked_count integer := 0;
   v_inserted_count integer := 0;
 begin
+  if auth.role() = 'anon' then
+    raise exception 'Apenas usuarios autenticados podem sincronizar usuarios do Authentication.'
+      using errcode = '42501';
+  elsif auth.role() = 'authenticated' and not public.is_xandeflix_admin() then
+    raise exception 'Apenas administradores podem sincronizar usuarios do Authentication.'
+      using errcode = '42501';
+  end if;
+
   update public.xandeflix_users xu
   set auth_user_id = au.id,
       email = coalesce(xu.email, au.email),
@@ -563,10 +572,7 @@ begin
       ),
       ''
     )::citext,
-    case
-      when lower(coalesce(au.raw_user_meta_data ->> 'role', 'user')) = 'admin' then 'admin'
-      else 'user'
-    end
+    'user'::text
   from auth.users au
   where not exists (
     select 1
@@ -591,6 +597,7 @@ begin
 end;
 $$;
 
+revoke all on function public.sync_auth_users_to_xandeflix_users() from public, anon;
 grant execute on function public.sync_auth_users_to_xandeflix_users() to authenticated, service_role;
 
 -- Backfill para usuarios auth ja existentes
@@ -653,10 +660,7 @@ select
     ),
     ''
   )::citext,
-  case
-    when lower(coalesce(au.raw_user_meta_data ->> 'role', 'user')) = 'admin' then 'admin'
-    else 'user'
-  end
+  'user'::text
 from auth.users au
 where not exists (
   select 1
@@ -684,10 +688,23 @@ create or replace function public.cleanup_old_telemetry(days_to_keep integer def
 returns integer
 language plpgsql
 security definer
+set search_path = public
 as $$
 declare
   deleted_count integer;
 begin
+  if days_to_keep < 1 then
+    raise exception 'days_to_keep deve ser >= 1.';
+  end if;
+
+  if auth.role() = 'anon' then
+    raise exception 'Somente administradores podem executar cleanup de telemetria.'
+      using errcode = '42501';
+  elsif auth.role() = 'authenticated' and not public.is_xandeflix_admin() then
+    raise exception 'Somente administradores podem executar cleanup de telemetria.'
+      using errcode = '42501';
+  end if;
+
   delete from public.player_telemetry_reports
   where created_at < now() - (days_to_keep || ' days')::interval;
   
@@ -695,6 +712,9 @@ begin
   return deleted_count;
 end;
 $$;
+
+revoke all on function public.cleanup_old_telemetry(integer) from public, anon;
+grant execute on function public.cleanup_old_telemetry(integer) to authenticated, service_role;
 
 -- -----------------------------------------------------------------------------
 -- Row Level Security
@@ -715,16 +735,11 @@ to authenticated
 using (auth_user_id = auth.uid());
 
 drop policy if exists "users_update_own_basic_profile" on public.xandeflix_users;
-create policy "users_update_own_basic_profile"
-on public.xandeflix_users
-for update
-to authenticated
-using (auth_user_id = auth.uid())
-with check (
-  auth_user_id = auth.uid() 
-  and role = role -- Prevent privilege escalation
-  and is_blocked = is_blocked -- Prevent self-unblocking
-);
+-- IMPORTANTE:
+-- Nao permitimos UPDATE direto de usuarios comuns em xandeflix_users.
+-- Campos sensiveis (role/is_blocked/password/adult_*) devem ser alterados
+-- somente por funcoes controladas (security definer) ou por admins.
+-- Mantemos apenas SELECT proprio + policy administrativa abaixo.
 
 drop policy if exists "admins_manage_all_xandeflix_profiles" on public.xandeflix_users;
 create policy "admins_manage_all_xandeflix_profiles"

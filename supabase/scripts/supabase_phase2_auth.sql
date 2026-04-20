@@ -109,6 +109,9 @@ begin
 end;
 $$;
 
+revoke all on function public.xandeflix_login_email(text) from public;
+revoke all on function public.authenticate_access_id(text, text) from public;
+
 grant execute on function public.xandeflix_login_email(text) to anon, authenticated, service_role;
 grant execute on function public.authenticate_access_id(text, text) to anon, authenticated, service_role;
 

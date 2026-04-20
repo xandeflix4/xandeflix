@@ -1,4 +1,4 @@
-﻿import { cleanMediaTitle } from './titleCleaner';
+import { cleanMediaTitle } from './titleCleaner';
 
 export type TMDBMediaType = 'movie' | 'series';
 
@@ -19,6 +19,7 @@ export interface TMDBData {
 
 export interface FetchTMDBMetadataOptions {
   includeDetails?: boolean;
+  categoryHint?: string;
 }
 
 export interface TMDBSearchResult {
@@ -32,6 +33,7 @@ export interface TMDBSearchResult {
   vote_average?: number;
   vote_count?: number;
   popularity?: number;
+  genre_ids?: number[];
 }
 
 const rawTmdbApiKey = String(import.meta.env.VITE_TMDB_API_KEY || '').trim();
@@ -232,7 +234,30 @@ function mapTMDBSearchResult(result: any): TMDBSearchResult {
       typeof result?.vote_count === 'number' ? result.vote_count : Number(result?.vote_count || 0),
     popularity:
       typeof result?.popularity === 'number' ? result.popularity : Number(result?.popularity || 0),
+    genre_ids: Array.isArray(result?.genre_ids) ? result.genre_ids : [],
   };
+}
+
+// TMDB Genre IDs reference
+const TMDB_GENRE_ANIMATION = 16;
+const TMDB_GENRE_DOCUMENTARY = 99;
+const TMDB_GENRE_ACTION = 28;
+const TMDB_GENRE_COMEDY = 35;
+const TMDB_GENRE_HORROR = 27;
+const TMDB_GENRE_ROMANCE = 10749;
+
+/** Detecta gêneros TMDB esperados a partir do nome da categoria IPTV */
+function detectGenreHintsFromCategory(category: string): number[] {
+  if (!category) return [];
+  const cat = category.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+  const hints: number[] = [];
+  if (/anima(cao|ção|tion|dos)|cartoon|disney|pixar|desenho/i.test(cat)) hints.push(TMDB_GENRE_ANIMATION);
+  if (/document(ario|ários|ary)/i.test(cat)) hints.push(TMDB_GENRE_DOCUMENTARY);
+  if (/terror|horror|suspense/i.test(cat)) hints.push(TMDB_GENRE_HORROR);
+  if (/comedia|comedy/i.test(cat)) hints.push(TMDB_GENRE_COMEDY);
+  if (/romance|romantico/i.test(cat)) hints.push(TMDB_GENRE_ROMANCE);
+  if (/acao|action/i.test(cat)) hints.push(TMDB_GENRE_ACTION);
+  return hints;
 }
 
 function normalizeForComparison(value: string): string {
@@ -249,13 +274,27 @@ function getReleaseYear(result: TMDBSearchResult): string {
   return String(result.release_date || result.first_air_date || '').slice(0, 4);
 }
 
-function scoreTMDBMatch(queryTitle: string, queryYear: string | undefined, candidate: TMDBSearchResult): number {
+function scoreTMDBMatch(
+  queryTitle: string,
+  queryYear: string | undefined,
+  candidate: TMDBSearchResult,
+  genreHints: number[] = [],
+): number {
   const query = normalizeForComparison(queryTitle);
   const candidateTitle = normalizeForComparison(candidate.title || '');
   if (!query || !candidateTitle) return 0;
 
+  // Verificar se os gêneros do candidato correspondem à pista da categoria
+  const candidateGenres = candidate.genre_ids || [];
+  const genreMatch = genreHints.length > 0 && candidateGenres.some(g => genreHints.includes(g));
+  const genreMismatch = genreHints.length > 0 && !genreMatch && candidateGenres.length > 0;
+
   if (query === candidateTitle) {
-    return queryYear && getReleaseYear(candidate) === queryYear ? 1 : 0.92;
+    let base = queryYear && getReleaseYear(candidate) === queryYear ? 1 : 0.92;
+    // Quando não há ano, usar gênero para desambiguar (ex: animação vs live-action)
+    if (!queryYear && genreMatch) base += 0.06;
+    if (!queryYear && genreMismatch) base -= 0.12;
+    return Math.min(base, 1);
   }
 
   const queryTokens = query.split(' ').filter((token) => token.length > 1);
@@ -278,7 +317,11 @@ function scoreTMDBMatch(queryTitle: string, queryYear: string | undefined, candi
       ? 0.18
       : 0;
 
-  let score = overlap + containsBoost + yearBoost;
+  // Boost/penalidade por gênero quando não há ano (desambiguação por categoria)
+  const genreBoost = !queryYear && genreMatch ? 0.10 : 0;
+  const genrePenalty = !queryYear && genreMismatch ? 0.10 : 0;
+
+  let score = overlap + containsBoost + yearBoost + genreBoost - genrePenalty;
 
   // Short titles need stronger token parity to avoid wrong matches.
   if (queryTokens.length <= 2 && intersection < queryTokens.length) {
@@ -301,6 +344,7 @@ function pickBestTMDBResult(
   results: TMDBSearchResult[],
   queryTitle: string,
   queryYear?: string,
+  genreHints: number[] = [],
 ): TMDBBestMatch | null {
   if (!results.length) return null;
 
@@ -308,7 +352,7 @@ function pickBestTMDBResult(
   let bestScore = 0;
 
   for (const result of results.slice(0, 8)) {
-    const score = scoreTMDBMatch(queryTitle, queryYear, result);
+    const score = scoreTMDBMatch(queryTitle, queryYear, result, genreHints);
     if (score > bestScore) {
       bestScore = score;
       best = result;
@@ -344,6 +388,7 @@ async function searchBestTMDBResult(
   queryTitle: string,
   type: TMDBMediaType,
   queryYear?: string,
+  genreHints: number[] = [],
 ): Promise<TMDBBestMatch | null> {
   const payload = await fetchTMDBJson<{ results?: any[] }>(
     buildSearchUrl(queryTitle, type, queryYear),
@@ -352,7 +397,7 @@ async function searchBestTMDBResult(
     ? payload.results.map(mapTMDBSearchResult)
     : [];
 
-  return pickBestTMDBResult(mappedResults, queryTitle, queryYear);
+  return pickBestTMDBResult(mappedResults, queryTitle, queryYear, genreHints);
 }
 
 export async function fetchTMDBMetadata(
@@ -360,7 +405,7 @@ export async function fetchTMDBMetadata(
   type: TMDBMediaType,
   options: FetchTMDBMetadataOptions = {},
 ): Promise<TMDBData | null> {
-  const { includeDetails = true } = options;
+  const { includeDetails = true, categoryHint } = options;
   if (!rawTitle.trim()) {
     return null;
   }
@@ -371,10 +416,13 @@ export async function fetchTMDBMetadata(
     return null;
   }
 
-  let bestMatch = await searchBestTMDBResult(normalizedTitle, type, year);
+  // Detectar gêneros esperados a partir da categoria IPTV para desambiguação
+  const genreHints = categoryHint ? detectGenreHintsFromCategory(categoryHint) : [];
+
+  let bestMatch = await searchBestTMDBResult(normalizedTitle, type, year, genreHints);
   if (!bestMatch && year) {
     // Fallback when IPTV titles carry an incorrect year token.
-    bestMatch = await searchBestTMDBResult(normalizedTitle, type);
+    bestMatch = await searchBestTMDBResult(normalizedTitle, type, undefined, genreHints);
   }
 
   if (!bestMatch) {

@@ -17,6 +17,14 @@ declare
   v_linked_count integer := 0;
   v_inserted_count integer := 0;
 begin
+  if auth.role() = 'anon' then
+    raise exception 'Apenas usuarios autenticados podem sincronizar usuarios do Authentication.'
+      using errcode = '42501';
+  elsif auth.role() = 'authenticated' and not public.is_xandeflix_admin() then
+    raise exception 'Apenas administradores podem sincronizar usuarios do Authentication.'
+      using errcode = '42501';
+  end if;
+
   update public.xandeflix_users xu
   set auth_user_id = au.id,
       email = coalesce(xu.email, au.email),
@@ -83,10 +91,7 @@ begin
       ),
       ''
     )::citext,
-    case
-      when lower(coalesce(au.raw_user_meta_data ->> 'role', 'user')) = 'admin' then 'admin'
-      else 'user'
-    end
+    'user'::text
   from auth.users au
   where not exists (
     select 1
@@ -111,6 +116,7 @@ begin
 end;
 $$;
 
+revoke all on function public.sync_auth_users_to_xandeflix_users() from public, anon;
 grant execute on function public.sync_auth_users_to_xandeflix_users() to authenticated, service_role;
 
 select * from public.sync_auth_users_to_xandeflix_users();

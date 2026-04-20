@@ -1,5 +1,5 @@
-﻿import { useCallback, useEffect, useRef, useState } from 'react';
-import { Category } from '../types';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { Category, Media } from '../types';
 import { useStore } from '../store/useStore';
 import {
   PLAYLIST_CACHE_SCHEMA_VERSION,
@@ -60,7 +60,8 @@ interface WorkerCatalogChunkMessage {
 const PLAYLIST_FETCH_TIMEOUT_MS = 180000; // 3 Minutos maximos para download
 const PLAYLIST_FETCH_TOTAL_BUDGET_MS = 400000;
 const MAX_PLAYLIST_SYNC_BYTES = 150 * 1024 * 1024; // 150MB
-const PLAYLIST_FLOW_WATCHDOG_TIMEOUT_MS = 460000;
+const PLAYLIST_FLOW_WATCHDOG_TIMEOUT_MS = 600000; // 10 minutos - emuladores de TV são muito lentos
+const MAX_CHANNELS_PER_PLAYLIST = 350000; // Limite maximo aumentado para 350k canais
 const CACHE_IO_TIMEOUT_MS = 12000;
 const UI_PREFETCH_TIMEOUT_MS = 1800;
 const UI_PREFETCH_LIMIT_MOBILE = 16;
@@ -209,18 +210,89 @@ async function buildCategoriesPreviewFromCatalog(
 ): Promise<Category[]> {
   const categoryTitles = await getChannelCategories();
   const categories: Category[] = [];
+  const { cleanMediaTitle, extractSeriesInfo } = await import('../lib/titleCleaner');
 
   for (let index = 0; index < categoryTitles.length; index += 1) {
     const title = categoryTitles[index];
-    const channels = await getChannelsByCategory(title, 0, CHANNEL_PREVIEW_LIMIT_PER_CATEGORY);
+    // Algoritmo de busca inteligente para séries:
+    // Buscamos em lotes até atingir pelo menos 20 séries agrupadas
+    const isSeriesCat = /series|vod|show/i.test(title);
+    const targetGroupCount = 20;
+    const maxScanLimit = 1500; // Limite de segurança para evitar loops infinitos
+    
+    let offset = 0;
+    const batchSize = 100;
+    const seriesMap = new Map<string, { main: Media, episodes: any[] }>();
+    const standaloneItems: Media[] = [];
+    
+    while (offset < maxScanLimit) {
+      const batch = await getChannelsByCategory(title, offset, batchSize);
+      if (!batch.length) break;
 
-    if (!channels.length) continue;
+      for (const item of batch) {
+        const { cleanTitle, season, episode, isSeries: detectedSeries } = cleanMediaTitle(item.title);
+        
+        if (detectedSeries || isSeriesCat) {
+          if (season !== undefined && episode !== undefined) {
+            const key = `${cleanTitle}`.toLowerCase().trim();
+            if (!seriesMap.has(key)) {
+              if (seriesMap.size >= targetGroupCount) continue; // Já temos 20, ignoramos novas séries
+              seriesMap.set(key, {
+                main: { 
+                  ...item, 
+                  title: cleanTitle, 
+                  type: 'series' as any,
+                  id: `series-${item.id}` 
+                },
+                episodes: []
+              });
+            }
+            seriesMap.get(key)!.episodes.push({
+              id: item.id,
+              seasonNumber: season,
+              episodeNumber: episode,
+              title: item.title,
+              videoUrl: item.videoUrl
+            });
+          } else if (standaloneItems.length < CHANNEL_PREVIEW_LIMIT_PER_CATEGORY) {
+            standaloneItems.push(item);
+          }
+        } else if (standaloneItems.length < CHANNEL_PREVIEW_LIMIT_PER_CATEGORY) {
+          standaloneItems.push(item);
+        }
+      }
+
+      // Critério de parada: já temos 20 séries e o standalone já está cheio (ou fim da lista)
+      if (seriesMap.size >= targetGroupCount && (standaloneItems.length >= CHANNEL_PREVIEW_LIMIT_PER_CATEGORY || !isSeriesCat)) {
+        break;
+      }
+      
+      offset += batchSize;
+    }
+
+    const groupedSeries: Media[] = Array.from(seriesMap.values()).map(group => {
+      const seasonsMap: Record<number, any[]> = {};
+      group.episodes.forEach(ep => {
+        if (!seasonsMap[ep.seasonNumber]) seasonsMap[ep.seasonNumber] = [];
+        seasonsMap[ep.seasonNumber].push(ep);
+      });
+
+      const seasons = Object.entries(seasonsMap).map(([num, eps]) => ({
+        seasonNumber: parseInt(num, 10),
+        episodes: eps.sort((a, b) => a.episodeNumber - b.episodeNumber)
+      })).sort((a, b) => a.seasonNumber - b.seasonNumber);
+
+      return { ...group.main, seasons };
+    });
+
+    const displayItems: Media[] = [...groupedSeries, ...standaloneItems].slice(0, 40); // 40 no total como margem
+    if (!displayItems.length) continue;
 
     categories.push({
       id: title.toLowerCase().replace(/[^a-z0-9]+/g, '-') || `cat-${index}`,
       title,
-      type: String(channels[0].type || 'live'),
-      items: channels,
+      type: String(displayItems[0]?.type || 'live'),
+      items: displayItems,
     });
 
     if (index % 6 === 0) {
@@ -258,6 +330,7 @@ async function parsePlaylistInWorker(
   playlistStreamUrl: string,
   onUpdate?: (msg: string, progressHint?: number) => void,
   activeWorkerRef?: { current: Worker | null },
+  onPreviewReady?: (count: number, epgUrl: string | null) => void,
 ): Promise<WorkerParseResult> {
   return new Promise((resolve, reject) => {
     try {
@@ -321,6 +394,10 @@ async function parsePlaylistInWorker(
             epgUrl = chunkMessage.epgUrl.trim();
           }
 
+          // Limpeza agressiva de memoria apos cada chunk
+          chunkMessage.tuples = null as any;
+          chunkMessage.dictionaries = null as any;
+          
           onUpdate?.(`[Fatiador] ${totalLoaded} canais tokenizados em memoria local...`, 72);
         });
 
@@ -346,6 +423,12 @@ async function parsePlaylistInWorker(
             epgUrl = msgEpgUrl.trim();
           }
           onUpdate?.(`[Fatiador] ${totalLoaded} canais tokenizados em memoria local...`, 72);
+          return;
+        }
+
+        if (type === 'PREVIEW_READY') {
+          const previewCount = Number(count);
+          onPreviewReady?.(Number.isFinite(previewCount) ? previewCount : totalLoaded, epgUrl);
           return;
         }
 
@@ -504,6 +587,7 @@ export const usePlaylist = () => {
   const [playlistLogs, setPlaylistLogs] = useState<string[]>([]);
   const [catalogPreviewCategories, setCatalogPreviewCategories] = useState<Category[]>([]);
   const [isWritingDatabase, setIsWritingDatabase] = useState(false);
+  const [isBackgroundSyncing, setIsBackgroundSyncing] = useState(false);
   const activePlaylistLoadPromiseRef = useRef<Promise<void> | null>(null);
   const activeWorkerRef = useRef<Worker | null>(null);
   const activeEpgWorkerRef = useRef<Worker | null>(null);
@@ -792,10 +876,43 @@ export const usePlaylist = () => {
               retryWithoutNativeHeaders: true,
             });
 
+            // Flag para saber se já liberamos a tela com preview
+            let previewAlreadyShown = hasData;
+
+            const handlePreviewReady = async (previewCount: number, previewEpgUrl: string | null) => {
+              if (previewAlreadyShown) return;
+
+              try {
+                updateDiag(`[Fast Boot] ${previewCount} canais prontos. Montando vitrine inicial...`, 80);
+                const earlyCategories = await buildCategoriesPreviewFromCatalog(updateDiag);
+
+                if (earlyCategories.length > 0) {
+                  previewAlreadyShown = true;
+                  setCatalogPreviewCategories(earlyCategories);
+                  syncVisibleSliceStore(earlyCategories);
+                  setIsUsingMock(false);
+                  setPlaylistStatus('success');
+                  setPlaylistSource(describePlaylistSource(playlistUrl));
+                  setLoading(false);
+                  setIsBackgroundSyncing(true); // Fim da Fase 1 -> entra em Background Sync Fase 2
+                  hasData = true;
+                  updateDiag(`[Fast Boot] Tela inicial liberada com ${earlyCategories.length} categorias! Carregando restante...`, 82);
+                  appendProgressLog(`[Fast Boot] Vitrine exibida com ${previewCount} canais. Download continua em background.`);
+
+                  // Iniciar EPG em paralelo
+                  void hydrateEpgData(previewEpgUrl, cacheScope);
+                }
+              } catch (err) {
+                // Falha silenciosa - o fluxo completo ainda vai finalizar
+                console.warn('[Fast Boot] Falha ao montar preview:', err);
+              }
+            };
+
             parsedPlaylist = await parsePlaylistInWorker(
               streamSource.streamUrl,
               updateDiag,
               activeWorkerRef,
+              handlePreviewReady,
             );
 
             if (parsedPlaylist.totalLoaded > 0) {
@@ -822,34 +939,52 @@ export const usePlaylist = () => {
           throw new Error(`O parsing em stream falhou: ${message}`);
         }
 
-        updateDiag('[Catalogo] Carregando vitrine inicial do catalogo condensado...', 84);
-        const previewCategories = await buildCategoriesPreviewFromCatalog(updateDiag);
+        // Atualização final com catálogo completo - MERGE DIFERENCIAL
+        updateDiag('[Catalogo] Finalizando catalogo completo...', 90);
+        const finalCategories = await buildCategoriesPreviewFromCatalog(updateDiag);
 
-        if (previewCategories.length > 0) {
-          updateDiag('[UI] Preparando elementos da interface...', 91);
-          await warmupUiElements(
-            previewCategories,
-            updateDiag,
-            useStore.getState().isTvMode,
-          );
+        if (finalCategories.length > 0) {
+          updateDiag('[UI] Atualizando vitrine de hardware...', 94);
+          
+          if (!hasData) {
+             // Nunca teve data (Fast boot provavelmente não acionou)
+            await warmupUiElements(
+              finalCategories,
+              updateDiag,
+              useStore.getState().isTvMode,
+            );
+            setCatalogPreviewCategories(finalCategories);
+            syncVisibleSliceStore(finalCategories);
+            setIsUsingMock(false);
+          } else {
+             // O Fast Boot renderizou as prineiras categorias. Vamos apenas adicionar as faltantes.
+             // Para não quebrar o React Fiber reconciler e não forçar o foco a subir
+             setCatalogPreviewCategories((prev) => {
+                const existingMap: Record<string, boolean> = {};
+                for (let i = 0; i < prev.length; i++) {
+                   existingMap[prev[i].id] = true;
+                }
+                const novasCateg = finalCategories.filter(c => !existingMap[c.id]);
+                return novasCateg.length > 0 ? [...prev, ...novasCateg] : prev;
+             });
+          }
 
-          setCatalogPreviewCategories(previewCategories);
-          syncVisibleSliceStore(previewCategories);
-          setIsUsingMock(false);
-
-          updateDiag('[Cache] Salvando vitrine compacta para boot rapido...', 94);
+          updateDiag('[Cache] Salvando vitrine compacta para boot rapido...', 96);
           await withTimeout(
-            savePlaylistCache(previewCategories, cacheScope, parsedPlaylist.epgUrl),
+            savePlaylistCache(finalCategories, cacheScope, parsedPlaylist.epgUrl),
             CACHE_IO_TIMEOUT_MS,
             'Timeout: Falha write-to-disk',
           ).catch(() => null);
 
-          void syncCatalogSnapshot(userData.id, playlistUrl, parsedPlaylist.epgUrl, previewCategories);
+          void syncCatalogSnapshot(userData.id, playlistUrl, parsedPlaylist.epgUrl, finalCategories);
           setPlaylistStatus('success');
-          void hydrateEpgData(parsedPlaylist.epgUrl, cacheScope);
+          if (!hasData) {
+            void hydrateEpgData(parsedPlaylist.epgUrl, cacheScope);
+          }
+          setIsBackgroundSyncing(false);
           setPlaylistProgress(100);
           appendProgressLog(
-            `[Concluido] ${parsedPlaylist.totalLoaded} canais tokenizados na memoria (${previewCategories.length} categorias na vitrine).`,
+            `[Concluido] ${parsedPlaylist.totalLoaded} canais prontos (${finalCategories.length} cat. totais).`,
           );
         } else {
           setNoContentError('M3U Vazia', 'O servidor forneceu um M3U que nao contem canais.');
@@ -872,9 +1007,11 @@ export const usePlaylist = () => {
         }
         appendProgressLog(`[Erro] ${error?.message || 'Falha inesperada.'}`);
         setPlaylistProgress(100);
+        setIsBackgroundSyncing(false);
       } finally {
         setIsWritingDatabase(false);
         setLoading(false);
+        setIsBackgroundSyncing(false);
       }
     };
 
@@ -892,8 +1029,13 @@ export const usePlaylist = () => {
         syncVisibleSliceStore([]);
         setIsUsingMock(false);
         setEpgData(null);
+        setIsBackgroundSyncing(false);
       })
-      .finally(() => { setLoading(false); activePlaylistLoadPromiseRef.current = null; });
+      .finally(() => { 
+        setLoading(false); 
+        setIsBackgroundSyncing(false);
+        activePlaylistLoadPromiseRef.current = null; 
+      });
 
     return activePlaylistLoadPromiseRef.current;
   }, [
@@ -919,5 +1061,6 @@ export const usePlaylist = () => {
     playlistLogs,
     catalogPreviewCategories,
     isWritingDatabase,
+    isBackgroundSyncing,
   };
 };

@@ -106,6 +106,9 @@ begin
 end;
 $$;
 
+revoke all on function public.adult_access_unlock(text) from public, anon;
+revoke all on function public.adult_access_set_password(text, text) from public, anon;
+
 grant execute on function public.adult_access_unlock(text) to authenticated, service_role;
 grant execute on function public.adult_access_set_password(text, text) to authenticated, service_role;
 

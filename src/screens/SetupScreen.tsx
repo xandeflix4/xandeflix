@@ -55,14 +55,13 @@ export const SetupScreen: React.FC<SetupScreenProps> = ({ onComplete }) => {
               <Text style={[styles.subtitle, isTvProfile && styles.subtitleTv]}>Sua experiencia definitiva de IPTV</Text>
             </View>
 
-            {/* @ts-ignore: className works on React Native Web but TypeScript complains */}
+            {/* @ts-expect-error: className works on React Native Web but TypeScript complains */}
             <View style={[styles.card, isTvProfile && styles.cardTv]} className="backdrop-blur-xl">
               <Text style={[styles.cardTitle, isTvProfile && styles.cardTitleTv]}>Configuracao Inicial</Text>
               <Text style={[styles.cardDescription, isTvProfile && styles.cardDescriptionTv]}>
                 Para comecar, insira a URL da sua lista M3U ou M3U8 fornecida pelo seu provedor.
               </Text>
 
-              {/* @ts-ignore: className works on web */}
               <View
                 style={[styles.inputWrapper, isTvProfile && styles.inputWrapperTv]}
                 {...({ className: "flex flex-row items-center bg-black/30 rounded-xl border border-white/10 px-4 mb-3" } as any)}
@@ -70,7 +69,7 @@ export const SetupScreen: React.FC<SetupScreenProps> = ({ onComplete }) => {
                 <span style={{ marginRight: 12 }}><Link size={20} color="rgba(255,255,255,0.4)" /></span>
                 <TextInput
                   style={[styles.input, isTvProfile && styles.inputTv]}
-                  // @ts-ignore
+                  // @ts-expect-error className e suportado no runtime web via react-native-web
                   className="outline-none"
                   placeholder="http://seu-provedor.com/lista.m3u"
                   placeholderTextColor="rgba(255,255,255,0.3)"

@@ -269,9 +269,14 @@ export const AdminPanel: React.FC<{ onExitAdmin: () => void }> = ({ onExitAdmin 
     setLoading(true);
     setError(null);
     try {
+      const passwordToUse = newUserPassword.trim();
+      if (!passwordToUse) {
+        setError('Informe uma senha para o novo acesso.');
+        return;
+      }
       await activateNewSubscriber(
         newUserUsername + '@xandeflix.com', // Fallback email
-        newUserPassword || '123',
+        passwordToUse,
         newUserUrl,
         newUserName
       );
@@ -780,7 +785,7 @@ export const AdminPanel: React.FC<{ onExitAdmin: () => void }> = ({ onExitAdmin 
                 <label style={s.label}>NOVA SENHA (deixe vazio para manter a atual)</label>
                 <input 
                   style={s.input} 
-                  type="text"
+                  type="password"
                   value={editingUser.password || ''} 
                   onChange={e => setEditingUser({...editingUser, password: e.target.value})} 
                   placeholder="Manter senha atual..."

@@ -1,13 +1,14 @@
 import React, { useState, useMemo, useEffect, useRef, useCallback } from 'react';
 import { Capacitor } from '@capacitor/core';
 import { View, Text, StyleSheet, ScrollView, TouchableHighlight, Image, Dimensions, FlatList, ListRenderItem } from 'react-native';
-import { Radio, ChevronRight, Play, Maximize2, Search, Heart } from 'lucide-react';
+import { Radio, ChevronRight, Play, Maximize2, Search, Heart, Activity } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { Category, Media } from '../types';
 import { VideoPlayer } from './VideoPlayer';
 import { NativeVideoPlayer } from '../lib/nativeVideoPlayer';
 import { useStore } from '../store/useStore';
 import { useTvNavigation } from '../hooks/useTvNavigation';
+import { NetworkDiagnostic } from './NetworkDiagnostic';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import { DISK_CATEGORY_PAGE_SIZE, useDiskCategory } from '../hooks/useDiskCategory';
 
@@ -37,146 +38,48 @@ interface LiveTVGridProps {
   layout: any;
   externalMedia?: Media | null;
   isGlobalPlayerActive?: boolean;
+  section?: string;
 }
 
 const { height: SCREEN_HEIGHT } = Dimensions.get('window');
 type LiveTvFocusColumn = 'groups' | 'channels' | 'preview';
+type LivePreviewPoolEntry = {
+  media: Media;
+  categoryId: string;
+};
 
-interface VirtualizedChannelsListProps {
-  items: Media[];
-  scrollParentRef: React.RefObject<HTMLDivElement>;
-  favorites: string[];
-  epgData: any;
-  now: number;
-  focusColumn: LiveTvFocusColumn;
-  focusedChannelIndex: number;
-  selectedMediaId: string | null;
-  onChannelPress: (media: Media, index: number) => void;
-}
+// Virtualizer substituído em favor de FlatList NATIVA do React para consertar pulo-duplo direcional em Engine legada.
 
-const VirtualizedChannelsList = React.memo(({
-  items,
-  scrollParentRef,
-  favorites,
-  epgData,
-  now,
-  focusColumn,
-  focusedChannelIndex,
-  selectedMediaId,
-  onChannelPress,
-}: VirtualizedChannelsListProps) => {
-  const rowVirtualizer = useVirtualizer({
-    count: items.length,
-    getScrollElement: () => scrollParentRef.current,
-    estimateSize: () => 74, // Approximate height of channelItem
-    overscan: 10,
-  });
-
-  // Sync scroll on focus change (manual for virtual list)
-  useEffect(() => {
-    if (focusColumn !== 'channels') return;
-    rowVirtualizer.scrollToIndex(focusedChannelIndex, { align: 'center', behavior: 'smooth' });
-  }, [focusedChannelIndex, focusColumn, rowVirtualizer]);
-
-  return (
-    <div
-      style={{
-        height: `${rowVirtualizer.getTotalSize()}px`,
-        width: '100%',
-        position: 'relative',
-      }}
-    >
-      {rowVirtualizer.getVirtualItems().map((virtualRow) => {
-        const media = items[virtualRow.index];
-        const index = virtualRow.index;
-        if (!media) return null;
-
-        const isFavorite =
-          favorites.includes(media.videoUrl || `media:${media.id}`) ||
-          favorites.includes(media.id);
-        const channelPrograms =
-          (media.tvgId && epgData?.[media.tvgId]) ||
-          (media.tvgName && epgData?.[media.tvgName]) ||
-          [];
-        const currentProgram = channelPrograms.find(
-          (program) => now >= program.start && now < program.stop
-        );
-
-        return (
-          <div
-            key={virtualRow.key}
-            style={{
-              position: 'absolute',
-              top: 0,
-              left: 0,
-              width: '100%',
-              height: `${virtualRow.size}px`,
-              transform: `translateY(${virtualRow.start}px)`,
-            }}
-          >
-            <TouchableHighlight
-              onPress={() => onChannelPress(media, index)}
-              underlayColor="rgba(255,255,255,0.05)"
-              style={[
-                styles.channelItem,
-                focusColumn === 'channels' && focusedChannelIndex === index && styles.channelItemFocused,
-                selectedMediaId === media.id && styles.channelItemActive,
-                { height: 70, marginVertical: 2 } // Force height consistency
-              ]}
-              id={`tv-channel-${media.id}`}
-              data-nav-id={`tv-channel-${media.id}`}
-            >
-              <View style={styles.channelItemInner}>
-                <View style={styles.itemThumbnailContainer}>
-                  <LiveItemThumbnail uri={media.thumbnail} />
-                  {isFavorite && (
-                    <View style={styles.favoriteBadge}>
-                      <Heart size={11} color="#ffffff" fill="#E50914" />
-                    </View>
-                  )}
-                  {selectedMediaId === media.id && (
-                    <View style={styles.playingIndicator}>
-                      <View style={styles.pulse} />
-                    </View>
-                  )}
-                </View>
-                <View style={styles.channelInfo}>
-                  <Text style={[styles.channelTitle, selectedMediaId === media.id && styles.channelTitleActive]} numberOfLines={1}>
-                    {media.title}
-                  </Text>
-                  {currentProgram && (
-                    <Text style={styles.channelProgram} numberOfLines={1}>
-                      {currentProgram.title}
-                    </Text>
-                  )}
-                  <Text style={styles.channelSubtitle} numberOfLines={1}>
-                    {media.category}
-                  </Text>
-                </View>
-              </View>
-            </TouchableHighlight>
-          </div>
-        );
-      })}
-    </div>
-  );
-});
-
-export const LiveTVGrid: React.FC<LiveTVGridProps> = ({ categories, onPlayFull, layout, externalMedia, isGlobalPlayerActive }) => {
+export const LiveTVGrid: React.FC<LiveTVGridProps> = ({ categories, onPlayFull, layout, externalMedia, isGlobalPlayerActive, section = 'live' }) => {
   const favorites = useStore((state) => state.favorites);
   const epgData = useStore((state) => state.epgData);
   const setSelectedCategoryName = useStore((state) => state.setSelectedCategoryName);
   const setVisibleItems = useStore((state) => state.setVisibleItems);
+  const lastLiveChannel = useStore((state) => state.lastLiveChannel);
+  const setLastLiveChannel = useStore((state) => state.setLastLiveChannel);
+  // As categorias ja chegam filtradas pelo useMediaFilter (live, sports, etc.)
+  // Nao filtrar novamente por type para suportar categorias de esportes e outras
   const liveCategories = useMemo(
-    () => categories.filter((c) => c.type === 'live'),
+    () => categories,
     [categories],
   );
 
-  const [selectedCatId, setSelectedCatId] = useState<string | null>(null);
+  // Sincronizar estado inicial com o último canal salvo imediatamente
+  const initialSavedEntry = useMemo(() => {
+    if (lastLiveChannel && lastLiveChannel.section === section) {
+      for (const cat of categories) {
+        const item = cat.items.find((i) => i.id === lastLiveChannel.mediaId);
+        if (item) return { media: item, categoryId: cat.id };
+      }
+    }
+    return null;
+  }, [categories, lastLiveChannel, section]);
+
+  const [selectedCatId, setSelectedCatId] = useState<string | null>(initialSavedEntry?.categoryId || null);
   const [page, setPage] = useState(0);
   const [categoryItems, setCategoryItems] = useState<Media[]>([]);
-  const [selectedMediaId, setSelectedMediaId] = useState<string | null>(null);
-  const [previewMedia, setPreviewMedia] = useState<Media | null>(null);
+  const [selectedMediaId, setSelectedMediaId] = useState<string | null>(initialSavedEntry?.media.id || null);
+  const [previewMedia, setPreviewMedia] = useState<Media | null>(initialSavedEntry?.media || null);
   const [searchQuery, setSearchQuery] = useState('');
   const [now, setNow] = useState(() => Date.now());
   const openingFullscreenRef = useRef(false);
@@ -185,7 +88,10 @@ export const LiveTVGrid: React.FC<LiveTVGridProps> = ({ categories, onPlayFull, 
   const [focusColumn, setFocusColumn] = useState<LiveTvFocusColumn>('groups');
   const [focusedGroupIndex, setFocusedGroupIndex] = useState(0);
   const [focusedChannelIndex, setFocusedChannelIndex] = useState(0);
-  const groupsListRef = useRef<FlatList<Category> | null>(null);
+  const [showDiagnostic, setShowDiagnostic] = useState(false);
+  const previewFailureCountRef = useRef(0);
+  const previewTriedKeysRef = useRef<Set<string>>(new Set());
+  const groupsListRef = useRef<HTMLDivElement | null>(null);
   const channelsListRef = useRef<HTMLDivElement | null>(null);
   const selectedCategory = useMemo(
     () => liveCategories.find((c) => c.id === selectedCatId) || null,
@@ -232,6 +138,7 @@ export const LiveTVGrid: React.FC<LiveTVGridProps> = ({ categories, onPlayFull, 
       return;
     }
 
+    // Se tivermos restaurado o initialSavedEntry, ele já será o selectedCatId na inicialização
     setSelectedCatId(liveCategories[0].id);
     setFocusedGroupIndex(0);
   }, [liveCategories, selectedCatId]);
@@ -271,12 +178,182 @@ export const LiveTVGrid: React.FC<LiveTVGridProps> = ({ categories, onPlayFull, 
     setVisibleItems(categoryItems.slice(0, 80));
   }, [categoryItems, setVisibleItems]);
 
+  const globalPreviewPool = useMemo<LivePreviewPoolEntry[]>(() => {
+    const seen = new Set<string>();
+    const pool: LivePreviewPoolEntry[] = [];
+
+    const addItem = (item: Media, categoryId: string) => {
+      if (!item.videoUrl) return;
+      const key = `${item.id}::${item.videoUrl}`;
+      if (seen.has(key)) return;
+      seen.add(key);
+      pool.push({ media: item, categoryId });
+    };
+
+    for (const category of liveCategories) {
+      for (const item of category.items) {
+        addItem(item, category.id);
+      }
+    }
+
+    if (selectedCatId && categoryItems.length > 0) {
+      for (const item of categoryItems) {
+        addItem(item, selectedCatId);
+      }
+    }
+
+    return pool;
+  }, [categoryItems, liveCategories, selectedCatId]);
+
+  useEffect(() => {
+    console.info(
+      `[LiveTVGrid] Contexto live: grupos=${liveCategories.length} canaisNoPool=${globalPreviewPool.length} filtroAtual=${selectedCatId || 'none'}`,
+    );
+  }, [globalPreviewPool.length, liveCategories.length, selectedCatId]);
+
+  // Auto-preview: ao entrar na grade, restaurar o último canal visitado ou iniciar um aleatório
+  const hasAutoPreviewedRef = useRef<string | null>(null);
+  const autoPreviewActiveRef = useRef(false);
+  const autoPreviewTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  
+  useEffect(() => {
+    if (globalPreviewPool.length === 0) {
+      return;
+    }
+    if (externalMedia) return;
+
+    if (hasAutoPreviewedRef.current) return;
+    hasAutoPreviewedRef.current = 'done';
+
+    // RESTAURAR ÚLTIMO CANAL: Se o usuário já visitou um canal nesta seção antes
+    // Como inicializamos no useState (initialSavedEntry), apenas pulamos se tiver sucesso
+    if (initialSavedEntry) {
+       console.info(
+         `[LiveTVGrid] Último canal já restaurado de forma síncrona: "${initialSavedEntry.media.title}"`,
+       );
+       activePreviewChannelIdRef.current = initialSavedEntry.media.id;
+       autoPreviewActiveRef.current = false;
+       previewTriedKeysRef.current = new Set([`${initialSavedEntry.media.id}::${initialSavedEntry.media.videoUrl}`]);
+       setFocusColumn('channels');
+       return;
+    }
+
+    // FALLBACK: se não há canal salvo, selecionar aleatório
+    const randomEntry = globalPreviewPool[Math.floor(Math.random() * globalPreviewPool.length)];
+    if (!randomEntry?.media?.videoUrl) {
+      return;
+    }
+    const randomItem = randomEntry.media;
+    const randomCategoryId = randomEntry.categoryId || selectedCatId || 'default';
+    
+    if (autoPreviewTimerRef.current) clearTimeout(autoPreviewTimerRef.current);
+    autoPreviewTimerRef.current = setTimeout(() => {
+      previewFailureCountRef.current = 0;
+      console.info(
+        `[LiveTVGrid] Auto-preview canal selecionado categoria=${randomCategoryId} total=${globalPreviewPool.length} canal="${randomItem.title}" canalId=${randomItem.id}`,
+      );
+      if (randomCategoryId && randomCategoryId !== selectedCatId) {
+        setSelectedCatId(randomCategoryId);
+      }
+      activePreviewChannelIdRef.current = randomItem.id;
+      autoPreviewActiveRef.current = true;
+      previewTriedKeysRef.current = new Set([`${randomItem.id}::${randomItem.videoUrl}`]);
+      setSelectedMediaId(randomItem.id);
+      setPreviewMedia(randomItem);
+      setFocusColumn('channels');
+    }, 800);
+    
+    return () => {
+      if (autoPreviewTimerRef.current) {
+        clearTimeout(autoPreviewTimerRef.current);
+        autoPreviewTimerRef.current = null;
+      }
+    };
+  }, [externalMedia, globalPreviewPool, selectedCatId, lastLiveChannel, section]);
+
   const filteredItems = useMemo(() => {
     if (!searchQuery.trim()) return categoryItems;
     return categoryItems.filter((i) =>
       i.title.toLowerCase().includes(searchQuery.toLowerCase()),
     );
   }, [categoryItems, searchQuery]);
+
+  const handlePreviewPlaybackFailed = useCallback((failedUrl: string) => {
+    if (isGlobalPlayerActive) return;
+
+    const pool = globalPreviewPool;
+    if (pool.length <= 1) return;
+
+    const currentPreview = previewMedia;
+    const currentEntry = pool.find(({ media: item }) =>
+      currentPreview
+        ? item.id === currentPreview.id || item.videoUrl === currentPreview.videoUrl
+        : item.videoUrl === failedUrl,
+    );
+    const currentCategoryId = currentEntry?.categoryId || selectedCatId || null;
+    const currentKey = currentPreview ? `${currentPreview.id}::${currentPreview.videoUrl}` : null;
+
+    let candidatePool = pool.filter(({ media }) => {
+      const key = `${media.id}::${media.videoUrl}`;
+      if (currentKey && key === currentKey) return false;
+      return !previewTriedKeysRef.current.has(key);
+    });
+
+    if (candidatePool.length === 0) {
+      previewTriedKeysRef.current.clear();
+      candidatePool = pool.filter(({ media }) => {
+        const key = `${media.id}::${media.videoUrl}`;
+        return !currentKey || key !== currentKey;
+      });
+    }
+
+    const differentGroupCandidates =
+      currentCategoryId
+        ? candidatePool.filter((entry) => entry.categoryId !== currentCategoryId)
+        : candidatePool;
+    const effectiveCandidates =
+      differentGroupCandidates.length > 0 ? differentGroupCandidates : candidatePool;
+
+    if (effectiveCandidates.length === 0) {
+      return;
+    }
+
+    const nextEntry = effectiveCandidates[Math.floor(Math.random() * effectiveCandidates.length)];
+    const nextMedia = nextEntry?.media;
+    if (!nextMedia || (currentPreview && nextMedia.id === currentPreview.id)) {
+      return;
+    }
+
+    previewFailureCountRef.current += 1;
+    
+    // Se o usuário selecionou manualmente, não pulamos para outro canal automaticamente.
+    // O VideoPlayer mostrará o overlay de "Sem Sinal" e o usuário decide o que fazer.
+    if (!autoPreviewActiveRef.current) {
+      console.warn(`[LiveTVGrid] Falha no canal selecionado manualmente. Mantendo seleção para diagnóstico.`);
+      return;
+    }
+
+    const maxFailures = 0; // Para auto-preview, falhou uma vez, já pula.
+
+    if (previewFailureCountRef.current > maxFailures) {
+      console.warn(
+        `[LiveTVGrid] Auto-preview interrompido. Falhas: ${previewFailureCountRef.current}.`,
+      );
+      return;
+    }
+
+    console.warn(
+      `[LiveTVGrid] Preview falhou para url="${failedUrl}". Tentando canal alternativo "${nextMedia.title}" (${nextMedia.id}) grupo=${nextEntry.categoryId}.`,
+    );
+    previewTriedKeysRef.current.add(`${nextMedia.id}::${nextMedia.videoUrl}`);
+    if (nextEntry.categoryId && nextEntry.categoryId !== selectedCatId) {
+      setSelectedCatId(nextEntry.categoryId);
+    }
+    activePreviewChannelIdRef.current = nextMedia.id;
+    autoPreviewActiveRef.current = true;
+    setSelectedMediaId(nextMedia.id);
+    setPreviewMedia(nextMedia);
+  }, [globalPreviewPool, isGlobalPlayerActive, previewMedia, selectedCatId]);
 
   useEffect(() => {
     if (!selectedCatId) {
@@ -306,20 +383,22 @@ export const LiveTVGrid: React.FC<LiveTVGridProps> = ({ categories, onPlayFull, 
     }
   }, [filteredItems.length, focusColumn, focusedChannelIndex, loadMoreChannels]);
 
+  const flatListChannelsRef = useRef<HTMLDivElement | null>(null);
+
   useEffect(() => {
-    const node = channelsListRef.current;
-    if (!node) return;
-
-    const handleScroll = () => {
-      const nearBottom = node.scrollTop + node.clientHeight >= node.scrollHeight - 260;
-      if (nearBottom) {
-        loadMoreChannels();
+    if (focusColumn !== 'channels') return;
+    const list = flatListChannelsRef.current;
+    if (list && focusedChannelIndex >= 0 && focusedChannelIndex < filteredItems.length) {
+      try {
+        const itemNode = list.children[focusedChannelIndex] as HTMLElement;
+        if (itemNode) {
+            itemNode.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        }
+      } catch (error) {
+        void error;
       }
-    };
-
-    node.addEventListener('scroll', handleScroll);
-    return () => node.removeEventListener('scroll', handleScroll);
-  }, [loadMoreChannels]);
+    }
+  }, [focusedChannelIndex, focusColumn, filteredItems.length]);
 
   useEffect(() => {
     const list = groupsListRef.current;
@@ -328,12 +407,17 @@ export const LiveTVGrid: React.FC<LiveTVGridProps> = ({ categories, onPlayFull, 
     }
 
     try {
-      list.scrollToIndex({ index: focusedGroupIndex, animated: true, viewPosition: 0.3 });
-    } catch (e) {}
+        const itemNode = list.children[focusedGroupIndex] as HTMLElement;
+        if (itemNode) {
+            itemNode.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        }
+    } catch (error) {
+      void error;
+    }
   }, [focusedGroupIndex, liveCategories.length]);
 
 
-  const openFullScreen = async (media: Media) => {
+  const openFullScreen = useCallback(async (media: Media) => {
     if (openingFullscreenRef.current) {
       return;
     }
@@ -361,7 +445,7 @@ export const LiveTVGrid: React.FC<LiveTVGridProps> = ({ categories, onPlayFull, 
         setIsPromotingToFullscreen(false);
       }, 500);
     }, 60);
-  };
+  }, [onPlayFull]);
 
   useEffect(() => {
     if (!isGlobalPlayerActive) {
@@ -372,24 +456,39 @@ export const LiveTVGrid: React.FC<LiveTVGridProps> = ({ categories, onPlayFull, 
     setIsPromotingToFullscreen(false);
   }, [isGlobalPlayerActive]);
 
-  const handleMediaClick = (media: Media) => {
-    const isSecondClickOnSameChannel = activePreviewChannelIdRef.current === media.id;
+  const handleMediaClick = useCallback((media: Media) => {
+    const isSameChannel = activePreviewChannelIdRef.current === media.id;
+    const wasAutoStarted = autoPreviewActiveRef.current;
 
-    if (isSecondClickOnSameChannel) {
-      // Second click: Full screen
+    // Se o canal atual foi auto-iniciado, o primeiro clique do usuario deve apenas
+    // "confirmar" a selecao (manter na preview), nao abrir fullscreen
+    if (isSameChannel && !wasAutoStarted) {
+      // Second click on manually selected channel: Full screen
       void openFullScreen(media);
     } else {
-      // First click: Preview
+      // First click (or click on auto-previewed channel): Preview
       openingFullscreenRef.current = false;
       setIsPromotingToFullscreen(false);
       setFocusColumn('channels');
       activePreviewChannelIdRef.current = media.id;
+      autoPreviewActiveRef.current = false; // Usuario assumiu o controle
+      previewFailureCountRef.current = 0;
+      previewTriedKeysRef.current = new Set([`${media.id}::${media.videoUrl}`]);
       setSelectedMediaId(media.id);
       setPreviewMedia(media);
-    }
-  };
 
-  const { registerNode, setFocusedId } = useTvNavigation({ isActive: true });
+      // PERSISTIR último canal selecionado
+      setLastLiveChannel({
+        categoryId: selectedCatId || '',
+        mediaId: media.id,
+        mediaTitle: media.title,
+        section,
+        timestamp: Date.now(),
+      });
+    }
+  }, [openFullScreen, setLastLiveChannel, selectedCatId, section]);
+
+  const { registerNode, setFocusedId, focusedId } = useTvNavigation({ isActive: true, subscribeFocused: true });
 
   // Register Groups and Channels
   useEffect(() => {
@@ -415,11 +514,13 @@ export const LiveTVGrid: React.FC<LiveTVGridProps> = ({ categories, onPlayFull, 
         onFocus: () => {
           setFocusColumn('channels');
           setFocusedChannelIndex(index);
-          setSelectedMediaId(media.id);
-          setPreviewMedia(media);
-          activePreviewChannelIdRef.current = media.id;
+          // Highlight só visual (cursor/seleção de borda)
+          // Mas não carrega a mídia ainda (evita auto-play lagged) nem salta pra tela cheia no primeiro Enter
         },
-        onEnter: () => handleMediaClick(media)
+        onEnter: () => {
+          setFocusColumn('channels');
+          handleMediaClick(media);
+        }
       }));
     });
 
@@ -431,8 +532,14 @@ export const LiveTVGrid: React.FC<LiveTVGridProps> = ({ categories, onPlayFull, 
       }));
     }
 
+    // Register Diagnostic Button
+    unregisterList.push(registerNode('tv-btn-diagnostic', null, 'body', {
+      onFocus: () => setFocusColumn('channels'),
+      onEnter: () => setShowDiagnostic(true)
+    }));
+
     return () => unregisterList.forEach(u => u());
-  }, [liveCategories, filteredItems, registerNode, previewMedia, setFocusedId]);
+  }, [liveCategories, filteredItems, registerNode, previewMedia, setFocusedId, handleMediaClick, openFullScreen]);
 
   if (liveCategories.length === 0) {
     return (
@@ -442,24 +549,22 @@ export const LiveTVGrid: React.FC<LiveTVGridProps> = ({ categories, onPlayFull, 
     );
   }
 
+  const shouldRenderSideMenu = (!layout.isMobile || layout.isTvProfile);
+  const sideMenuOffset = shouldRenderSideMenu ? layout.sideRailCollapsedWidth : 0;
+
   return (
-    <View style={styles.container}>
+    <View style={[styles.container, { paddingLeft: sideMenuOffset }]}>
       {/* Groups Column */}
       <View style={styles.groupsColumn}>
         <View style={styles.columnHeader}>
           <Radio size={20} color="#E50914" />
           <Text style={styles.columnTitle}>GRUPOS</Text>
         </View>
-        <FlatList
-          ref={groupsListRef}
-          data={liveCategories}
-          keyExtractor={cat => cat.id}
-          showsVerticalScrollIndicator={false}
-          contentContainerStyle={{ paddingBottom: 40 }}
-          removeClippedSubviews={true}
-          initialNumToRender={20}
-          onScrollToIndexFailed={() => {}}
-          renderItem={({ item: cat, index }) => (
+        <div
+          ref={groupsListRef as React.RefObject<HTMLDivElement>}
+          style={{ flex: 1, overflowY: 'auto', overflowX: 'hidden', paddingBottom: 72 }}
+        >
+          {liveCategories.map((cat, index) => (
             <TouchableHighlight
               key={cat.id}
               id={`tv-group-${cat.id}`}
@@ -470,7 +575,11 @@ export const LiveTVGrid: React.FC<LiveTVGridProps> = ({ categories, onPlayFull, 
                 setSelectedCatId(cat.id);
                 setSearchQuery('');
                 setFocusedChannelIndex(0);
-                setFocusedId(`tv-group-${cat.id}`);
+                try {
+                  setFocusedId(`tv-channel-${cat.id}`);
+                } catch (error) {
+                  void error;
+                }
               }}
               underlayColor="rgba(255,255,255,0.05)"
               style={[
@@ -489,8 +598,8 @@ export const LiveTVGrid: React.FC<LiveTVGridProps> = ({ categories, onPlayFull, 
                 {selectedCatId === cat.id && <ChevronRight size={16} color="#E50914" />}
               </View>
             </TouchableHighlight>
-          )}
-        />
+          ))}
+        </div>
       </View>
 
       {/* Channels Column */}
@@ -505,31 +614,91 @@ export const LiveTVGrid: React.FC<LiveTVGridProps> = ({ categories, onPlayFull, 
               onChange={(e) => setSearchQuery(e.target.value)}
             />
           </View>
+          <TouchableHighlight
+            id="tv-btn-diagnostic"
+            data-nav-id="tv-btn-diagnostic"
+            onPress={() => setShowDiagnostic(true)}
+            underlayColor="rgba(255,255,255,0.05)"
+            style={[
+              styles.diagnosticButton,
+              focusedId === 'tv-btn-diagnostic' && styles.diagnosticButtonFocused
+            ]}
+          >
+            <View style={styles.diagnosticButtonInner}>
+              <Activity size={16} color={focusedId === 'tv-btn-diagnostic' ? '#ffffff' : 'rgba(255,255,255,0.6)'} />
+              <Text style={[styles.diagnosticButtonText, focusedId === 'tv-btn-diagnostic' && styles.diagnosticButtonTextFocused]}>Diagnóstico</Text>
+            </View>
+          </TouchableHighlight>
         </View>
         <div
-          ref={channelsListRef}
-          style={{
-            flex: 1,
-            overflowY: 'auto',
-            overflowX: 'hidden',
+          ref={flatListChannelsRef as React.RefObject<HTMLDivElement>}
+          style={{ flex: 1, overflowY: 'auto', overflowX: 'hidden', paddingBottom: 40 }}
+          onScroll={(e) => {
+            const node = e.currentTarget;
+            if (node.scrollTop + node.clientHeight >= node.scrollHeight - 260) {
+              loadMoreChannels();
+            }
           }}
         >
-          <VirtualizedChannelsList 
-            items={filteredItems}
-            scrollParentRef={channelsListRef}
-            favorites={favorites}
-            epgData={epgData}
-            now={now}
-            focusColumn={focusColumn}
-            focusedChannelIndex={focusedChannelIndex}
-            selectedMediaId={selectedMediaId}
-            onChannelPress={(media, index) => {
-              setFocusColumn('channels');
-              setFocusedChannelIndex(index);
-              handleMediaClick(media);
-              setFocusedId(`tv-channel-${media.id}`);
-            }}
-          />
+          {filteredItems.map((media, index) => {
+            const isFavorite = favorites.includes(media.videoUrl || `media:${media.id}`) || favorites.includes(media.id);
+            const channelPrograms = (media.tvgId && epgData?.[media.tvgId]) || (media.tvgName && epgData?.[media.tvgName]) || [];
+            const currentProgram = channelPrograms.find((program) => now >= program.start && now < program.stop);
+
+            return (
+              <TouchableHighlight
+                key={media.id}
+                id={`tv-channel-${media.id}`}
+                data-nav-id={`tv-channel-${media.id}`}
+                onPress={() => {
+                  setFocusColumn('channels');
+                  setFocusedChannelIndex(index);
+                  handleMediaClick(media);
+                  try {
+                    setFocusedId(`tv-channel-${media.id}`);
+                  } catch (error) {
+                    void error;
+                  }
+                }}
+                underlayColor="rgba(255,255,255,0.05)"
+                style={[
+                  styles.channelItem,
+                  selectedMediaId === media.id && styles.channelItemActive,
+                  focusColumn === 'channels' && focusedChannelIndex === index && styles.channelItemFocused
+                ]}
+              >
+                <View style={styles.channelItemInner}>
+                  <View style={styles.itemThumbnailContainer}>
+                    <LiveItemThumbnail uri={media.thumbnail} />
+                    {isFavorite && (
+                      <View style={styles.favoriteBadge}>
+                        <Heart size={11} color="#ffffff" fill="#E50914" />
+                      </View>
+                    )}
+                    {selectedMediaId === media.id && (
+                      <View style={styles.playingIndicator}>
+                        <View style={styles.pulse} />
+                      </View>
+                    )}
+                  </View>
+                  <View style={styles.channelInfo}>
+                    <Text style={[styles.channelTitle, selectedMediaId === media.id && styles.channelTitleActive]} numberOfLines={1}>
+                      {media.title}
+                    </Text>
+                    {currentProgram && (
+                      <Text style={styles.channelProgram} numberOfLines={1}>
+                        {currentProgram.title}
+                      </Text>
+                    )}
+                    <Text style={styles.channelSubtitle} numberOfLines={1}>
+                      {media.category}
+                    </Text>
+                  </View>
+                </View>
+              </TouchableHighlight>
+            );
+          })}
+          
           {pageLoading && (
             <View style={styles.channelListLoading}>
               <Text style={styles.channelListLoadingText}>Carregando mais canais...</Text>
@@ -565,6 +734,7 @@ export const LiveTVGrid: React.FC<LiveTVGridProps> = ({ categories, onPlayFull, 
                      url={previewMedia.videoUrl} 
                      mediaType="live"
                      media={previewMedia}
+                     onPreviewPlaybackFailed={handlePreviewPlaybackFailed}
                      onClose={() => {
                        if (!openingFullscreenRef.current) {
                          activePreviewChannelIdRef.current = null;
@@ -607,6 +777,12 @@ export const LiveTVGrid: React.FC<LiveTVGridProps> = ({ categories, onPlayFull, 
             </View>
           )}
         </AnimatePresence>
+      {showDiagnostic && (
+        <NetworkDiagnostic 
+          onClose={() => setShowDiagnostic(false)} 
+          testUrl={previewMedia?.videoUrl}
+        />
+      )}
       </View>
     </View>
   );
@@ -619,88 +795,132 @@ const styles = StyleSheet.create({
     backgroundColor: 'transparent',
     gap: 0,
     overflow: 'hidden',
-    height: '100%', // Ensure it fills screen even if flex 1 is tricky
+    height: '100%',
   },
   groupsColumn: {
-    width: 240,
-    backgroundColor: 'rgba(255,255,255,0.03)',
-    borderRightWidth: 1,
-    borderRightColor: 'rgba(255,255,255,0.05)',
-  },
-  channelsColumn: {
-    width: 340,
+    flex: 0.22,
+    height: '100%',
     backgroundColor: 'rgba(255,255,255,0.02)',
     borderRightWidth: 1,
-    borderRightColor: 'rgba(255,255,255,0.05)',
+    borderRightColor: 'rgba(255,255,255,0.06)',
+  },
+  channelsColumn: {
+    flex: 0.28,
+    height: '100%',
+    backgroundColor: 'rgba(255,255,255,0.015)',
+    borderRightWidth: 1,
+    borderRightColor: 'rgba(255,255,255,0.06)',
   },
   playerSection: {
-    flex: 1,
+    flex: 0.50,
     padding: 0,
     justifyContent: 'flex-start',
     alignItems: 'stretch',
     backgroundColor: '#000',
   },
   columnHeader: {
-    padding: 24,
+    padding: 20,
+    paddingBottom: 16,
     flexDirection: 'row',
     alignItems: 'center',
     gap: 12,
     borderBottomWidth: 1,
-    borderBottomColor: 'rgba(255,255,255,0.05)',
-    marginBottom: 10,
+    borderBottomColor: 'rgba(255,255,255,0.06)',
+    marginBottom: 8,
   },
   columnTitle: {
-    color: 'rgba(255,255,255,0.5)',
-    fontSize: 12,
+    color: 'rgba(255,255,255,0.45)',
+    fontSize: 11,
     fontWeight: '900',
-    letterSpacing: 2,
+    letterSpacing: 2.5,
     fontFamily: 'Outfit',
+    textTransform: 'uppercase',
   },
   groupItem: {
     paddingHorizontal: 16,
-    marginHorizontal: 8,
-    marginVertical: 2,
-    borderRadius: 8,
+    paddingTop: 6,
+    paddingBottom: 10,
+    marginHorizontal: 10,
+    marginTop: 3,
+    marginBottom: 7,
+    borderRadius: 12,
   },
   groupItemActive: {
-    backgroundColor: 'rgba(229,9,20,0.1)',
+    backgroundColor: 'rgba(229,9,20,0.12)',
   },
   groupItemFocused: {
-    borderWidth: 1,
-    borderColor: 'rgba(59,130,246,0.65)',
+    borderWidth: 1.5,
+    borderColor: 'rgba(59,130,246,0.7)',
+    backgroundColor: 'rgba(59,130,246,0.08)',
   },
   groupItemInner: {
     flexDirection: 'row',
     alignItems: 'center',
-    paddingVertical: 12,
-    gap: 12,
+    paddingTop: 12,
+    paddingBottom: 18,
+    gap: 14,
   },
   groupText: {
     flex: 1,
-    color: 'rgba(255,255,255,0.6)',
-    fontSize: 14,
-    fontWeight: '600',
+    color: 'rgba(255,255,255,0.55)',
+    fontSize: 13,
+    fontWeight: '700',
     fontFamily: 'Outfit',
+    letterSpacing: 0.3,
   },
   groupTextActive: {
-    color: 'white',
+    color: '#ffffff',
+    fontWeight: '800',
   },
   itemCount: {
     fontSize: 11,
     color: 'rgba(255,255,255,0.2)',
     fontWeight: '700',
-    minWidth: 24,
+    minWidth: 28,
     textAlign: 'center',
+    backgroundColor: 'rgba(255,255,255,0.06)',
+    borderRadius: 6,
+    paddingVertical: 3,
+    paddingHorizontal: 6,
+    overflow: 'hidden',
   },
   searchContainer: {
     flex: 1,
     flexDirection: 'row',
     alignItems: 'center',
     gap: 10,
+    backgroundColor: 'rgba(255,255,255,0.06)',
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.06)',
+  },
+  diagnosticButton: {
+    paddingVertical: 10,
+    paddingHorizontal: 16,
+    borderRadius: 12,
     backgroundColor: 'rgba(255,255,255,0.05)',
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.08)',
+  },
+  diagnosticButtonFocused: {
+    backgroundColor: '#E50914',
+    borderColor: '#E50914',
+  },
+  diagnosticButtonInner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  diagnosticButtonText: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: 'rgba(255,255,255,0.5)',
+    letterSpacing: 0.5,
+  },
+  diagnosticButtonTextFocused: {
+    color: '#ffffff',
   },
   searchInput: {
     flex: 1,
@@ -712,44 +932,55 @@ const styles = StyleSheet.create({
     outlineStyle: 'none',
   } as any,
   channelListLoading: {
-    paddingVertical: 14,
+    paddingVertical: 20,
     alignItems: 'center',
     justifyContent: 'center',
   },
   channelListLoadingText: {
-    color: 'rgba(255,255,255,0.55)',
+    color: 'rgba(255,255,255,0.45)',
     fontSize: 12,
     fontWeight: '700',
     letterSpacing: 0.8,
     fontFamily: 'Outfit',
   },
   channelItem: {
-    paddingHorizontal: 16,
-    marginHorizontal: 8,
-    marginVertical: 2,
-    borderRadius: 10,
+    paddingHorizontal: 14,
+    paddingVertical: 4,
+    marginHorizontal: 10,
+    marginVertical: 3,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: 'transparent',
   },
   channelItemActive: {
-    backgroundColor: 'rgba(255,255,255,0.05)',
+    backgroundColor: 'rgba(255,255,255,0.06)',
+    borderColor: 'rgba(255,255,255,0.08)',
   },
   channelItemFocused: {
-    borderWidth: 2,
-    borderColor: '#E50914',
-    backgroundColor: 'rgba(229,9,20,0.1)',
+    borderWidth: 1,
+    borderColor: 'rgba(229,9,20,0.55)',
+    backgroundColor: 'rgba(229,9,20,0.08)',
+    shadowColor: '#E50914',
+    shadowOpacity: 0.12,
+    shadowRadius: 4,
+    shadowOffset: { width: 0, height: 0 },
+    boxShadow: '0 0 4px rgba(229,9,20,0.18)',
   },
   channelItemInner: {
     flexDirection: 'row',
     alignItems: 'center',
-    paddingVertical: 10,
-    gap: 16,
+    paddingVertical: 12,
+    gap: 14,
   },
   itemThumbnailContainer: {
-    width: 48,
+    width: 52,
     aspectRatio: '1/1',
-    borderRadius: 8,
+    borderRadius: 12,
     overflow: 'hidden',
     backgroundColor: '#1a1a1a',
     position: 'relative',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.08)',
   },
   itemThumbnail: {
     width: '100%',
@@ -758,14 +989,14 @@ const styles = StyleSheet.create({
   },
   favoriteBadge: {
     position: 'absolute',
-    top: 4,
-    right: 4,
-    width: 18,
-    height: 18,
-    borderRadius: 9,
-    backgroundColor: 'rgba(0,0,0,0.78)',
-    borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.16)',
+    top: -2,
+    right: -2,
+    width: 20,
+    height: 20,
+    borderRadius: 10,
+    backgroundColor: 'rgba(0,0,0,0.85)',
+    borderWidth: 1.5,
+    borderColor: '#E50914',
     alignItems: 'center',
     justifyContent: 'center',
     zIndex: 2,
@@ -775,40 +1006,42 @@ const styles = StyleSheet.create({
     gap: 4,
   },
   channelTitle: {
-    color: 'rgba(255,255,255,0.8)',
+    color: 'rgba(255,255,255,0.85)',
     fontSize: 14,
     fontWeight: '700',
     fontFamily: 'Outfit',
+    letterSpacing: 0.2,
   },
   channelTitleActive: {
-    color: '#3B82F6',
+    color: '#60a5fa',
   },
   channelSubtitle: {
-    color: 'rgba(255,255,255,0.3)',
+    color: 'rgba(255,255,255,0.28)',
     fontSize: 11,
     fontFamily: 'Outfit',
+    letterSpacing: 0.3,
   },
   channelProgram: {
-    color: 'rgba(255,255,255,0.62)',
-    fontSize: 12,
+    color: 'rgba(255,255,255,0.55)',
+    fontSize: 11,
     fontWeight: '600',
     fontFamily: 'Outfit',
   },
   playingIndicator: {
     position: 'absolute',
     inset: 0,
-    backgroundColor: 'rgba(229,9,20,0.3)',
+    backgroundColor: 'rgba(229,9,20,0.25)',
     justifyContent: 'center',
     alignItems: 'center',
   },
   pulse: {
-    width: 6,
-    height: 6,
-    borderRadius: 3,
+    width: 8,
+    height: 8,
+    borderRadius: 4,
     backgroundColor: '#E50914',
     shadowColor: '#E50914',
     shadowOpacity: 1,
-    shadowRadius: 10,
+    shadowRadius: 12,
   },
   previewContainer: {
     flex: 1,

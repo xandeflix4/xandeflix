@@ -6,6 +6,7 @@ import { useStore } from '../store/useStore';
 import { isAdultCategory } from '../lib/adultContent';
 import { saveAdultAccessPassword, verifyAdultAccessPassword } from '../lib/adultAccess';
 import { clearPlaylistCache } from '../lib/localCache';
+import { clearTMDBMetadataCache } from '../lib/tmdbCache';
 import { usePlaylist } from '../hooks/usePlaylist';
 import { useTvNavigation } from '../hooks/useTvNavigation';
 
@@ -92,6 +93,19 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
       setFeedback('Lista sincronizada com sucesso!');
     } catch (error: any) {
       setFeedback(undefined, 'Falha ao sincronizar: ' + error.message);
+    } finally {
+      setLoadingAction(null);
+    }
+  };
+
+  const handleClearMetadataCache = async () => {
+    setLoadingAction('clear-tmdb');
+    setFeedback();
+    try {
+      await clearTMDBMetadataCache();
+      setFeedback('Cache de imagens e posters limpo!');
+    } catch (error: any) {
+      setFeedback(undefined, 'Erro ao limpar cache: ' + error.message);
     } finally {
       setLoadingAction(null);
     }
@@ -188,6 +202,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
 
     if (activeTab === 'general') {
       unregisterList.push(registerNode({ id: 'settings-sync', type: 'button', onEnter: () => void handleRefreshPlaylist(), onBack: onClose }));
+      unregisterList.push(registerNode({ id: 'settings-clear-tmdb', type: 'button', onEnter: () => void handleClearMetadataCache(), onBack: onClose }));
       unregisterList.push(registerNode({ id: 'settings-logout', type: 'button', onEnter: () => { if (onLogout) onLogout(); else window.location.reload(); }, onBack: onClose }));
     } else if (activeTab === 'categories') {
       allCategories.forEach(cat => unregisterList.push(registerNode({ id: `cat-item-${cat.id}`, type: 'item', onEnter: () => toggleLocalCategory(cat.id), onBack: onClose })));
@@ -423,6 +438,23 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                       </Text>
                     </View>
                   </TouchableHighlight>
+
+                  <TouchableHighlight
+                    onPress={handleClearMetadataCache}
+                    underlayColor="rgba(255,255,255,0.08)"
+                    style={[styles.secondaryButton, { marginTop: 12, width: '100%', borderColor: 'rgba(255,255,255,0.15)' }]}
+                    disabled={loadingAction === 'clear-tmdb'}
+                    data-nav-id="settings-clear-tmdb"
+                  >
+                    <View style={styles.buttonInner}>
+                      <span style={{ marginRight: 10 }}>
+                        <RotateCcw size={18} color="#aaa" />
+                      </span>
+                      <Text style={styles.buttonText}>
+                        {loadingAction === 'clear-tmdb' ? 'Limpando...' : 'Revalidar Capas e Metadados'}
+                      </Text>
+                    </View>
+                  </TouchableHighlight>
                 </View>
 
                 {statusMessage && activeTab === 'general' ? <View style={styles.successBox}><Text style={styles.noticeText}>{statusMessage}</Text></View> : null}
@@ -436,7 +468,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                     }
                   }}
                   underlayColor="rgba(239,68,68,0.1)"
-                  style={styles.secondaryButton}
+                  style={[styles.secondaryButton, { marginTop: 24 }]}
                   data-nav-id="settings-logout"
                 >
                   <View style={styles.buttonInner}>

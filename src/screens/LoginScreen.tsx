@@ -24,30 +24,30 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLoginSuccess }) => {
 
   const isTvProfile = layout.isTvProfile;
   const outerPaddingX = isTvProfile ? 18 : 20;
-  const outerPaddingTop = isTvProfile ? 24 : 20;
-  const outerPaddingBottom = isTvProfile ? 28 : 20;
-  const shellMaxWidth = isTvProfile ? 360 : layout.isMobile ? 360 : 440;
-  const logoSize = isTvProfile ? 48 : layout.isMobile ? 48 : 72;
-  const logoLetterSpacing = isTvProfile ? -3 : -4;
-  const logoMarginBottom = isTvProfile ? 2 : 4;
-  const taglineFontSize = isTvProfile ? 11 : 14;
-  const taglineLetterSpacing = isTvProfile ? 3 : 4;
-  const taglineMarginBottom = isTvProfile ? 18 : 48;
-  const panelPadding = isTvProfile ? 24 : layout.isMobile ? 24 : 48;
-  const panelRadius = isTvProfile ? 18 : 24;
-  const titleFontSize = isTvProfile ? 22 : layout.isMobile ? 24 : 32;
-  const introFontSize = isTvProfile ? 13 : 15;
-  const introLineHeight = isTvProfile ? '18px' : '22px';
-  const introMarginBottom = isTvProfile ? 18 : 40;
-  const fieldSpacing = isTvProfile ? 14 : 24;
-  const passwordSpacing = isTvProfile ? 18 : 32;
-  const labelFontSize = isTvProfile ? 11 : 12;
-  const inputFontSize = isTvProfile ? 14 : 16;
-  const inputPadding = isTvProfile ? '10px 12px' : '14px 16px';
-  const buttonFontSize = isTvProfile ? 15 : 20;
-  const buttonPadding = isTvProfile ? '13px 0' : '18px 0';
-  const footerMarginTop = isTvProfile ? 16 : 32;
-  const footerFontSize = isTvProfile ? 10 : 12;
+  const outerPaddingTop = isTvProfile ? 15 : 20;
+  const outerPaddingBottom = isTvProfile ? 15 : 20;
+  const shellMaxWidth = isTvProfile ? 320 : layout.isMobile ? 360 : 440;
+  const logoSize = isTvProfile ? 32 : layout.isMobile ? 48 : 72;
+  const logoLetterSpacing = isTvProfile ? -2.5 : -4;
+  const logoMarginBottom = isTvProfile ? 0 : 4;
+  const taglineFontSize = isTvProfile ? 9 : 14;
+  const taglineLetterSpacing = isTvProfile ? 2 : 4;
+  const taglineMarginBottom = isTvProfile ? 10 : 48;
+  const panelPadding = isTvProfile ? 16 : layout.isMobile ? 24 : 48;
+  const panelRadius = isTvProfile ? 14 : 24;
+  const titleFontSize = isTvProfile ? 18 : layout.isMobile ? 24 : 32;
+  const introFontSize = isTvProfile ? 12 : 15;
+  const introLineHeight = isTvProfile ? '16px' : '22px';
+  const introMarginBottom = isTvProfile ? 10 : 40;
+  const fieldSpacing = isTvProfile ? 8 : 24;
+  const passwordSpacing = isTvProfile ? 10 : 32;
+  const labelFontSize = isTvProfile ? 9 : 12;
+  const inputFontSize = isTvProfile ? 13 : 16;
+  const inputPadding = isTvProfile ? '8px 10px' : '14px 16px';
+  const buttonFontSize = isTvProfile ? 14 : 20;
+  const buttonPadding = isTvProfile ? '10px 0' : '18px 0';
+  const footerMarginTop = isTvProfile ? 12 : 32;
+  const footerFontSize = isTvProfile ? 8 : 12;
 
   useEffect(() => {
     console.log('[LoginScreen] Renderizado.');
@@ -56,9 +56,12 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLoginSuccess }) => {
   const focusInputField = (input: HTMLInputElement | null) => {
     if (!input) return;
     input.focus();
+    // Em alguns WebViews de TV, clicar no elemento ajuda a invocar o IME (teclado)
     input.click();
-    const cursorPos = input.value.length;
-    input.setSelectionRange(cursorPos, cursorPos);
+    // Garante que o cursor vá para o final
+    const val = input.value;
+    input.value = '';
+    input.value = val;
   };
 
   const handleLogin = async () => {
@@ -110,16 +113,16 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLoginSuccess }) => {
       style={{
         display: 'flex',
         flexDirection: 'column',
-        justifyContent: isTvProfile ? 'flex-start' : 'center',
+        justifyContent: 'center',
         alignItems: 'center',
         backgroundColor: '#050505',
-        minHeight: '100vh',
+        position: 'absolute',
+        inset: 0,
         paddingLeft: outerPaddingX,
         paddingRight: outerPaddingX,
         paddingTop: outerPaddingTop,
         paddingBottom: outerPaddingBottom,
-        position: 'relative',
-        overflowY: 'auto',
+        overflow: 'hidden',
       }}
     >
       <div

@@ -8,11 +8,8 @@ import {
   type FetchTMDBMetadataOptions,
 } from '../lib/tmdb';
 
-// Initialize IndexedDB TMDB Cache
-const tmdbStore = localforage.createInstance({
-  name: 'xandeflix',
-  storeName: 'tmdb_movie_cache'
-});
+import { tmdbStore } from '../lib/tmdbCache';
+
 
 const inFlightRequests = new Map<string, Promise<TMDBData | null>>();
 const TMDB_DEBOUNCE_MS = 220;
@@ -53,7 +50,8 @@ export const useTMDB = (
     }
 
     const cacheVariant = includeDetails ? 'full' : 'lite';
-    const cacheKey = `${TMDB_CACHE_VERSION}:${cacheVariant}:${type}:${normalizedTitle}:${year || 'none'}`;
+    const catHint = (options.categoryHint || '').toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 30);
+    const cacheKey = `${TMDB_CACHE_VERSION}:${cacheVariant}:${type}:${normalizedTitle}:${year || 'none'}:${catHint || 'nocat'}`;
     setData(null);
     setLoading(true);
     setError(null);
@@ -75,7 +73,7 @@ export const useTMDB = (
              const result = await fetchTMDBMetadata(
                year ? `${normalizedTitle} (${year})` : normalizedTitle,
                type as 'movie' | 'series',
-               { includeDetails },
+               { includeDetails, categoryHint: options.categoryHint },
              );
              if (result) await tmdbStore.setItem(cacheKey, result); // Persist!
              return result;

@@ -7,24 +7,78 @@ export interface CleanedMedia {
   cleanTitle: string;
   year?: string;
   originalTitle: string;
+  season?: number;
+  episode?: number;
+  isSeries?: boolean;
 }
+
+export const extractSeriesInfo = (title: string): { cleanTitle: string, season?: number, episode?: number } => {
+  let clean = title;
+  let season: number | undefined;
+  let episode: number | undefined;
+
+  // Padrões comuns: S01E01, S01 E01, EP 01, T1 E1, etc.
+  const patterns = [
+    /s(\d+)\s*e(\d+)/i,           // S01E01 ou S01 E01
+    /t(\d+)\s*e(\d+)/i,           // T01E01 ou T01 E01
+    /s(\d+)\s*ep(\d+)/i,          // S01EP01
+    /ep(\d+)/i,                  // EP01 (Assume season 1 se não houver)
+    /cap(?:itulo)?\s*(\d+)/i,    // CAP 01 ou Capitulo 01
+    /temporada\s*(\d+).*episodio\s*(\d+)/i, // Temporada 1 Episodio 1
+    /season\s*(\d+).*episode\s*(\d+)/i      // Season 1 Episode 1
+  ];
+
+  for (const p of patterns) {
+    const m = clean.match(p);
+    if (m) {
+      if (m[2]) {
+        season = parseInt(m[1], 10);
+        episode = parseInt(m[2], 10);
+      } else {
+        // Casos como EP01 sem temporada explícita
+        season = 1;
+        episode = parseInt(m[1], 10);
+      }
+      clean = clean.replace(p, '').trim();
+      break;
+    }
+  }
+
+  return { cleanTitle: clean, season, episode };
+};
 
 export const cleanMediaTitle = (rawTitle: string): CleanedMedia => {
   if (!rawTitle) return { cleanTitle: '', originalTitle: '' };
 
-  let title = rawTitle;
+  const seriesInfo = extractSeriesInfo(rawTitle);
+  let title = seriesInfo.cleanTitle;
+  let year: string | undefined;
 
-  // 1. Extrair o ano se estiver entre parenteses (ex: "Movie Name (2024)")
-  const yearMatch = title.match(/\((\d{4})\)/);
-  const year = yearMatch ? yearMatch[1] : undefined;
+  // 1. Extrair o ano em vários formatos possíveis
+  const yearPatterns = [
+    /\((\d{4})\)/,        // (2024)
+    /\[(\d{4})\]/,        // [2024]
+    /\s(\d{4})(?:\s|$)/,  // " 2024 " ou " 2024" no final
+    /-\s*(\d{4})(?:\s|$)/ // "- 2024" ou "-2024"
+  ];
 
-  // 2. Remover o ano e parenteses do titulo para a limpeza
-  title = title.replace(/\(\d{4}\)/g, '');
+  for (const pattern of yearPatterns) {
+    const match = title.match(pattern);
+    if (match) {
+      const candidate = match[1];
+      const yearNum = parseInt(candidate, 10);
+      if (yearNum >= 1900 && yearNum <= 2100) {
+        year = candidate;
+        title = title.replace(pattern, ' ');
+        break;
+      }
+    }
+  }
 
-  // 3. Remover Tags de Categoria/Lançamento (Ex: |LANCAMENTOS|, [VOD], |ACAO|)
-  title = title.replace(/\|[^|]+\||\[[^\]]+\]/g, '');
+  // 2. Remover Tags de Categoria/Lançamento
+  title = title.replace(/\|[^|]+\||\[[^\]]+\]/g, ' ');
 
-  // 4. Remover Resoluções e Qualidade (case insensitive)
+  // 4. Remover Resoluções e Qualidade
   const technicalTags = [
     /\bFHD\b/gi, /\b4K\b/gi, /\b1080P\b/gi, /\b720P\b/gi, /\bHD\b/gi, 
     /\bSD\b/gi, /\bUHD\b/gi, /\bCAM\b/gi, /\bTS\b/gi, /\bWEB-DL\b/gi, /\bBLURAY\b/gi
@@ -42,11 +96,11 @@ export const cleanMediaTitle = (rawTitle: string): CleanedMedia => {
     title = title.replace(regex, '');
   });
 
-  // 6. Limpeza final de espaços extras e caracteres residuais
+  // 6. Limpeza final
   title = title
-    .replace(/\s+/g, ' ')           // Espaços duplos
-    .replace(/^\s+|\s+$/g, '')      // Trim
-    .replace(/^[-.| ]+|[-.| ]+$/g, '') // Caracteres especiais no inicio/fim
+    .replace(/\s+/g, ' ')           
+    .replace(/^\s+|\s+$/g, '')      
+    .replace(/^[-.| ]+|[-.| ]+$/g, '') 
     .trim();
 
   if (title.length === 0) {
@@ -56,6 +110,9 @@ export const cleanMediaTitle = (rawTitle: string): CleanedMedia => {
   return {
     cleanTitle: title,
     year,
-    originalTitle: rawTitle
+    originalTitle: rawTitle,
+    season: seriesInfo.season,
+    episode: seriesInfo.episode,
+    isSeries: seriesInfo.season !== undefined
   };
 };

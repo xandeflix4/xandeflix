@@ -1,12 +1,14 @@
-import React, { useCallback, useEffect, useImperativeHandle, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react';
 import { Capacitor } from '@capacitor/core';
 import type { PluginListenerHandle } from '@capacitor/core';
 import { ScreenOrientation } from '@capacitor/screen-orientation';
 import { StatusBar } from '@capacitor/status-bar';
-import { LoaderCircle, X, Play, Pause, Volume2, VolumeX, FastForward, Rewind } from 'lucide-react';
+import { LoaderCircle, X, Play, Pause, Volume2, VolumeX, FastForward, Rewind, Activity } from 'lucide-react';
 import Hls from 'hls.js';
+import mpegts from 'mpegts.js';
 import type { Category, Media } from '../types';
 import { useStore } from '../store/useStore';
+import { NetworkDiagnostic } from './NetworkDiagnostic';
 import {
   NativeVideoPlayer,
   type NativeVideoPlayerEvent,
@@ -24,6 +26,7 @@ interface VideoPlayerProps {
   mediaType: string;
   media?: Media | null;
   onClose: () => void;
+  onPreviewPlaybackFailed?: (failedUrl: string) => void;
   onPreviewRequestFullscreen?: () => void;
   suppressNativePreviewExitOnUnmount?: boolean;
   nextEpisode?: Media | null;
@@ -106,9 +109,11 @@ function buildLivePreviewUrlCandidates(streamUrl: string, isLiveStream: boolean)
 
     const lower = trimmed.toLowerCase();
     const pathLower = parsed.pathname.toLowerCase();
+    const hasTsOutput =
+      parsed.searchParams.get('output')?.toLowerCase() === 'ts'
+      || parsed.searchParams.get('output')?.toLowerCase() === 'mpegts';
     const isTsLike =
-      lower.includes('output=ts') ||
-      lower.includes('output=mpegts') ||
+      hasTsOutput ||
       pathLower.endsWith('.ts') ||
       pathLower.endsWith('.mpegts');
 
@@ -120,28 +125,50 @@ function buildLivePreviewUrlCandidates(streamUrl: string, isLiveStream: boolean)
     removeOutput.searchParams.delete('output');
 
     const m3u8Path = new URL(originalUrl);
-    m3u8Path.pathname = m3u8Path.pathname.replace(/\.(?:ts|mpegts)$/i, '.m3u8');
+    // Se terminar em numero (ex: /715), tentamos /715.m3u8
+    if (m3u8Path.pathname.match(/\/\d+$/)) {
+      m3u8Path.pathname += '.m3u8';
+    } else {
+      m3u8Path.pathname = m3u8Path.pathname.replace(/\.(?:ts|mpegts)$/i, '.m3u8');
+    }
 
     const m3u8WithHls = new URL(m3u8Path.toString());
     m3u8WithHls.searchParams.set('output', 'hls');
 
+    const typeM3u8 = new URL(originalUrl);
+    typeM3u8.searchParams.set('type', 'm3u8');
+
     const ordered: string[] = [];
-    if (isTsLike) {
-      addUnique(ordered, m3u8WithHls.toString());
-      addUnique(ordered, m3u8Path.toString());
-      addUnique(ordered, forcedHls.toString());
-      addUnique(ordered, originalUrl);
-      addUnique(ordered, removeOutput.toString());
-    } else {
-      addUnique(ordered, originalUrl);
-      addUnique(ordered, forcedHls.toString());
-      addUnique(ordered, m3u8Path.toString());
+    
+    // 1. URL original pura primeiro (mpegts.js a decodifica via MSE)
+    addUnique(ordered, originalUrl);
+    // 2. Variações HLS como fallback (para hls.js)
+    addUnique(ordered, forcedHls.toString());
+    addUnique(ordered, typeM3u8.toString());
+    addUnique(ordered, m3u8WithHls.toString());
+    addUnique(ordered, m3u8Path.toString());
+    
+    if (!isTsLike) {
       addUnique(ordered, removeOutput.toString());
     }
 
     return ordered;
   } catch {
     return [trimmed];
+  }
+}
+
+function isLikelyHlsUrl(streamUrl: string): boolean {
+  try {
+    const parsed = new URL(streamUrl);
+    const pathLower = parsed.pathname.toLowerCase();
+    const output = (parsed.searchParams.get('output') || '').toLowerCase();
+    if (pathLower.endsWith('.m3u8')) return true;
+    if (output === 'hls' || output === 'm3u8') return true;
+    return false;
+  } catch {
+    const lower = streamUrl.toLowerCase();
+    return lower.includes('.m3u8') || lower.includes('output=hls') || lower.includes('output=m3u8');
   }
 }
 
@@ -285,12 +312,14 @@ export const VideoPlayer = React.forwardRef<VideoPlayerHandle, VideoPlayerProps>
       mediaType,
       media = null,
       onClose,
+      onPreviewPlaybackFailed,
       onPreviewRequestFullscreen,
       suppressNativePreviewExitOnUnmount = false,
       isMinimized = false,
       onToggleMinimize,
       isBrowseMode = false,
       isPreview = false,
+      showChannelSidebar = false,
       channelBrowserCategories,
       onPictureInPictureChange,
       onZap,
@@ -299,14 +328,91 @@ export const VideoPlayer = React.forwardRef<VideoPlayerHandle, VideoPlayerProps>
   ) => {
     const isNativePlatform = Capacitor.isNativePlatform();
     const isLiveStream = (media?.type || mediaType) === 'live';
+    const shouldUseNativePlayer = isNativePlatform && !isPreview && !showChannelSidebar;
     const savePlaybackProgress = useStore((state) => state.savePlaybackProgress);
+    const [isChannelBrowserOpen, setIsChannelBrowserOpen] = useState(false);
+    const [channelGroupId, setChannelGroupId] = useState<string | null>(null);
+    const [channelSearchQuery, setChannelSearchQuery] = useState('');
+    const channelListContainerRef = useRef<HTMLDivElement | null>(null);
 
+    const liveBrowserCategories = useMemo(() => {
+      const source = Array.isArray(channelBrowserCategories) ? channelBrowserCategories : [];
+      return source
+        .map((category) => ({
+          ...category,
+          items: category.items.filter((item) => item.type === 'live' && Boolean(item.videoUrl)),
+        }))
+        .filter((category) => category.items.length > 0);
+    }, [channelBrowserCategories]);
+
+    useEffect(() => {
+      if (!channelGroupId && liveBrowserCategories.length > 0) {
+        setChannelGroupId(liveBrowserCategories[0].id);
+      }
+    }, [channelGroupId, liveBrowserCategories]);
+
+    useEffect(() => {
+      if (!isLiveStream || liveBrowserCategories.length === 0) {
+        return;
+      }
+
+      const activeChannelKey = media?.id || url;
+      if (!activeChannelKey) {
+        return;
+      }
+
+      const matchingCategory = liveBrowserCategories.find((category) =>
+        category.items.some((item) => item.id === media?.id || item.videoUrl === url),
+      );
+
+      if (matchingCategory && matchingCategory.id !== channelGroupId) {
+        setChannelGroupId(matchingCategory.id);
+      }
+    }, [channelGroupId, isLiveStream, liveBrowserCategories, media?.id, url]);
+
+    const activeBrowserCategory = useMemo(
+      () => liveBrowserCategories.find((category) => category.id === channelGroupId) || liveBrowserCategories[0] || null,
+      [channelGroupId, liveBrowserCategories],
+    );
+
+    const browserChannels = useMemo(() => {
+      const items = activeBrowserCategory?.items || [];
+      const query = channelSearchQuery.trim().toLowerCase();
+      if (!query) return items;
+      return items.filter((item) => item.title.toLowerCase().includes(query));
+    }, [activeBrowserCategory, channelSearchQuery]);
+
+    const canShowChannelBrowser =
+      showChannelSidebar && isLiveStream && !isPreview && typeof onZap === 'function' && liveBrowserCategories.length > 0;
+
+    useEffect(() => {
+      if (!isChannelBrowserOpen || !canShowChannelBrowser) {
+        return;
+      }
+
+      const container = channelListContainerRef.current;
+      if (!container) {
+        return;
+      }
+
+      const rafId = requestAnimationFrame(() => {
+        const selectedNode = container.querySelector<HTMLButtonElement>('button[data-channel-selected="true"]');
+        if (selectedNode) {
+          selectedNode.scrollIntoView({ block: 'center', inline: 'nearest', behavior: 'auto' });
+        }
+      });
+
+      return () => cancelAnimationFrame(rafId);
+    }, [browserChannels.length, canShowChannelBrowser, channelGroupId, isChannelBrowserOpen, media?.id, url]);
+
+    const [showDiagnostic, setShowDiagnostic] = useState(false);
     const [playerState, setPlayerState] = useState<NativePlayerState>(
-      isNativePlatform ? 'opening' : 'error',
+      shouldUseNativePlayer ? 'opening' : 'error',
     );
     const [error, setError] = useState<string | null>(
-      isNativePlatform ? null : 'O player nativo esta disponivel apenas no app Android/Capacitor.',
+      shouldUseNativePlayer ? null : 'O player nativo esta disponivel apenas no app Android/Capacitor.',
     );
+    const [inlineError, setInlineError] = useState<string | null>(null);
 
     const listenerHandlesRef = useRef<PluginListenerHandle[]>([]);
     const progressIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -315,11 +421,17 @@ export const VideoPlayer = React.forwardRef<VideoPlayerHandle, VideoPlayerProps>
     const lastKnownTimeRef = useRef(0);
     const durationRef = useRef(0);
     const hlsRef = useRef<Hls | null>(null);
+    const mpegtsPlayerRef = useRef<mpegts.Player | null>(null);
+    const previewFailureHandlerRef = useRef<((failedUrl: string) => void) | undefined>(undefined);
     const sessionStartedAtRef = useRef(Date.now());
     const sessionUserIdRef = useRef<string | null>(null);
     const lastProgressSyncAtRef = useRef(0);
     const lastProgressSyncedTimeRef = useRef(0);
     const sessionResumePositionRef = useRef(0);
+
+    useEffect(() => {
+      previewFailureHandlerRef.current = onPreviewPlaybackFailed;
+    }, [onPreviewPlaybackFailed]);
 
     useEffect(() => {
       if (isLiveStream) {
@@ -477,7 +589,7 @@ export const VideoPlayer = React.forwardRef<VideoPlayerHandle, VideoPlayerProps>
     }, [isLiveStream, persistProgress]);
 
     const restoreSystemUi = useCallback(async () => {
-      if (!isNativePlatform) {
+      if (!shouldUseNativePlayer) {
         return;
       }
 
@@ -494,10 +606,10 @@ export const VideoPlayer = React.forwardRef<VideoPlayerHandle, VideoPlayerProps>
       }
 
       onPictureInPictureChange?.(false);
-    }, [isNativePlatform, onPictureInPictureChange]);
+    }, [onPictureInPictureChange, shouldUseNativePlayer]);
 
     const prepareSystemUi = useCallback(async () => {
-      if (!isNativePlatform) {
+      if (!shouldUseNativePlayer) {
         return;
       }
 
@@ -514,7 +626,7 @@ export const VideoPlayer = React.forwardRef<VideoPlayerHandle, VideoPlayerProps>
       }
 
       onPictureInPictureChange?.(false);
-    }, [isNativePlatform, onPictureInPictureChange]);
+    }, [onPictureInPictureChange, shouldUseNativePlayer]);
 
     const flushTelemetry = useCallback(
       (exitReason: PlayerTelemetryExitReason, currentTime = lastKnownTimeRef.current) => {
@@ -648,10 +760,35 @@ export const VideoPlayer = React.forwardRef<VideoPlayerHandle, VideoPlayerProps>
       };
     }, []);
 
+    useEffect(() => {
+      if (isPreview || isMinimized) {
+        return;
+      }
+      // Start auto-hide countdown as soon as fullscreen opens/changes media.
+      showControls();
+    }, [isMinimized, isPreview, showControls, url]);
+
+    useEffect(() => {
+      if (!canShowChannelBrowser) {
+        return;
+      }
+
+      if (isChannelBrowserOpen) {
+        setIsControlsVisible(true);
+        if (controlsTimerRef.current) {
+          clearTimeout(controlsTimerRef.current);
+          controlsTimerRef.current = null;
+        }
+        return;
+      }
+
+      showControls();
+    }, [canShowChannelBrowser, isChannelBrowserOpen, showControls]);
+
     const [isPlaying, setIsPlaying] = useState(true);
 
     const togglePlayPause = useCallback(async () => {
-      const isNative = isNativePlatform && !isPreview;
+      const isNative = shouldUseNativePlayer;
       if (isNative) {
         if (!openedPlayerRef.current) return;
         try {
@@ -662,7 +799,9 @@ export const VideoPlayer = React.forwardRef<VideoPlayerHandle, VideoPlayerProps>
              await NativeVideoPlayer.play();
           }
           setIsPlaying(!isPlaying);
-        } catch (e) {}
+        } catch (error) {
+          console.warn('[VideoPlayer] Falha ao alternar play/pause no player nativo:', error);
+        }
       } else {
         const video = previewVideoRef.current;
         if (video) {
@@ -677,7 +816,7 @@ export const VideoPlayer = React.forwardRef<VideoPlayerHandle, VideoPlayerProps>
         }
       }
       showControls();
-    }, [isNativePlatform, isPreview, isPlaying, showControls]);
+    }, [isPlaying, shouldUseNativePlayer, showControls]);
 
     const handleZap = useCallback((direction: 'next' | 'prev') => {
       if (!isLiveStream || isPreview) return;
@@ -727,7 +866,7 @@ export const VideoPlayer = React.forwardRef<VideoPlayerHandle, VideoPlayerProps>
 
     // Internal TV key listener
     useEffect(() => {
-      if (isPreview || !isNativePlatform) return;
+      if (isPreview || !shouldUseNativePlayer) return;
 
       const handleTvKey = (e: KeyboardEvent) => {
         const key = e.key;
@@ -751,10 +890,47 @@ export const VideoPlayer = React.forwardRef<VideoPlayerHandle, VideoPlayerProps>
 
       window.addEventListener('keydown', handleTvKey);
       return () => window.removeEventListener('keydown', handleTvKey);
-    }, [isPreview, isNativePlatform, showControls, togglePlayPause, handleZap, closeNativePlayer]);
+    }, [closeNativePlayer, handleZap, isPreview, shouldUseNativePlayer, showControls, togglePlayPause]);
+
+    // Web fullscreen live: abrir navegador de canais com seta esquerda (Android TV)
+    useEffect(() => {
+      if (isPreview || shouldUseNativePlayer || !canShowChannelBrowser) {
+        return;
+      }
+
+      const handleWebLiveKey = (event: KeyboardEvent) => {
+        const key = event.key;
+        const keyCode = (event as any).keyCode;
+        const target = event.target as HTMLElement | null;
+        const isTypingTarget =
+          target?.tagName === 'INPUT' || target?.tagName === 'TEXTAREA' || target?.isContentEditable === true;
+
+        if (isTypingTarget) {
+          return;
+        }
+
+        if (key === 'ArrowLeft' || keyCode === 21) {
+          setIsChannelBrowserOpen(true);
+          showControls();
+          event.preventDefault();
+          return;
+        }
+
+        if (key === 'ArrowRight' || keyCode === 22) {
+          if (isChannelBrowserOpen) {
+            setIsChannelBrowserOpen(false);
+            showControls();
+            event.preventDefault();
+          }
+        }
+      };
+
+      window.addEventListener('keydown', handleWebLiveKey);
+      return () => window.removeEventListener('keydown', handleWebLiveKey);
+    }, [canShowChannelBrowser, isChannelBrowserOpen, isPreview, shouldUseNativePlayer, showControls]);
 
     useEffect(() => {
-      if (!isNativePlatform || isPreview) {
+      if (!shouldUseNativePlayer) {
         return;
       }
 
@@ -784,6 +960,13 @@ export const VideoPlayer = React.forwardRef<VideoPlayerHandle, VideoPlayerProps>
           ];
 
           await prepareSystemUi();
+
+          // Ensure no other player is lingering before starting
+          try {
+            await NativeVideoPlayer.stopAllPlayers().catch(() => {});
+          } catch (error) {
+            console.warn('[VideoPlayer] Falha ao garantir stopAllPlayers antes de init:', error);
+          }
 
           const secureStreamUrl = loadMediaStream(url, media?.type === 'series' ? 'mp4' : 'hls');
 
@@ -862,7 +1045,7 @@ export const VideoPlayer = React.forwardRef<VideoPlayerHandle, VideoPlayerProps>
       handlePlayerEvent,
       handlePlayerExit,
       isLiveStream,
-      isNativePlatform,
+      shouldUseNativePlayer,
       media?.backdrop,
       media?.category,
       media?.thumbnail,
@@ -883,124 +1066,9 @@ export const VideoPlayer = React.forwardRef<VideoPlayerHandle, VideoPlayerProps>
     suppressNativePreviewExitOnUnmountRef.current = suppressNativePreviewExitOnUnmount;
 
     useEffect(() => {
-      // Android native preview: render ExoPlayer inside a bounded native overlay.
-      if (!isNativePlatform || !isPreview) {
-        return;
-      }
-
-      let disposed = false;
-      let rafId: number | null = null;
-
-      const bootstrapInlineNativePreview = async (attempt = 0): Promise<void> => {
-        if (disposed) return;
-
-        const host = previewHostRef.current;
-        const rect = host?.getBoundingClientRect();
-        if (!rect || rect.width < 24 || rect.height < 24) {
-          if (attempt < 30) {
-            rafId = window.requestAnimationFrame(() => {
-              void bootstrapInlineNativePreview(attempt + 1);
-            });
-          } else {
-            setPlayerState('error');
-            setError('Nao foi possivel calcular a area da previa nativa.');
-          }
-          return;
-        }
-
-        openedPlayerRef.current = false;
-        handledExitRef.current = false;
-        setPlayerState('opening');
-        setError(null);
-
-        try {
-          console.log('[NativePreview] init rect:', {
-            x: Math.round(rect.left),
-            y: Math.round(rect.top),
-            width: Math.round(rect.width),
-            height: Math.round(rect.height),
-            url,
-          });
-
-          removeListeners();
-          listenerHandlesRef.current = [
-            await NativeVideoPlayer.addListener('playerReady', () => {
-              setPlayerState('ready');
-            }),
-            await NativeVideoPlayer.addListener('playerPlay', () => {
-              setPlayerState('ready');
-            }),
-            await NativeVideoPlayer.addListener('playerTap', () => {
-              onPreviewRequestFullscreen?.();
-            }),
-          ];
-
-          const previewStartAt =
-            !isLiveStream && lastKnownTimeRef.current > 5
-              ? Math.floor(lastKnownTimeRef.current)
-              : !isLiveStream && sessionResumePositionRef.current > 5
-                ? Math.floor(sessionResumePositionRef.current)
-                : 0;
-
-          const secureStreamUrl = loadMediaStream(url, 'hls');
-
-          const result = await NativeVideoPlayer.initPlayer({
-            url: secureStreamUrl,
-            title: media?.title || 'Xandeflix',
-            smallTitle: media?.category || '',
-            artwork: media?.thumbnail || media?.backdrop || '',
-            chromecast: false,
-            displayMode: 'all',
-            embedded: true,
-            hideControls: true,
-            x: Math.round(rect.left),
-            y: Math.round(rect.top),
-            width: Math.round(rect.width),
-            height: Math.round(rect.height),
-            startAtSec: previewStartAt,
-          });
-
-          if (disposed) {
-            // Se o componente desmontou enquanto aguardava a ponte nativa, encerramos orfãos ativos
-            if (result.result) {
-              void NativeVideoPlayer.exitPlayer().catch(() => {});
-            }
-            return;
-          }
-
-          if (!result.result) {
-            throw new Error(result.message || 'Falha ao iniciar previa nativa.');
-          }
-
-          openedPlayerRef.current = true;
-          setPlayerState('ready');
-        } catch (previewError) {
-          if (disposed) {
-            void NativeVideoPlayer.exitPlayer().catch(() => {});
-            return;
-          }
-          console.error('[NativePreview] Falha ao iniciar previa nativa:', previewError);
-          setPlayerState('error');
-          setError(normalizeErrorMessage(previewError, 'Falha ao iniciar previa nativa.'));
-        }
-      };
-
-      void bootstrapInlineNativePreview();
-
-      return () => {
-        disposed = true;
-        if (rafId) {
-          window.cancelAnimationFrame(rafId);
-        }
-        removeListeners();
-        const switchingToAnotherPreview =
-          latestPreviewUrlRef.current !== url && latestPreviewUrlRef.current.trim() !== '';
-        const skipExit = suppressNativePreviewExitOnUnmountRef.current;
-        if (openedPlayerRef.current && !switchingToAnotherPreview && !skipExit) {
-          openedPlayerRef.current = false;
-          void NativeVideoPlayer.exitPlayer().catch(() => {});
-        }
-      };
+      // O plugin wako-capacitor-video-player não suporta "embedded: true" de verdade no Android.
+      // Ele abre forçadamente uma Activity em tela cheia. Para previews inline, NÃO podemos usá-lo.
+      return;
     }, [
       isNativePlatform,
       isPreview,
@@ -1014,8 +1082,9 @@ export const VideoPlayer = React.forwardRef<VideoPlayerHandle, VideoPlayerProps>
     ]);
 
     useEffect(() => {
-      // Web preview/web player fallback only (no web playback on Android native app).
-      if (isNativePlatform) return;
+      // Web preview/web player: Usar sempre em navegadores, mas no Android Nativo usar APENAS para os Previews Inline.
+      // O player full screen no Android Nativo continua usando o NativeVideoPlayer.
+      if (shouldUseNativePlayer) return;
 
       const video = previewVideoRef.current;
       if (!video) return;
@@ -1026,8 +1095,11 @@ export const VideoPlayer = React.forwardRef<VideoPlayerHandle, VideoPlayerProps>
 
       let candidateIndex = 0;
       let disposed = false;
+      let failureNotified = false;
       let startupTimeoutId: ReturnType<typeof setTimeout> | null = null;
       let loadedMetadataHandler: (() => void) | null = null;
+      let canPlayHandler: (() => void) | null = null;
+      let playingHandler: (() => void) | null = null;
       let nativeErrorHandler: (() => void) | null = null;
       let timeUpdateHandler: (() => void) | null = null;
       let endedHandler: (() => void) | null = null;
@@ -1039,6 +1111,13 @@ export const VideoPlayer = React.forwardRef<VideoPlayerHandle, VideoPlayerProps>
           clearTimeout(startupTimeoutId);
           startupTimeoutId = null;
         }
+      };
+
+      const notifyPreviewFailure = (failedUrl: string) => {
+        console.error(`[VideoPlayer-Preview] FALHA CRITICA na URL: ${failedUrl}`);
+        if (failureNotified || !isPreview) return;
+        failureNotified = true;
+        previewFailureHandlerRef.current?.(failedUrl);
       };
 
       const destroyHlsInstance = () => {
@@ -1069,10 +1148,34 @@ export const VideoPlayer = React.forwardRef<VideoPlayerHandle, VideoPlayerProps>
         hlsRef.current = null;
       };
 
+      const destroyMpegtsInstance = () => {
+        const player = mpegtsPlayerRef.current;
+        if (!player) return;
+        try {
+          player.pause();
+          player.unload();
+          player.detachMediaElement();
+          player.destroy();
+        } catch (e) {
+          console.warn('[mpegts] Erro ao destruir instancia:', e);
+        }
+        mpegtsPlayerRef.current = null;
+      };
+
       const removeVideoEventListeners = () => {
         if (loadedMetadataHandler) {
           video.removeEventListener('loadedmetadata', loadedMetadataHandler);
           loadedMetadataHandler = null;
+        }
+
+        if (canPlayHandler) {
+          video.removeEventListener('canplay', canPlayHandler);
+          canPlayHandler = null;
+        }
+
+        if (playingHandler) {
+          video.removeEventListener('playing', playingHandler);
+          playingHandler = null;
         }
 
         if (nativeErrorHandler) {
@@ -1102,17 +1205,18 @@ export const VideoPlayer = React.forwardRef<VideoPlayerHandle, VideoPlayerProps>
       const teardownCurrentSource = () => {
         clearStartupTimeout();
         removeVideoEventListeners();
+        destroyMpegtsInstance();
         destroyHlsInstance();
         releaseHtml5Video();
       };
 
       const playCurrentSource = () => {
         if (disposed) return;
+        setInlineError(null);
 
         teardownCurrentSource();
         const currentUrl = candidates[candidateIndex];
-
-        clearStartupTimeout();
+        console.log(`[VideoPlayer-Preview] Tentando carregar candidato [${candidateIndex}]: ${currentUrl}`);
         startupTimeoutId = setTimeout(() => {
           if (disposed) return;
           if (candidateIndex + 1 < candidates.length) {
@@ -1120,22 +1224,38 @@ export const VideoPlayer = React.forwardRef<VideoPlayerHandle, VideoPlayerProps>
             playCurrentSource();
           } else {
             console.error('[Preview] Timeout para iniciar stream:', currentUrl);
+            setInlineError('Timeout de Conexão');
+            notifyPreviewFailure(currentUrl);
           }
-        }, 12000);
+        }, isPreview ? 15000 : 20000); // Aumentado de 4s para 15s para dar tempo ao IPTV bufferizar
 
         const canUseNativeHlsTag = video.canPlayType('application/vnd.apple.mpegurl') !== '';
+        const shouldUseHls = isLikelyHlsUrl(currentUrl);
+        
+        const isSportsChannel = isLiveStream && (
+          media?.category?.toLowerCase().includes('esporte') ||
+          media?.category?.toLowerCase().includes('sport') ||
+          media?.category?.toLowerCase().includes('futebol') ||
+          media?.title?.toLowerCase().includes('esporte') ||
+          media?.title?.toLowerCase().includes('sport') ||
+          media?.title?.toLowerCase().includes('premiere') ||
+          media?.title?.toLowerCase().includes('espn') ||
+          media?.title?.toLowerCase().includes('combate')
+        );
 
-        if (Hls.isSupported()) {
+        if (shouldUseHls && Hls.isSupported()) {
           const hls = new Hls({
             startLevel: -1,
             debug: false,
-            enableWorker: false,
-            // Passthrough streaming logic: strictly limit buffer to RAM (30-60s)
-            maxBufferLength: 30, // Limit forward buffer to 30 seconds
-            maxMaxBufferLength: 60, // Absolute maximum buffer
-            maxBufferSize: 30 * 1024 * 1024, // Hard limit 30MB of RAM chunks
-            liveSyncDurationCount: 3, // Prevent edge drifting
-            liveMaxLatencyDurationCount: 10,
+            enableWorker: true,
+            lowLatencyMode: false, // Desativado para priorizar estabilidade sobre latência
+            backBufferLength: 30, // Manter 30s no buffer traseiro para replays rápidos
+            maxBufferLength: isSportsChannel ? 120 : (isLiveStream ? 30 : 60), // 120s para Esportes, 30s para Live normal, 60s para VOD
+            maxMaxBufferLength: isSportsChannel ? 240 : (isLiveStream ? 60 : 180), // Limite máximo tolerado
+            maxBufferSize: isSportsChannel ? 200 * 1024 * 1024 : (isLiveStream ? 60 * 1024 * 1024 : 150 * 1024 * 1024), // 200MB para esportes
+            manifestLoadingTimeOut: 15000,
+            levelLoadingTimeOut: 15000,
+            fragLoadingTimeOut: 15000,
           });
           
           hlsRef.current = hls;
@@ -1156,8 +1276,13 @@ export const VideoPlayer = React.forwardRef<VideoPlayerHandle, VideoPlayerProps>
 
             switch (data.type) {
               case Hls.ErrorTypes.NETWORK_ERROR:
-                console.warn('[HLS] Falha de rede irrecuperável, tentando recarregar fonte...', data);
-                hls.startLoad();
+                console.warn('[HLS] Falha de rede irrecuperável, tentando proxima fonte...', data);
+                if (candidateIndex + 1 < candidates.length) {
+                  candidateIndex += 1;
+                  playCurrentSource();
+                } else {
+                  hls.startLoad();
+                }
                 break;
               case Hls.ErrorTypes.MEDIA_ERROR:
                 console.warn('[HLS] Erro de mídia fatal detectado, tentando recuperar buffers...', data);
@@ -1171,6 +1296,8 @@ export const VideoPlayer = React.forwardRef<VideoPlayerHandle, VideoPlayerProps>
                 } else {
                   clearStartupTimeout();
                   console.error('[HLS] Nenhum fallback disponível para:', currentUrl, data);
+                  setInlineError(`Erro no HLS (${data.type})`);
+                  notifyPreviewFailure(currentUrl);
                 }
                 break;
             }
@@ -1180,39 +1307,120 @@ export const VideoPlayer = React.forwardRef<VideoPlayerHandle, VideoPlayerProps>
           return;
         }
 
-        if (canUseNativeHlsTag) {
-          video.src = currentUrl;
-
-          loadedMetadataHandler = () => {
-            clearStartupTimeout();
-            void video.play().catch((playError) => {
-              console.error('[Preview] Erro no play nativo HLS:', playError);
+        // MPEGTS.JS: Para streams MPEG-TS puros (URLs sem .m3u8, sem output=hls)
+        // Isso resolve o MediaError 4 no Android WebView
+        const isRawTsStream = !shouldUseHls && isLiveStream && mpegts.isSupported();
+        if (isRawTsStream) {
+          console.log(`[mpegts.js] Tentando decodificar stream TS puro: ${currentUrl}`);
+          try {
+            const player = mpegts.createPlayer({
+              type: 'mpegts',
+              isLive: isLiveStream,
+              url: currentUrl,
+            }, {
+              enableWorker: true,
+              liveBufferLatencyChasing: false, // Desativado: evita pulos (stuttering) para alcançar o "ao vivo"
+              liveBufferLatencyMaxLatency: isSportsChannel ? 30 : 15, // Tolera até 30s de atraso em esportes antes de pular
+              liveBufferLatencyMinRemain: 5.0, // Mantém no mínimo 5s de buffer seguro para esportes
+              lazyLoad: false,
+              lazyLoadMaxDuration: isSportsChannel ? 120 : (isLiveStream ? 30 : 120), // Cache de 120s para Esportes
+              lazyLoadRecoverDuration: isSportsChannel ? 60 : (isLiveStream ? 15 : 60),
             });
-          };
-          nativeErrorHandler = () => {
-            if (candidateIndex + 1 < candidates.length) {
-              candidateIndex += 1;
-              playCurrentSource();
-            } else {
-              clearStartupTimeout();
-              console.error('[Preview] Erro nativo de video sem fallback:', currentUrl);
-            }
-          };
-          timeUpdateHandler = () => {
-            lastKnownTimeRef.current = Math.max(0, Math.floor(video.currentTime || 0));
-          };
-          endedHandler = () => {
-            clearStartupTimeout();
-          };
 
-          video.addEventListener('loadedmetadata', loadedMetadataHandler);
-          video.addEventListener('error', nativeErrorHandler);
-          video.addEventListener('timeupdate', timeUpdateHandler);
-          video.addEventListener('ended', endedHandler);
-          return;
+            mpegtsPlayerRef.current = player;
+            player.attachMediaElement(video);
+            player.load();
+
+            player.on(mpegts.Events.ERROR, (errorType: string, errorDetail: string, errorInfo: any) => {
+              console.error(`[mpegts.js] Erro: type=${errorType}, detail=${errorDetail}`, errorInfo);
+              if (candidateIndex + 1 < candidates.length) {
+                candidateIndex += 1;
+                playCurrentSource();
+              } else {
+                clearStartupTimeout();
+                setInlineError('Sinal Incompatível com Preview');
+                notifyPreviewFailure(currentUrl);
+              }
+            });
+
+            // Quando o MediaSource receber dados, tentar play
+            loadedMetadataHandler = () => {
+              clearStartupTimeout();
+              void video.play().catch((e) => console.warn('[mpegts] play() rejeitado:', e));
+            };
+            playingHandler = () => {
+              clearStartupTimeout();
+            };
+            timeUpdateHandler = () => {
+              lastKnownTimeRef.current = Math.max(0, Math.floor(video.currentTime || 0));
+            };
+
+            video.addEventListener('loadedmetadata', loadedMetadataHandler);
+            video.addEventListener('playing', playingHandler);
+            video.addEventListener('timeupdate', timeUpdateHandler);
+
+            void video.play().catch(() => {});
+            return;
+          } catch (mpegtsError) {
+            console.warn('[mpegts.js] Falha ao inicializar, tentando fallback nativo:', mpegtsError);
+            destroyMpegtsInstance();
+          }
         }
 
-        clearStartupTimeout();
+        if (shouldUseHls && !canUseNativeHlsTag) {
+          console.warn('[Preview] WebView sem suporte nativo HLS, tentando source direta:', currentUrl);
+        }
+
+        video.src = currentUrl;
+
+        const tryStartPlayback = (eventName: string) => {
+          clearStartupTimeout();
+          void video.play().catch((playError) => {
+            console.error(`[Preview] Erro ao iniciar play (${eventName}):`, playError);
+          });
+        };
+
+        loadedMetadataHandler = () => {
+          tryStartPlayback('loadedmetadata');
+        };
+        canPlayHandler = () => {
+          tryStartPlayback('canplay');
+        };
+        playingHandler = () => {
+          clearStartupTimeout();
+        };
+        nativeErrorHandler = () => {
+          const err = video.error;
+          console.error(`[Preview] MediaError nativo: code=${err?.code}, msg=${err?.message} url=${currentUrl}`);
+          if (candidateIndex + 1 < candidates.length) {
+            candidateIndex += 1;
+            playCurrentSource();
+          } else {
+            clearStartupTimeout();
+            console.error('[Preview] Erro nativo de video sem fallback:', currentUrl);
+            
+            let errorMsg = `Sinal Incompatível (Err: ${err?.code || 'Desconhecido'})`;
+            if (err?.code === 4) {
+              errorMsg = "Sinal Incompatível com Preview";
+            }
+            
+            setInlineError(errorMsg);
+            notifyPreviewFailure(currentUrl);
+          }
+        };
+        timeUpdateHandler = () => {
+          lastKnownTimeRef.current = Math.max(0, Math.floor(video.currentTime || 0));
+        };
+        endedHandler = () => {
+          clearStartupTimeout();
+        };
+
+        video.addEventListener('loadedmetadata', loadedMetadataHandler);
+        video.addEventListener('canplay', canPlayHandler);
+        video.addEventListener('playing', playingHandler);
+        video.addEventListener('error', nativeErrorHandler);
+        video.addEventListener('timeupdate', timeUpdateHandler);
+        video.addEventListener('ended', endedHandler);
       };
 
       playCurrentSource();
@@ -1221,12 +1429,13 @@ export const VideoPlayer = React.forwardRef<VideoPlayerHandle, VideoPlayerProps>
         disposed = true;
         clearStartupTimeout();
         removeVideoEventListeners();
+        destroyMpegtsInstance();
         destroyHlsInstance();
         releaseHtml5Video();
       };
-    }, [url, isNativePlatform, isLiveStream]);
+    }, [isLiveStream, shouldUseNativePlayer, url]);
 
-    if (isNativePlatform && !isPreview) {
+    if (shouldUseNativePlayer) {
       if (error) {
         return (
           <div className="fixed inset-0 z-[1600] flex items-center justify-center bg-black/90 px-6 text-white">
@@ -1241,13 +1450,19 @@ export const VideoPlayer = React.forwardRef<VideoPlayerHandle, VideoPlayerProps>
               <div className="mt-6 flex gap-3">
                 <button
                   type="button"
-                  onClick={() => {
-                    onClose();
-                  }}
+                  onClick={() => onClose()}
                   className="inline-flex min-h-11 flex-1 items-center justify-center rounded-2xl border border-white/10 bg-white/5 px-4 text-sm font-bold text-white transition hover:bg-white/10"
                 >
                   <X className="mr-2 h-4 w-4" />
                   Fechar
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setShowDiagnostic(true)}
+                  className="inline-flex min-h-11 flex-1 items-center justify-center rounded-2xl border border-red-500/20 bg-red-500/10 px-4 text-sm font-bold text-red-400 transition hover:bg-red-500/20"
+                >
+                  <Activity className="mr-2 h-4 w-4" />
+                  Diagnóstico
                 </button>
               </div>
             </div>
@@ -1257,25 +1472,102 @@ export const VideoPlayer = React.forwardRef<VideoPlayerHandle, VideoPlayerProps>
 
       if (isBrowseMode) {
         return (
-          <div className="flex h-full w-full items-center justify-between gap-4 bg-black px-4 text-white">
-            <div className="min-w-0">
+          <div className="fixed inset-0 z-[1700] flex pointer-events-none">
+            <div className="absolute left-4 top-4 pointer-events-auto rounded-2xl border border-white/10 bg-black/70 px-4 py-3 text-white backdrop-blur-xl">
               <div className="text-[10px] font-black uppercase tracking-[0.28em] text-red-500">
-                Android Native Player
+                Fullscreen Live
               </div>
-              <div className="mt-1 truncate text-lg font-bold">
-                {media?.title || 'Abrindo reprodução...'}
+              <div className="mt-1 truncate text-lg font-bold">{media?.title || 'Reproduzindo canal'}</div>
+              <div className="mt-2 flex gap-2">
+                <button
+                  type="button"
+                  onClick={() => setIsChannelBrowserOpen((prev) => !prev)}
+                  className="pointer-events-auto inline-flex min-h-9 items-center justify-center rounded-xl border border-red-500/30 bg-red-500/15 px-3 text-xs font-black uppercase tracking-wider text-red-200"
+                >
+                  {isChannelBrowserOpen ? 'Ocultar Canais' : 'Abrir Canais'}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    void closeNativePlayer();
+                  }}
+                  className="pointer-events-auto inline-flex min-h-9 items-center justify-center rounded-xl border border-white/10 bg-white/5 px-3 text-xs font-black uppercase tracking-wider text-white"
+                >
+                  Fechar
+                </button>
               </div>
             </div>
-            <button
-              type="button"
-              onClick={() => {
-                void closeNativePlayer();
-              }}
-              className="inline-flex min-h-11 items-center justify-center rounded-2xl border border-white/10 bg-white/5 px-4 text-sm font-bold text-white transition hover:bg-white/10"
-            >
-              <LoaderCircle className="mr-2 h-4 w-4 animate-spin" />
-              Fechar
-            </button>
+
+            {canShowChannelBrowser && isChannelBrowserOpen && (
+              <div className="pointer-events-auto h-full w-[460px] border-r border-white/10 bg-black/86 backdrop-blur-xl">
+                <div className="flex items-center justify-between border-b border-white/10 px-4 py-4">
+                  <div className="text-sm font-black uppercase tracking-[0.2em] text-red-500">Canais</div>
+                  <button
+                    type="button"
+                    onClick={() => setIsChannelBrowserOpen(false)}
+                    className="rounded-lg border border-white/15 bg-white/5 px-2 py-1 text-xs font-bold text-white/85"
+                  >
+                    Fechar
+                  </button>
+                </div>
+                <div className="grid h-[calc(100%-64px)] grid-cols-[170px_1fr]">
+                  <div className="overflow-y-auto border-r border-white/10 p-2">
+                    {liveBrowserCategories.map((category) => {
+                      const selected = (activeBrowserCategory?.id || '') === category.id;
+                      return (
+                        <button
+                          key={`native-live-cat-${category.id}`}
+                          type="button"
+                          onClick={() => {
+                            setChannelGroupId(category.id);
+                            setChannelSearchQuery('');
+                          }}
+                          className="mb-2 w-full rounded-lg px-2 py-2 text-left text-[11px] font-bold uppercase tracking-wide"
+                          style={{
+                            color: selected ? '#fff' : 'rgba(255,255,255,0.72)',
+                            background: selected ? 'rgba(229,9,20,0.22)' : 'transparent',
+                            border: selected ? '1px solid rgba(229,9,20,0.45)' : '1px solid transparent',
+                          }}
+                        >
+                          {category.title}
+                        </button>
+                      );
+                    })}
+                  </div>
+                  <div className="flex h-full min-h-0 flex-col p-2">
+                    <input
+                      value={channelSearchQuery}
+                      onChange={(event) => setChannelSearchQuery(event.target.value)}
+                      placeholder="Buscar canal"
+                      className="mb-2 rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-sm font-semibold text-white outline-none"
+                    />
+                    <div className="min-h-0 flex-1 overflow-y-auto">
+                      {browserChannels.map((channel) => {
+                        const selected = channel.id === media?.id || channel.videoUrl === url;
+                        return (
+                          <button
+                            key={`native-live-channel-${channel.id}`}
+                            type="button"
+                            onClick={() => {
+                              onZap?.(channel);
+                              setIsChannelBrowserOpen(false);
+                            }}
+                            className="mb-2 w-full rounded-lg px-3 py-2 text-left"
+                            style={{
+                              background: selected ? 'rgba(229,9,20,0.18)' : 'rgba(255,255,255,0.04)',
+                              border: selected ? '1px solid rgba(229,9,20,0.5)' : '1px solid rgba(255,255,255,0.1)',
+                            }}
+                          >
+                            <div className="truncate text-sm font-bold text-white">{channel.title}</div>
+                            <div className="truncate text-[11px] font-semibold text-white/50">{channel.category}</div>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
           </div>
         );
       }
@@ -1286,6 +1578,7 @@ export const VideoPlayer = React.forwardRef<VideoPlayerHandle, VideoPlayerProps>
     const fallbackPoster = media?.backdrop || media?.thumbnail || "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7";
 
     return (
+      <>
       <div
         ref={previewHostRef}
         onClick={() => {
@@ -1300,7 +1593,7 @@ export const VideoPlayer = React.forwardRef<VideoPlayerHandle, VideoPlayerProps>
           isPreview ? 'items-start justify-start' : 'items-center justify-center'
         } ${isMinimized ? 'rounded-[14px]' : ''}`}
       >
-        {isNativePlatform ? (
+        {shouldUseNativePlayer ? (
           <>
             {playerState !== 'ready' && (
               <img
@@ -1319,14 +1612,24 @@ export const VideoPlayer = React.forwardRef<VideoPlayerHandle, VideoPlayerProps>
           <>
             <video
               ref={previewVideoRef}
-              className="h-full w-full object-cover"
+              className={`h-full w-full ${
+                isPreview || isLiveStream ? 'object-contain bg-black' : 'object-cover'
+              }`}
               autoPlay
-              muted={isPreview}
+              muted={false}
               playsInline
               poster={fallbackPoster}
               onPlay={() => setIsPlaying(true)}
               onPause={() => setIsPlaying(false)}
             />
+
+            {inlineError && isPreview && (
+               <div className="absolute inset-0 z-10 flex flex-col items-center justify-center bg-black/80 px-4 text-center">
+                 <div className="text-[11px] font-black uppercase tracking-[0.2em] text-red-500 mb-1">Sem Sinal</div>
+                 <div className="text-[10px] font-bold text-white/70 uppercase tracking-widest">{inlineError}</div>
+                 <div className="text-[9px] text-white/40 mt-3 uppercase max-w-[200px]">O player nativo pode suportar este canal. Clique em tela cheia.</div>
+               </div>
+            )}
             
             {/* Cinematic Controls Overlay (Z-50) */}
             {!isPreview && (
@@ -1345,6 +1648,19 @@ export const VideoPlayer = React.forwardRef<VideoPlayerHandle, VideoPlayerProps>
                    >
                      <X size={28} className="text-white" />
                    </button>
+                   {canShowChannelBrowser && (
+                     <button
+                       type="button"
+                       onClick={(event) => {
+                         event.stopPropagation();
+                         setIsChannelBrowserOpen((prev) => !prev);
+                         showControls();
+                       }}
+                       className="rounded-2xl border border-red-500/30 bg-black/65 px-4 py-2 text-[11px] font-black uppercase tracking-wider text-red-200 backdrop-blur-xl"
+                     >
+                       {isChannelBrowserOpen ? 'Ocultar Canais' : 'Canais'}
+                     </button>
+                   )}
                    <div>
                      <span className="text-[10px] font-black uppercase tracking-[0.3em] text-red-600 block mb-0.5">
                        {isLiveStream ? 'Ao Vivo' : 'Streaming'}
@@ -1389,28 +1705,108 @@ export const VideoPlayer = React.forwardRef<VideoPlayerHandle, VideoPlayerProps>
                         </button>
                     </div>
 
-                    <div className="flex items-center gap-4">
-                       <button 
-                         onClick={(e) => {
-                           e.stopPropagation();
-                           const host = previewHostRef.current;
-                           if (host) {
-                             if (!document.fullscreenElement) {
-                               host.requestFullscreen().catch(() => {});
-                             } else {
-                               document.exitFullscreen().catch(() => {});
+                    {!canShowChannelBrowser && (
+                      <div className="flex items-center gap-4">
+                         <button 
+                           onClick={(e) => {
+                             e.stopPropagation();
+                             const host = previewHostRef.current;
+                             if (host) {
+                               if (!document.fullscreenElement) {
+                                 host.requestFullscreen().catch(() => {});
+                               } else {
+                                 document.exitFullscreen().catch(() => {});
+                               }
                              }
-                           }
-                         }}
-                         className="p-3 rounded-lg bg-white/5 hover:bg-white/10 transition-all border border-white/10"
-                       >
-                         <FastForward size={22} className="text-white rotate-90" />
-                       </button>
-                    </div>
+                           }}
+                           className="p-3 rounded-lg bg-white/5 hover:bg-white/10 transition-all border border-white/10"
+                         >
+                           <FastForward size={22} className="text-white rotate-90" />
+                         </button>
+                      </div>
+                    )}
                   </div>
                 </div>
               </div>
             )}
+          </>
+        )}
+        {canShowChannelBrowser && isChannelBrowserOpen && (
+          <>
+            <div
+              className="absolute left-0 top-0 z-[70] h-full w-[520px] max-w-[76vw] overflow-hidden border-r border-white/10 bg-black/55 backdrop-blur-2xl"
+              onClick={(event) => event.stopPropagation()}
+            >
+              <div className="flex items-center justify-between border-b border-white/10 bg-black/50 px-4 py-4">
+                <div className="text-sm font-black uppercase tracking-[0.2em] text-red-500">Grupos e Canais</div>
+                <button
+                  type="button"
+                  onClick={() => setIsChannelBrowserOpen(false)}
+                  className="rounded-lg border border-white/15 bg-white/5 px-2 py-1 text-xs font-bold text-white/85"
+                >
+                  Fechar
+                </button>
+              </div>
+
+              <div className="grid h-[calc(100%-64px)] min-h-0 grid-cols-[190px_1fr] overflow-hidden">
+                <div className="min-h-0 overflow-y-auto border-r border-white/10 bg-black/40 p-2">
+                  {liveBrowserCategories.map((category) => {
+                    const selected = (activeBrowserCategory?.id || '') === category.id;
+                    return (
+                      <button
+                        key={`live-cat-${category.id}`}
+                        type="button"
+                        onClick={() => {
+                          setChannelGroupId(category.id);
+                          setChannelSearchQuery('');
+                        }}
+                        className="mb-2 w-full rounded-lg px-2 py-2 text-left text-[11px] font-bold uppercase tracking-wide"
+                        style={{
+                          color: selected ? '#fff' : 'rgba(255,255,255,0.72)',
+                          background: selected ? 'rgba(229,9,20,0.22)' : 'transparent',
+                          border: selected ? '1px solid rgba(229,9,20,0.45)' : '1px solid transparent',
+                        }}
+                      >
+                        {category.title}
+                      </button>
+                    );
+                  })}
+                </div>
+
+                <div className="flex h-full min-h-0 flex-col overflow-hidden bg-black/35 p-2">
+                  <input
+                    value={channelSearchQuery}
+                    onChange={(event) => setChannelSearchQuery(event.target.value)}
+                    placeholder="Buscar canal"
+                    className="mb-2 rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-sm font-semibold text-white outline-none"
+                  />
+                  <div ref={channelListContainerRef} className="min-h-0 flex-1 overflow-y-auto pr-1">
+                    {browserChannels.map((channel) => {
+                      const selected = channel.id === media?.id || channel.videoUrl === url;
+                      return (
+                        <button
+                          key={`live-channel-${channel.id}`}
+                          data-channel-selected={selected ? 'true' : undefined}
+                          type="button"
+                          onClick={() => {
+                            onZap?.(channel);
+                            setIsChannelBrowserOpen(false);
+                          }}
+                          className="mb-2 w-full rounded-lg px-3 py-2 text-left"
+                          style={{
+                            background: selected ? 'rgba(229,9,20,0.18)' : 'rgba(255,255,255,0.04)',
+                            border: selected ? '1px solid rgba(229,9,20,0.5)' : '1px solid rgba(255,255,255,0.1)',
+                          }}
+                        >
+                          <div className="truncate text-sm font-bold text-white">{channel.title}</div>
+                          <div className="truncate text-[11px] font-semibold text-white/50">{channel.category}</div>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              </div>
+            </div>
           </>
         )}
         {isMinimized && (
@@ -1427,6 +1823,10 @@ export const VideoPlayer = React.forwardRef<VideoPlayerHandle, VideoPlayerProps>
           </button>
         )}
       </div>
+      {showDiagnostic && (
+          <NetworkDiagnostic onClose={() => setShowDiagnostic(false)} testUrl={url} />
+      )}
+    </>
     );
   },
 );

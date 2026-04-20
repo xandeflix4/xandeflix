@@ -3,6 +3,7 @@ import { ChevronRight, Play, Star } from 'lucide-react';
 import type { Category, Media, PlaylistItem } from '../types';
 import { useTvNavigation } from '../hooks/useTvNavigation';
 import { useResponsiveLayout } from '../hooks/useResponsiveLayout';
+import { useTMDB } from '../hooks/useTMDB';
 import type { TMDBData } from '../lib/tmdb';
 
 type RowItem = Media | PlaylistItem;
@@ -12,6 +13,7 @@ interface CategoryRowProps {
   title?: string;
   items?: RowItem[];
   rowIndex: number;
+  disableSideMenuOffset?: boolean;
   preloadedTMDBByKey?: Record<string, TMDBData>;
   tmdbMissedByKey?: Record<string, true>;
   onMediaFocus?: (media: Media, id: string) => void;
@@ -40,11 +42,14 @@ const isMedia = (item: RowItem): item is Media => 'videoUrl' in item;
 
 const resolveImageUrl = (item: RowItem, preloadedTMDBByKey?: Record<string, TMDBData>): string => {
   const metadata = preloadedTMDBByKey?.[item.id];
+  const isLive = isMedia(item) && (item.type === 'live' || (item as any).isLive);
+
   const candidates = [
-    metadata?.backdrop,
-    metadata?.thumbnail,
-    isMedia(item) ? item.backdrop : '',
-    isMedia(item) ? item.thumbnail : '',
+    // Se for Live, preferimos backdrop (horizontal), se for Filme/Serie preferimos poster (thumbnail/vertical)
+    isLive ? metadata?.backdrop : metadata?.thumbnail,
+    isLive ? metadata?.thumbnail : metadata?.backdrop,
+    isMedia(item) ? (isLive ? item.backdrop : item.thumbnail) : '',
+    isMedia(item) ? (isLive ? item.thumbnail : item.backdrop) : '',
     'logo' in item ? item.logo : '',
   ];
 
@@ -68,8 +73,37 @@ const MediaCard = React.memo(({
   onFocus,
 }: MediaCardProps) => {
   const { registerNode, focusedId } = useTvNavigation({ isActive: false, subscribeFocused: true });
+  const mediaType = isMedia(item) ? String(item.type || '').toLowerCase() : '';
+  const shouldUseTMDBImageFallback =
+    isMedia(item)
+    && !String(imageUrl || '').trim()
+    && (mediaType === 'movie' || mediaType === 'series');
+  const { data: tmdbFallbackData } = useTMDB(
+    shouldUseTMDBImageFallback ? item.title : undefined,
+    shouldUseTMDBImageFallback ? mediaType : undefined,
+    {
+      includeDetails: false,
+      categoryHint: isMedia(item) ? item.category : undefined,
+    },
+  );
+  const resolvedImageUrl = useMemo(() => {
+    const local = String(imageUrl || '').trim();
+    if (local) return local;
+    const tmdbThumb = String(tmdbFallbackData?.thumbnail || '').trim();
+    if (tmdbThumb) return tmdbThumb;
+    const tmdbBackdrop = String(tmdbFallbackData?.backdrop || '').trim();
+    if (tmdbBackdrop) return tmdbBackdrop;
+    return '';
+  }, [imageUrl, tmdbFallbackData?.backdrop, tmdbFallbackData?.thumbnail]);
+  const [imageStatus, setImageStatus] = React.useState<'loading' | 'loaded' | 'error'>(imageUrl ? 'loading' : 'error');
+  
   const isFocused = focusedId === navId;
   const canOpenMedia = Boolean(onPress && isMedia(item));
+
+  // Reset status when image changes
+  React.useEffect(() => {
+    setImageStatus(resolvedImageUrl ? 'loading' : 'error');
+  }, [resolvedImageUrl]);
 
   return (
     <div
@@ -85,7 +119,6 @@ const MediaCard = React.memo(({
               onFocus?.(item, navId);
             }
           },
-          disableAutoScroll: true,
         })
       }
       data-nav-id={navId}
@@ -111,43 +144,50 @@ const MediaCard = React.memo(({
         flex: '0 0 auto',
         cursor: 'pointer',
         transform: isFocused ? 'translateY(-6px) scale(1.04)' : 'translateY(0) scale(1)',
-        transition: 'transform 180ms ease, box-shadow 180ms ease',
+        transition: 'all 150ms cubic-bezier(0.2, 0, 0.2, 1)',
+        willChange: 'transform',
+        zIndex: isFocused ? 10 : 1,
         boxShadow: isFocused
-          ? '0 18px 32px rgba(0,0,0,0.55), 0 0 18px rgba(229,9,20,0.35)'
-          : '0 8px 18px rgba(0,0,0,0.35)',
+          ? '0 12px 24px rgba(0,0,0,0.45), 0 0 10px rgba(229,9,20,0.25)'
+          : '0 4px 12px rgba(0,0,0,0.3)',
       }}
     >
-      {imageUrl ? (
+      {/* Background Fallback (Always there during loading or error) */}
+      <div
+        style={{
+          position: 'absolute',
+          inset: 0,
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          background: 'linear-gradient(135deg, #1f2937, #0f172a, #111827)',
+          color: 'rgba(255,255,255,0.78)',
+          fontSize: 20,
+          fontWeight: 900,
+          textTransform: 'uppercase',
+          letterSpacing: 2,
+          opacity: imageStatus !== 'loaded' ? 1 : 0,
+          transition: 'opacity 300ms ease',
+        }}
+      >
+        <span style={{ opacity: 0.15 }}>{String(item.title || '?').slice(0, 2)}</span>
+      </div>
+
+      {resolvedImageUrl && imageStatus !== 'error' && (
         <img
-          src={imageUrl}
+          src={resolvedImageUrl}
           alt={item.title}
-          loading="lazy"
+          onLoad={() => setImageStatus('loaded')}
+          onError={() => setImageStatus('error')}
           style={{
             width: '100%',
             height: '100%',
             objectFit: 'cover',
-            objectPosition: 'center center',
+            opacity: imageStatus === 'loaded' ? 1 : 0,
+            transition: 'opacity 400ms ease-in-out',
             display: 'block',
           }}
         />
-      ) : (
-        <div
-          style={{
-            width: '100%',
-            height: '100%',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            background: 'linear-gradient(135deg, #1f2937, #0f172a)',
-            color: 'rgba(255,255,255,0.78)',
-            fontSize: 20,
-            fontWeight: 900,
-            textTransform: 'uppercase',
-            letterSpacing: 1,
-          }}
-        >
-          {String(item.title || '?').slice(0, 2)}
-        </div>
       )}
 
       <div
@@ -210,6 +250,7 @@ export const CategoryRow: React.FC<CategoryRowProps> = ({
   title,
   items,
   rowIndex,
+  disableSideMenuOffset = false,
   preloadedTMDBByKey,
   onMediaFocus,
   onMediaPress,
@@ -237,10 +278,15 @@ export const CategoryRow: React.FC<CategoryRowProps> = ({
     return null;
   }
 
-  const rowPaddingX = layout.isTvProfile ? 20 : 28;
+  const sideMenuOffset = disableSideMenuOffset ? 0 : ((!layout.isMobile || layout.isTvProfile) ? layout.sideRailCollapsedWidth : 0);
+  const rowPaddingX = (layout.isTvProfile ? 20 : 28) + sideMenuOffset;
   const rowGap = layout.isTvProfile ? 10 : 14;
-  const cardWidth = layout.isTvProfile ? 230 : layout.isCompact ? 230 : 250;
-  const cardHeight = Math.round(cardWidth * (9 / 16));
+  const isLiveRow = resolvedCategory.type === 'live' || resolvedTitle.toLowerCase().includes('canais') || resolvedTitle.toLowerCase().includes('ao vivo');
+  
+  const cardWidth = layout.isTvProfile
+    ? (isLiveRow ? 360 : 240)
+    : (layout.isCompact ? (isLiveRow ? 320 : 210) : (isLiveRow ? 360 : 230));
+  const cardHeight = isLiveRow ? Math.round(cardWidth * (9 / 16)) : Math.round(cardWidth * 1.5);
   const titleSize = layout.isTvProfile ? 20 : layout.isCompact ? 24 : 28;
 
   const seeAllNavId = `see-all-${rowIndex}`;
@@ -282,7 +328,6 @@ export const CategoryRow: React.FC<CategoryRowProps> = ({
             ref={(el) =>
               registerNode(seeAllNavId, el, 'body', {
                 onEnter: () => onSeeAll(resolvedCategory),
-                disableAutoScroll: true,
               })
             }
             data-nav-id={seeAllNavId}
@@ -323,7 +368,8 @@ export const CategoryRow: React.FC<CategoryRowProps> = ({
           scrollSnapType: 'x mandatory',
           paddingLeft: rowPaddingX,
           paddingRight: rowPaddingX,
-          paddingBottom: 8,
+          paddingBottom: 45,
+          paddingTop: 30,
         }}
       >
         {resolvedItems.map((item, index) => (

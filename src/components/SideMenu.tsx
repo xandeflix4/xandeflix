@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { Text } from 'react-native';
 import { motion } from 'motion/react';
-import { Search, Home, Film, Tv, Settings, User, Radio, LogOut, Heart, ShieldCheck } from 'lucide-react';
+import { Search, Home, Film, Tv, Settings, User, Radio, LogOut, Heart, Trophy, Baby } from 'lucide-react';
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
 import { useTvNavigation } from '../hooks/useTvNavigation';
@@ -22,8 +22,10 @@ const MENU_ITEMS: MenuItem[] = [
   { id: 'home', label: 'Início', icon: Home },
   { id: 'mylist', label: 'Minha Lista', icon: Heart },
   { id: 'live', label: 'Canais ao Vivo', icon: Radio },
+  { id: 'sports', label: 'Esportes', icon: Trophy },
   { id: 'movie', label: 'Filmes', icon: Film },
   { id: 'series', label: 'Séries', icon: Tv },
+  { id: 'kids', label: 'Infantil', icon: Baby },
   { id: 'settings', label: 'Ajustes', icon: Settings },
 ];
 
@@ -98,10 +100,7 @@ export const SideMenu: React.FC<SideMenuProps> = ({ onSelect, activeId = 'home',
 
     reg('profile', () => handlePress('profile'));
     MENU_ITEMS.forEach(item => reg(item.id, () => handlePress(item.id)));
-    reg('admin', () => {
-      collapseMenu();
-      window.open('/admin-portal.html', '_blank');
-    });
+
     reg('logout', () => {
       collapseMenu();
       onLogout?.();
@@ -109,6 +108,12 @@ export const SideMenu: React.FC<SideMenuProps> = ({ onSelect, activeId = 'home',
 
     return () => unregisterList.forEach(u => u());
   }, [onLogout, registerNode]);
+
+  // Colapsar menu automaticamente quando o filtro ativo muda e garante
+  // que o menu nÃ£o fica preso expandido ao carregar/recarregar a home.
+  React.useEffect(() => {
+    collapseMenu();
+  }, [activeId]);
 
   const collapseMenu = () => {
     setIsExpanded(false);
@@ -172,14 +177,15 @@ export const SideMenu: React.FC<SideMenuProps> = ({ onSelect, activeId = 'home',
 
       <div
         className={cn(
-          'side-menu-panel fixed left-0 top-0 h-screen z-[260] border-r border-white/5 flex flex-col shadow-2xl transition-all ease-in-out',
-          layout.isTvProfile ? 'bg-[#050505]' : 'backdrop-blur-xl bg-black/45',
-          isTvDevice ? 'duration-200' : 'duration-500',
+          'side-menu-panel fixed left-0 top-0 bottom-0 z-[260] border-r border-white/5 flex flex-col shadow-2xl transition-all ease-in-out',
+          'bg-black/60 backdrop-blur-xl'
         )}
         style={{
           width: isExpanded ? expandedWidth : collapsedWidth,
           paddingTop: panelVerticalPadding,
           paddingBottom: Math.max(16, panelVerticalPadding - 8),
+          borderRightWidth: 1,
+          borderRightColor: 'rgba(255,255,255,0.05)',
         }}
         onMouseEnter={() => setIsExpanded(true)}
         onMouseLeave={() => setIsExpanded(false)}
@@ -210,18 +216,27 @@ export const SideMenu: React.FC<SideMenuProps> = ({ onSelect, activeId = 'home',
           className="mb-4 shrink-0"
           style={{ paddingLeft: panelHorizontalPadding, paddingRight: panelHorizontalPadding }}
         >
-          <button
+          <div
+            role="button"
+            tabIndex={0}
             onFocus={() => handleFocus('profile')}
             onBlur={handleBlur}
             onClick={() => handlePress('profile')}
             data-nav-id="menu-profile"
             className={cn(
-              "w-full flex flex-row items-center rounded-xl transition-all duration-300 outline-none border-none bg-transparent text-left",
-              (focusedItem === 'profile') && "bg-white/10 ring-1 ring-white/20"
+              "w-full flex flex-row items-center rounded-xl transition-all duration-300 outline-none border-none bg-transparent"
             )}
-            style={{ padding: layout.isTvProfile ? 8 : 10 }}
+            style={{
+              padding: layout.isTvProfile ? 8 : 10,
+              backgroundColor: 'transparent',
+              WebkitTapHighlightColor: 'transparent',
+              justifyContent: isExpanded ? 'flex-start' : 'center',
+            }}
           >
-            <div className="flex flex-row items-center">
+            <div
+              className="flex flex-row items-center"
+              style={{ width: isExpanded ? '100%' : 'auto', justifyContent: isExpanded ? 'flex-start' : 'center' }}
+            >
               <div
                 className="bg-gradient-to-br from-blue-600 to-indigo-800 rounded-lg flex items-center justify-center shadow-lg shrink-0"
                 style={{ width: layout.isTvProfile ? 36 : 40, height: layout.isTvProfile ? 36 : 40 }}
@@ -232,23 +247,21 @@ export const SideMenu: React.FC<SideMenuProps> = ({ onSelect, activeId = 'home',
                 isTvDevice ? (
                   <div
                     className="inline-block font-display font-bold text-white tracking-tight whitespace-nowrap"
-                    style={{ marginLeft: layout.isTvProfile ? 12 : 16, fontSize: labelFontSize }}
+                    style={{ marginLeft: layout.isTvProfile ? 12 : 16, fontSize: labelFontSize, textAlign: 'left' }}
                   >
                     Timbo
                   </div>
                 ) : (
-                  <motion.div
-                    initial={{ opacity: 0, x: -10 }}
-                    animate={{ opacity: 1, x: 0 }}
+                  <div
                     className="inline-block font-display font-bold text-white tracking-tight whitespace-nowrap"
-                    style={{ marginLeft: layout.isTvProfile ? 12 : 16, fontSize: labelFontSize }}
+                    style={{ marginLeft: layout.isTvProfile ? 12 : 16, fontSize: labelFontSize, textAlign: 'left' }}
                   >
                     Timbo
-                  </motion.div>
+                  </div>
                 )
               )}
             </div>
-          </button>
+          </div>
         </div>
 
         {/* Navigation Items */}
@@ -267,19 +280,30 @@ export const SideMenu: React.FC<SideMenuProps> = ({ onSelect, activeId = 'home',
             const isActive = activeId === item.id;
 
             return (
-              <button
+              <div
                 key={item.id}
+                role="button"
+                tabIndex={0}
                 data-nav-id={`menu-${item.id}`}
                 onFocus={() => handleFocus(item.id)}
                 onBlur={handleBlur}
                 onClick={() => handlePress(item.id)}
                 className={cn(
-                  "w-full flex flex-row items-center rounded-xl transition-all duration-300 cursor-pointer group outline-none border-none bg-transparent text-left",
-                  (isFocused || isActive) ? "bg-white/10" : "hover:bg-white/5"
+                  "w-full flex items-center rounded-xl transition-all duration-300 cursor-pointer group outline-none border-none bg-transparent",
+                  isFocused ? "scale-110" : "opacity-70 scale-100"
                 )}
-                style={{ padding: itemPadding }}
+                style={{
+                  padding: itemPadding,
+                  backgroundColor: 'transparent',
+                  WebkitTapHighlightColor: 'transparent',
+                  transformOrigin: 'center center',
+                  justifyContent: isExpanded ? 'flex-start' : 'center',
+                }}
               >
-                <div className="flex flex-row items-center">
+                <div
+                  className="flex flex-row items-center"
+                  style={{ width: isExpanded ? '100%' : 'auto', justifyContent: isExpanded ? 'flex-start' : 'center' }}
+                >
                   <div className="w-6 flex items-center justify-center shrink-0 transition-transform duration-300 group-hover:scale-110">
                     <Icon 
                       size={iconSize} 
@@ -294,78 +318,28 @@ export const SideMenu: React.FC<SideMenuProps> = ({ onSelect, activeId = 'home',
                           "inline-block font-display tracking-tight transition-colors duration-300 whitespace-nowrap",
                           (isFocused || isActive) ? "text-white font-bold" : "text-gray-400 group-hover:text-white"
                         )}
-                        style={{ marginLeft: layout.isTvProfile ? 12 : 16, fontSize: labelFontSize }}
+                        style={{ marginLeft: layout.isTvProfile ? 12 : 16, fontSize: labelFontSize, textAlign: 'left' }}
                       >
                         {item.label}
                       </div>
                     ) : (
-                      <motion.div
-                        initial={{ opacity: 0, x: -10 }}
-                        animate={{ opacity: 1, x: 0 }}
+                      <div
                         className={cn(
                           "inline-block font-display tracking-tight transition-colors duration-300 whitespace-nowrap",
                           (isFocused || isActive) ? "text-white font-bold" : "text-gray-400 group-hover:text-white"
                         )}
-                        style={{ marginLeft: layout.isTvProfile ? 12 : 16, fontSize: labelFontSize }}
+                        style={{ marginLeft: layout.isTvProfile ? 12 : 16, fontSize: labelFontSize, textAlign: 'left' }}
                       >
                         {item.label}
-                      </motion.div>
+                      </div>
                     )
                   )}
                 </div>
-              </button>
+              </div>
             );
           })}
 
-          {/* Global Admin Link (Standalone Portal) */}
-          <button
-            onFocus={() => handleFocus('admin')}
-            onBlur={handleBlur}
-            data-nav-id="menu-admin"
-            onClick={() => {
-              collapseMenu();
-              window.open('/admin-portal.html', '_blank');
-            }}
-            className={cn(
-              "w-full flex flex-row items-center rounded-xl transition-all duration-300 cursor-pointer group outline-none border-none bg-transparent text-left",
-              focusedItem === 'admin' ? "bg-white/10" : "hover:bg-white/5"
-            )}
-            style={{ padding: itemPadding }}
-          >
-            <div className="flex flex-row items-center">
-              <div className="w-6 flex items-center justify-center shrink-0 transition-transform duration-300 group-hover:scale-110">
-                <ShieldCheck 
-                  size={iconSize} 
-                  color={focusedItem === 'admin' ? "#E50914" : "rgba(255,255,255,0.6)"} 
-                />
-              </div>
-              {isExpanded && (
-                isTvDevice ? (
-                  <div
-                    className={cn(
-                      "inline-block font-display tracking-tight transition-colors duration-300 whitespace-nowrap",
-                      focusedItem === 'admin' ? "text-white font-bold" : "text-gray-400 group-hover:text-white"
-                    )}
-                    style={{ marginLeft: layout.isTvProfile ? 12 : 16, fontSize: labelFontSize }}
-                  >
-                    Painel Admin
-                  </div>
-                ) : (
-                  <motion.div
-                    initial={{ opacity: 0, x: -10 }}
-                    animate={{ opacity: 1, x: 0 }}
-                    className={cn(
-                      "inline-block font-display tracking-tight transition-colors duration-300 whitespace-nowrap",
-                      focusedItem === 'admin' ? "text-white font-bold" : "text-gray-400 group-hover:text-white"
-                    )}
-                    style={{ marginLeft: layout.isTvProfile ? 12 : 16, fontSize: labelFontSize }}
-                  >
-                    Painel Admin
-                  </motion.div>
-                )
-              )}
-            </div>
-          </button>
+
         </div>
 
         {/* Bottom Info */}
@@ -378,7 +352,9 @@ export const SideMenu: React.FC<SideMenuProps> = ({ onSelect, activeId = 'home',
             paddingBottom: 12,
           }}
         >
-          <button
+          <div
+            role="button"
+            tabIndex={0}
             onFocus={() => handleFocus('logout')}
             onBlur={handleBlur}
             data-nav-id="menu-logout"
@@ -387,12 +363,21 @@ export const SideMenu: React.FC<SideMenuProps> = ({ onSelect, activeId = 'home',
               onLogout?.();
             }}
             className={cn(
-              "w-full flex flex-row items-center rounded-xl transition-all duration-300 cursor-pointer group outline-none border-none bg-transparent text-left",
-              focusedItem === 'logout' ? "bg-red-600/20" : "hover:bg-red-600/10"
+              "w-full flex items-center rounded-xl transition-all duration-300 cursor-pointer group outline-none border-none bg-transparent",
+              focusedItem === 'logout' ? "scale-110" : "opacity-70"
             )}
-            style={{ padding: itemPadding }}
+            style={{
+              padding: itemPadding,
+              backgroundColor: 'transparent',
+              WebkitTapHighlightColor: 'transparent',
+              transformOrigin: 'center center',
+              justifyContent: isExpanded ? 'flex-start' : 'center',
+            }}
           >
-            <div className="flex flex-row items-center">
+            <div
+              className="flex flex-row items-center"
+              style={{ width: isExpanded ? '100%' : 'auto', justifyContent: isExpanded ? 'flex-start' : 'center' }}
+            >
               <div className="w-6 flex items-center justify-center shrink-0 transition-transform duration-300 group-hover:scale-110">
                 <LogOut 
                   size={iconSize} 
@@ -406,7 +391,7 @@ export const SideMenu: React.FC<SideMenuProps> = ({ onSelect, activeId = 'home',
                       "inline-block font-display tracking-tight transition-colors duration-300 whitespace-nowrap",
                       focusedItem === 'logout' ? "text-red-500 font-bold" : "text-gray-400 group-hover:text-red-500"
                     )}
-                    style={{ marginLeft: layout.isTvProfile ? 12 : 16, fontSize: labelFontSize }}
+                    style={{ marginLeft: layout.isTvProfile ? 12 : 16, fontSize: labelFontSize, textAlign: 'left' }}
                   >
                     Sair
                   </div>
@@ -418,14 +403,14 @@ export const SideMenu: React.FC<SideMenuProps> = ({ onSelect, activeId = 'home',
                       "inline-block font-display tracking-tight transition-colors duration-300 whitespace-nowrap",
                       focusedItem === 'logout' ? "text-red-500 font-bold" : "text-gray-400 group-hover:text-red-500"
                     )}
-                    style={{ marginLeft: layout.isTvProfile ? 12 : 16, fontSize: labelFontSize }}
+                    style={{ marginLeft: layout.isTvProfile ? 12 : 16, fontSize: labelFontSize, textAlign: 'left' }}
                   >
                     Sair
                   </motion.div>
                 )
               )}
             </div>
-          </button>
+          </div>
 
           {isExpanded && (
             isTvDevice ? (

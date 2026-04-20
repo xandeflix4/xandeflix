@@ -108,18 +108,10 @@ to authenticated
 using (user_id = public.current_xandeflix_user_id())
 with check (user_id = public.current_xandeflix_user_id());
 
--- xandeflix_users: Proteção extra para impedir que usuários alterem roles ou se desbloqueiem
+-- xandeflix_users: bloqueia UPDATE direto por usuarios comuns.
+-- Qualquer alteracao de perfil sensivel deve passar por RPC/funcoes controladas
+-- ou pela policy administrativa.
 drop policy if exists "users_update_own_basic_profile" on public.xandeflix_users;
-create policy "users_update_own_basic_profile"
-on public.xandeflix_users
-for update
-to authenticated
-using (auth_user_id = auth.uid())
-with check (
-  auth_user_id = auth.uid() 
-  and role = role -- Impede alteração de role
-  and is_blocked = is_blocked -- Impede autodesbloqueio
-);
 
 -- -----------------------------------------------------------------------------
 -- 5. Função de Limpeza (Housekeeping)
@@ -130,10 +122,23 @@ create or replace function public.cleanup_old_telemetry(days_to_keep integer def
 returns integer
 language plpgsql
 security definer
+set search_path = public
 as $$
 declare
   deleted_count integer;
 begin
+  if days_to_keep < 1 then
+    raise exception 'days_to_keep deve ser >= 1.';
+  end if;
+
+  if auth.role() = 'anon' then
+    raise exception 'Somente administradores podem executar cleanup de telemetria.'
+      using errcode = '42501';
+  elsif auth.role() = 'authenticated' and not public.is_xandeflix_admin() then
+    raise exception 'Somente administradores podem executar cleanup de telemetria.'
+      using errcode = '42501';
+  end if;
+
   delete from public.player_telemetry_reports
   where created_at < now() - (days_to_keep || ' days')::interval;
   
@@ -141,6 +146,9 @@ begin
   return deleted_count;
 end;
 $$;
+
+revoke all on function public.cleanup_old_telemetry(integer) from public, anon;
+grant execute on function public.cleanup_old_telemetry(integer) to authenticated, service_role;
 
 commit;
 

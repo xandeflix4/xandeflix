@@ -87,6 +87,60 @@ const hasDistinctBackdrop = (item: Media): boolean => {
   return backdrop.length > 0 && backdrop !== thumbnail;
 };
 
+const normalizeCategoryLabel = (value: string | undefined): string =>
+  String(value || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim();
+
+const isHeroFeaturedCategory = (categoryTitle: string | undefined): boolean => {
+  const normalized = normalizeCategoryLabel(categoryTitle);
+  if (!normalized) return false;
+
+  const isLancamentos =
+    normalized.includes('lancamentos')
+    || normalized.includes('lancamento');
+  const isRecemAdicionado =
+    normalized.includes('recem adicionado')
+    || normalized.includes('recem adicionados')
+    || normalized.includes('recentemente adicionado');
+  // Alguns provedores nomeiam "recém adicionado" como "novidades do/de mês".
+  const isNovidadesDoMes =
+    normalized.includes('novidades de m')
+    || normalized.includes('novidades do mes')
+    || normalized.includes('novidades mes');
+
+  return isLancamentos || isRecemAdicionado || isNovidadesDoMes;
+};
+
+const getHomeCategoryPriority = (categoryTitle: string | undefined): number => {
+  const normalized = normalizeCategoryLabel(categoryTitle);
+  if (!normalized) return 99;
+
+  const isLancamentos =
+    normalized.includes('lancamentos')
+    || normalized.includes('lancamento');
+  if (isLancamentos) return 0;
+
+  const isNovidadesDoMes =
+    normalized.includes('novidades de m')
+    || normalized.includes('novidades do mes')
+    || normalized.includes('novidades mes')
+    || normalized.includes('recem adicionado')
+    || normalized.includes('recem adicionados')
+    || normalized.includes('recentemente adicionado');
+  if (isNovidadesDoMes) return 1;
+
+  return 99;
+};
+
+const isLancamentosCategory = (categoryTitle: string | undefined): boolean => {
+  const normalized = normalizeCategoryLabel(categoryTitle);
+  return normalized.includes('lancamentos') || normalized.includes('lancamento');
+};
+
 const getTMDBRankingScore = (metadata: TMDBData | null | undefined): number | null => {
   if (!metadata) return null;
 
@@ -150,6 +204,12 @@ interface RowsVirtualListProps {
   setDetailsMedia: (media: Media | null) => void;
   isHeroVisibleInList: boolean;
   handlePlay: (media: Media) => void;
+  onHeroPrev: () => void;
+  onHeroNext: () => void;
+  heroPaginationIndex: number | null;
+  heroPaginationTotal: number;
+  canHeroPaginate: boolean;
+  onTrailerError: (media: Media) => void;
   scrollRef: React.RefObject<HTMLDivElement>;
 }
 
@@ -169,6 +229,12 @@ const RowsVirtualList = React.memo(({
   setDetailsMedia,
   isHeroVisibleInList,
   handlePlay,
+  onHeroPrev,
+  onHeroNext,
+  heroPaginationIndex,
+  heroPaginationTotal,
+  canHeroPaginate,
+  onTrailerError,
   scrollRef,
 }: RowsVirtualListProps) => {
   const viewportWidth = Math.max(layout.contentMaxWidth || layout.width, layout.width);
@@ -183,39 +249,7 @@ const RowsVirtualList = React.memo(({
     : baseHeroEstimatedHeight;
   const rowEstimatedHeight = layout.isTvProfile ? 220 : 360;
 
-  if (layout.isTvProfile) {
-    return (
-      <div style={{ width: '100%' }}>
-        <HeroSection
-          media={heroMedia}
-          onPlay={handlePlay}
-          isAutoRotating={isHeroAutoRotating}
-          onFocus={handleHeroFocus}
-          preloadedTMDBData={heroPreloadedTMDB}
-          usePreloadedTMDBOnly={false}
-          isVisibleInList={isHeroVisibleInList}
-          onInfo={(m) => {
-            setDetailsMedia(m);
-            setIsDetailsVisible(true);
-          }}
-        />
-
-        {categories.map((category, index) => (
-          <CategoryRow
-            key={category.id}
-            category={category}
-            rowIndex={index}
-            preloadedTMDBByKey={cardPreloadedTMDB}
-            tmdbMissedByKey={cardTMDBMissedByKey}
-            onMediaFocus={handleCategoryMediaFocus}
-            onMediaPress={handleMediaPress}
-            onSeeAll={setGridCategory}
-          />
-        ))}
-      </div>
-    );
-  }
-
+  // Virtualization is ALWAYS enabled to prevent OOM on TVs with 198k items
   const rowVirtualizer = useVirtualizer({
     count: categories.length + 1, // +1 for Hero
     getScrollElement: () => scrollRef.current,
@@ -263,6 +297,12 @@ const RowsVirtualList = React.memo(({
                   setDetailsMedia(m);
                   setIsDetailsVisible(true);
                 }}
+                onPrev={onHeroPrev}
+                onNext={onHeroNext}
+                paginationIndex={heroPaginationIndex}
+                paginationTotal={heroPaginationTotal}
+                canPaginate={canHeroPaginate}
+                onTrailerError={onTrailerError}
               />
             </div>
           );
@@ -339,9 +379,11 @@ const HomeScreen: React.FC<{ onLogout: () => void }> = ({ onLogout }) => {
   // Global Store State
   const activeFilter = useStore((state) => state.activeFilter);
   const searchQuery = useStore((state) => state.searchQuery);
+  const setSearchQuery = useStore((state) => state.setSearchQuery);
   const isSettingsVisible = useStore((state) => state.isSettingsVisible);
   const setIsSettingsVisible = useStore((state) => state.setIsSettingsVisible);
   const hiddenCategoryIds = useStore((state) => state.hiddenCategoryIds);
+  const setHiddenCategoryIds = useStore((state) => state.setHiddenCategoryIds);
   const setActiveFilter = useStore((state) => state.setActiveFilter);
   const isTvMode = useStore((state) => state.isTvMode);
   const playerMode = useStore((state) => state.playerMode);
@@ -365,12 +407,21 @@ const HomeScreen: React.FC<{ onLogout: () => void }> = ({ onLogout }) => {
   const [cardPreloadedTMDB, setCardPreloadedTMDB] = useState<Record<string, TMDBData>>({});
   const [cardTMDBMissedByKey, setCardTMDBMissedByKey] = useState<Record<string, true>>({});
   const [isPreparingInitialArtwork, setIsPreparingInitialArtwork] = useState(true);
+  const [failedTrailerIds, setFailedTrailerIds] = useState<Record<string, true>>({});
   const heroPreloadedTMDBRef = useRef<Record<string, TMDBData>>({});
   const cardPreloadScopeRef = useRef<string>('');
+  
+  const handleTrailerError = useCallback((media: Media) => {
+    console.warn(`[Trailer] Video indisponivel para ${media.title}. Removendo do Hero.`);
+    setFailedTrailerIds(prev => ({ ...prev, [media.id]: true }));
+    // Forçar rotação para o próximo item
+    setHeroMedia(null);
+  }, []);
 
   // TV Navigation — active only in TV mode AND when no overlay is stealing focus
-  const isHomeNavActive = isTvMode && !isDetailsVisible && !gridCategory && !isSettingsVisible && !playingMedia;
-  const { setFocusedId } = useTvNavigation({ isActive: isHomeNavActive, subscribeFocused: false });
+  // CRITICAL: Must disable when activeFilter is 'live' because LiveTVGrid has its own useTvNavigation
+  const isHomeNavActive = isTvMode && !isDetailsVisible && !gridCategory && !isSettingsVisible && !playingMedia && activeFilter !== 'live' && activeFilter !== 'sports';
+  const { setFocusedId, focusedId } = useTvNavigation({ isActive: isHomeNavActive, subscribeFocused: true });
 
   // Global Back Handler
   useEffect(() => {
@@ -404,12 +455,20 @@ const HomeScreen: React.FC<{ onLogout: () => void }> = ({ onLogout }) => {
       if (isSettingsVisible) {
         setIsSettingsVisible(false);
         e.preventDefault();
+        return;
+      }
+
+      // Se estiver em qualquer filtro diferente de Home, voltar para Home ao invés de sair do app
+      if (activeFilter !== 'home') {
+        setActiveFilter('home');
+        e.preventDefault();
+        return;
       }
     };
 
     window.addEventListener('keydown', handleGlobalBack);
     return () => window.removeEventListener('keydown', handleGlobalBack);
-  }, [playingMedia, isDetailsVisible, gridCategory, isSettingsVisible, setPlayerMode, setIsSettingsVisible]);
+  }, [playingMedia, isDetailsVisible, gridCategory, isSettingsVisible, setPlayerMode, setIsSettingsVisible, activeFilter, setActiveFilter]);
 
   const {
     fetchPlaylist,
@@ -420,8 +479,29 @@ const HomeScreen: React.FC<{ onLogout: () => void }> = ({ onLogout }) => {
     playlistLogs,
     catalogPreviewCategories,
     isWritingDatabase,
+    isBackgroundSyncing,
   } = usePlaylist();
   const { filteredCategories } = useMediaFilter(catalogPreviewCategories);
+
+  // Filtra itens favoritos das categorias visíveis
+  const favoriteItems = useMemo(() => {
+    if (favorites.length === 0) return [];
+    const seenIds = new Set<string>();
+    const items: Media[] = [];
+    
+    for (const cat of filteredCategories) {
+      for (const item of cat.items) {
+        if (seenIds.has(item.id)) continue;
+        const isFav = favorites.includes(item.id) || favorites.includes(item.videoUrl || `media:${item.id}`);
+        if (isFav) {
+          seenIds.add(item.id);
+          items.push(item);
+        }
+      }
+    }
+    
+    return items;
+  }, [favorites, filteredCategories]);
 
   // Controle de foco inicial seguro contra Race Conditions
   const initialFocusSetRef = useRef(false);
@@ -453,7 +533,9 @@ const HomeScreen: React.FC<{ onLogout: () => void }> = ({ onLogout }) => {
   const sideMenuCollapsedWidth = layout.sideRailCollapsedWidth || SIDEMENU_COLLAPSED_WIDTH;
   const sideMenuExpandedWidth = layout.sideRailExpandedWidth || SIDEMENU_EXPANDED_WIDTH;
   const sideMenuPushOffset = sideMenuExpandedWidth - sideMenuCollapsedWidth;
-  const shouldRenderSideMenu = isTvMode || layout.isDesktop;
+  const shouldRenderSideMenu = !layout.isMobile || layout.isTvProfile;
+  const isFullscreenPlayerActive = Boolean(activeVideoUrl && playerMode === 'fullscreen');
+  const shouldShowSideMenu = shouldRenderSideMenu && !isFullscreenPlayerActive;
   const mainContentShift = shouldRenderSideMenu && isSideMenuExpanded ? sideMenuPushOffset : 0;
 
   const scrollRef = useRef<HTMLDivElement | null>(null);
@@ -524,6 +606,7 @@ const HomeScreen: React.FC<{ onLogout: () => void }> = ({ onLogout }) => {
     const seen = new Set<string>();
     return filteredCategories
       .filter((category) => {
+        if (!isHeroFeaturedCategory(category.title)) return false;
         if (activeFilter === 'movie') return category.type === 'movie';
         if (activeFilter === 'series') return category.type === 'series';
         return category.type === 'movie' || category.type === 'series';
@@ -542,39 +625,48 @@ const HomeScreen: React.FC<{ onLogout: () => void }> = ({ onLogout }) => {
     () =>
       heroCandidates.filter((item) => {
         const key = getHeroMediaKey(item);
+        if (failedTrailerIds[key]) return false;
+
         const metadata = key ? heroPreloadedTMDB[key] : null;
         
-        // REGRA DE OURO: Para o HeroBanner, a mídia PRECISA ter uma imagem panorâmica (backdrop).
-        // Se entrar mídias que só têm capa (thumbnail), o sistema injeta o fallback (Unsplash),
-        // frustrando o usuário. Só giramos filmes que sabidamente têm TMDB Backdrop ou backdrop local válido.
+        // ESTRATEGIA: Para estar no Hero, precisa ter BACKDROP e TRAILER confirmados.
         const hasTMDBBackdrop = Boolean(metadata?.backdrop);
+        const hasTrailer = Boolean(metadata?.trailerKey);
         const hasDistinctLocalBackdrop = Boolean(
           item.backdrop && 
           item.backdrop !== item.thumbnail && 
           item.backdrop.trim().length > 0
         );
 
-        return hasTMDBBackdrop || hasDistinctLocalBackdrop;
+        return (hasTMDBBackdrop || hasDistinctLocalBackdrop) && hasTrailer;
+      }).sort((a, b) => {
+        const scoreA = getTMDBRankingScore(heroPreloadedTMDB[getHeroMediaKey(a)]) || 0;
+        const scoreB = getTMDBRankingScore(heroPreloadedTMDB[getHeroMediaKey(b)]) || 0;
+        return scoreB - scoreA; // Ordem decrescente de avaliao
       }),
-    [heroCandidates, heroPreloadedTMDB],
+    [heroCandidates, heroPreloadedTMDB, failedTrailerIds],
   );
 
   const heroSelectionCandidates = useMemo(() => {
+    const nonFailedCandidates = heroCandidates.filter((item) => {
+      const key = getHeroMediaKey(item);
+      return key ? !failedTrailerIds[key] : true;
+    });
+
     if (heroReadyCandidates.length > 0) {
       return heroReadyCandidates;
     }
 
     // Fallback rÃ¡pido: permite rotaÃ§Ã£o inicial com backdrops locais distintos
     // enquanto o preload de metadados TMDB ainda estÃ¡ aquecendo.
-    const localBackdropCandidates = heroCandidates.filter(hasDistinctBackdrop);
+    const localBackdropCandidates = nonFailedCandidates.filter(hasDistinctBackdrop);
     if (localBackdropCandidates.length > 0) {
       return localBackdropCandidates;
     }
 
     // Ãšltimo fallback para evitar Hero travado sem rotaÃ§Ã£o.
-    return heroCandidates;
-  }, [heroCandidates, heroReadyCandidates]);
-  const heroRotationCandidates = useMemo(() => heroSelectionCandidates, [heroSelectionCandidates]);
+    return nonFailedCandidates;
+  }, [heroCandidates, heroReadyCandidates, failedTrailerIds]);
 
   const heroDisplayMedia = useMemo(() => {
     if (isHeroRandomFilter) {
@@ -588,6 +680,23 @@ const HomeScreen: React.FC<{ onLogout: () => void }> = ({ onLogout }) => {
     if (!key) return null;
     return heroPreloadedTMDB[key] || null;
   }, [heroDisplayMedia, heroPreloadedTMDB]);
+
+  const heroPaginationState = useMemo(() => {
+    if (!isHeroRandomFilter) return { index: null as number | null, total: 0 };
+    if (!heroDisplayMedia || heroSelectionCandidates.length < 2) {
+      return { index: null as number | null, total: heroSelectionCandidates.length };
+    }
+
+    const currentKey = getHeroMediaKey(heroDisplayMedia);
+    const currentIndex = heroSelectionCandidates.findIndex(
+      (candidate) => getHeroMediaKey(candidate) === currentKey,
+    );
+    if (currentIndex < 0) {
+      return { index: null as number | null, total: heroSelectionCandidates.length };
+    }
+
+    return { index: currentIndex, total: heroSelectionCandidates.length };
+  }, [heroDisplayMedia, heroSelectionCandidates, isHeroRandomFilter]);
   const liveItemsCount = useMemo(
     () =>
       catalogPreviewCategories
@@ -638,6 +747,19 @@ const HomeScreen: React.FC<{ onLogout: () => void }> = ({ onLogout }) => {
   }, [handlePlay]);
 
   const handleCategorySelect = useCallback((id: string) => {
+    // Sidebar deve sempre navegar imediatamente para a seção escolhida.
+    // Se houver overlays ativos (detalhes/grid/config), fechamos primeiro
+    // para evitar "duas telas ativas" e navegação atrasada.
+    setIsDetailsVisible(false);
+    setDetailsMedia(null);
+    setGridCategory(null);
+    setIsSettingsVisible(false);
+
+    if (id === 'profile') {
+      setIsSettingsVisible(true);
+      return;
+    }
+
     setActiveFilter(id);
     if (scrollRef.current) {
       const scrollAny = scrollRef.current as any;
@@ -647,7 +769,7 @@ const HomeScreen: React.FC<{ onLogout: () => void }> = ({ onLogout }) => {
         scrollAny.scrollTo({ top: 0, behavior: layout.isTvProfile ? 'auto' : 'smooth' });
       }
     }
-  }, [setActiveFilter, layout.isTvProfile]);
+  }, [setActiveFilter, layout.isTvProfile, setIsSettingsVisible]);
 
   const handleHeroFocus = useCallback((_id: string) => {
     setIsAutoRotating(false);
@@ -668,7 +790,7 @@ const HomeScreen: React.FC<{ onLogout: () => void }> = ({ onLogout }) => {
         prev === shouldKeepHeroPlaying ? prev : shouldKeepHeroPlaying,
       );
     },
-    [],
+    [isTvProfile],
   );
 
   const handleCategoryMediaFocus = useCallback((_: Media, _id: string) => {
@@ -710,8 +832,11 @@ const HomeScreen: React.FC<{ onLogout: () => void }> = ({ onLogout }) => {
       const movieAndSeriesCategories = catalogPreviewCategories.filter(
         (category) => category.type === 'movie' || category.type === 'series',
       );
+      const launchCategories = movieAndSeriesCategories.filter((category) => isLancamentosCategory(category.title));
+      const nonLaunchCategories = movieAndSeriesCategories.filter((category) => !isLancamentosCategory(category.title));
+      const prioritizedCategories = [...launchCategories, ...nonLaunchCategories];
 
-      for (const category of movieAndSeriesCategories) {
+      for (const category of prioritizedCategories) {
         for (const item of category.items) {
           const mediaKey = getHeroMediaKey(item);
           if (!mediaKey || seenMediaKeys.has(mediaKey)) continue;
@@ -725,7 +850,7 @@ const HomeScreen: React.FC<{ onLogout: () => void }> = ({ onLogout }) => {
       }
 
       const criticalSeenMediaKeys = new Set<string>();
-      const criticalCategories = movieAndSeriesCategories.slice(0, HOME_ARTWORK_CRITICAL_CATEGORY_LIMIT);
+      const criticalCategories = prioritizedCategories.slice(0, HOME_ARTWORK_CRITICAL_CATEGORY_LIMIT);
       for (const category of criticalCategories) {
         let addedInCategory = 0;
         for (const item of category.items) {
@@ -796,6 +921,7 @@ const HomeScreen: React.FC<{ onLogout: () => void }> = ({ onLogout }) => {
         try {
           const metadata = await fetchTMDBMetadata(item.title, tmdbType, {
             includeDetails: false,
+            categoryHint: item.category,
           });
           if (!metadata || cancelled) {
             tmdbMissedByKey[mediaKey] = true;
@@ -804,8 +930,8 @@ const HomeScreen: React.FC<{ onLogout: () => void }> = ({ onLogout }) => {
 
           tmdbPrefetchMap[mediaKey] = metadata;
           await Promise.allSettled([
-            preloadImageUrl(metadata.thumbnail),
-            preloadImageUrl(metadata.backdrop),
+            preloadImageUrl(metadata.thumbnail || ''),
+            preloadImageUrl(metadata.backdrop || ''),
           ]);
         } catch {
           tmdbMissedByKey[mediaKey] = true;
@@ -856,14 +982,24 @@ const HomeScreen: React.FC<{ onLogout: () => void }> = ({ onLogout }) => {
 
     let cancelled = false;
     const candidates = [...heroCandidates];
+    const isPremium = (c: any) => {
+      const cat = String(c.category || c.groupTitle || '').toLowerCase();
+      return cat.includes('lançamento') || cat.includes('cinema') || cat.includes('novo') || cat.includes('recent') || cat.includes('2024') || cat.includes('2025');
+    };
 
-    for (let i = candidates.length - 1; i > 0; i -= 1) {
-      const j = Math.floor(Math.random() * (i + 1));
-      [candidates[i], candidates[j]] = [candidates[j], candidates[i]];
+    let pool = candidates.filter(isPremium);
+    // Se não tiver categorias de lançamentos suficientes, usa o catálogo inteiro como plano B
+    if (pool.length < HERO_TMDB_PRELOAD_LIMIT) {
+      pool = candidates;
     }
 
-    const preloadTargets = candidates.slice(0, HERO_TMDB_PRELOAD_LIMIT);
+    // Embaralha apenas o pool escolhido
+    for (let i = pool.length - 1; i > 0; i -= 1) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [pool[i], pool[j]] = [pool[j], pool[i]];
+    }
 
+    const preloadTargets = pool.slice(0, HERO_TMDB_PRELOAD_LIMIT);
     const preloadTMDBForHero = async () => {
       for (const candidate of preloadTargets) {
         if (cancelled) return;
@@ -877,7 +1013,7 @@ const HomeScreen: React.FC<{ onLogout: () => void }> = ({ onLogout }) => {
         if (!tmdbType) continue;
 
         try {
-          const metadata = await fetchTMDBMetadata(candidate.title, tmdbType);
+          const metadata = await fetchTMDBMetadata(candidate.title, tmdbType, { includeDetails: true, categoryHint: candidate.category });
           if (cancelled) continue;
           if (!metadata) {
             console.warn(`[HeroTMDB] Sem correspondencia no TMDB para: ${candidate.title}`);
@@ -970,6 +1106,64 @@ const HomeScreen: React.FC<{ onLogout: () => void }> = ({ onLogout }) => {
     }
   }, [activeVideoUrl, clearAutoRotateResumeTimer, isHeroRandomFilter]);
 
+  const moveHeroSelection = useCallback((direction: 'prev' | 'next') => {
+    if (!isHeroRandomFilter || heroSelectionCandidates.length < 2) return;
+
+    clearAutoRotateResumeTimer();
+    setIsAutoRotating(false);
+
+    setHeroMedia((current) => {
+      const pool = heroSelectionCandidates;
+      const currentMedia = current || heroDisplayMedia || pool[0];
+      const currentKey = getHeroMediaKey(currentMedia);
+      const currentIndex = pool.findIndex((candidate) => getHeroMediaKey(candidate) === currentKey);
+      const safeIndex = currentIndex >= 0 ? currentIndex : 0;
+      const delta = direction === 'next' ? 1 : -1;
+      const nextIndex = (safeIndex + delta + pool.length) % pool.length;
+      return pool[nextIndex];
+    });
+
+    scheduleHeroAutoRotateResume(layout.isTvProfile ? 12000 : 9000);
+  }, [
+    clearAutoRotateResumeTimer,
+    heroDisplayMedia,
+    heroSelectionCandidates,
+    isHeroRandomFilter,
+    layout.isTvProfile,
+    scheduleHeroAutoRotateResume,
+  ]);
+
+  useEffect(() => {
+    if (!isHomeNavActive || heroSelectionCandidates.length < 2) return;
+
+    const isHeroFocused = typeof focusedId === 'string' && focusedId.startsWith('hero-');
+    if (!isHeroFocused) return;
+
+    const onHeroSideNavigate = (event: KeyboardEvent) => {
+      const keyCode = (event as KeyboardEvent & { keyCode?: number; which?: number }).keyCode
+        ?? (event as KeyboardEvent & { which?: number }).which
+        ?? 0;
+      const key = event.key;
+      const isLeft = key === 'ArrowLeft' || key === 'Left' || keyCode === 21;
+      const isRight = key === 'ArrowRight' || key === 'Right' || keyCode === 22;
+      if (!isLeft && !isRight) return;
+
+      const activeFocused = (document.activeElement as HTMLElement | null)?.dataset?.navId || focusedId;
+      if (!activeFocused || !String(activeFocused).startsWith('hero-')) return;
+
+      event.preventDefault();
+      event.stopPropagation();
+      (event as any).stopImmediatePropagation?.();
+      moveHeroSelection(isLeft ? 'prev' : 'next');
+    };
+
+    window.addEventListener('keydown', onHeroSideNavigate, true);
+    return () => window.removeEventListener('keydown', onHeroSideNavigate, true);
+  }, [focusedId, heroSelectionCandidates.length, isHomeNavActive, moveHeroSelection]);
+
+  const handleHeroPrev = useCallback(() => moveHeroSelection('prev'), [moveHeroSelection]);
+  const handleHeroNext = useCallback(() => moveHeroSelection('next'), [moveHeroSelection]);
+
   useEffect(() => {
     return () => {
       clearAutoRotateResumeTimer();
@@ -981,7 +1175,7 @@ const HomeScreen: React.FC<{ onLogout: () => void }> = ({ onLogout }) => {
       return filteredCategories;
     }
 
-    return filteredCategories
+    const preparedCategories = filteredCategories
       .map((category) => {
         const coveredItems = category.items.filter((item) => {
           if (item.type === 'live') return true;
@@ -1023,6 +1217,7 @@ const HomeScreen: React.FC<{ onLogout: () => void }> = ({ onLogout }) => {
             }
             return diff;
           })
+          .slice(0, 40)
           .map((entry) => entry.item);
 
         return {
@@ -1031,7 +1226,175 @@ const HomeScreen: React.FC<{ onLogout: () => void }> = ({ onLogout }) => {
         };
       })
       .filter((category) => category.items.length > 0);
+
+    if (activeFilter !== 'home') {
+      return preparedCategories;
+    }
+
+    return preparedCategories
+      .map((category, originalIndex) => ({
+        category,
+        originalIndex,
+        priority: getHomeCategoryPriority(category.title),
+      }))
+      .sort((left, right) => {
+        if (left.priority !== right.priority) {
+          return left.priority - right.priority;
+        }
+        return left.originalIndex - right.originalIndex;
+      })
+      .map((entry) => entry.category);
   }, [activeFilter, cardPreloadedTMDB, filteredCategories]);
+
+  const categoriesForRows = useMemo(() => {
+    if (activeFilter !== 'home') {
+      return categoriesWithCoverCards;
+    }
+
+    const categoriesBase = categoriesWithCoverCards.filter((category) => {
+      const normalizedTitle = normalizeCategoryLabel(category.title);
+      return (
+        category.id !== 'home-favorites'
+        && category.id !== 'home-top-rated-lancamentos'
+        && normalizedTitle !== 'meus favoritos'
+        && normalizedTitle !== 'mais conceituados tmdb lancamentos'
+      );
+    });
+
+    let withFavorites = categoriesBase;
+    if (favoriteItems.length > 0) {
+      const favoritesCategory: Category = {
+        id: 'home-favorites',
+        title: 'Meus Favoritos',
+        type: 'movie',
+        items: favoriteItems,
+      };
+      const favoritesInsertIndex = Math.min(2, withFavorites.length);
+      withFavorites = [
+        ...withFavorites.slice(0, favoritesInsertIndex),
+        favoritesCategory,
+        ...withFavorites.slice(favoritesInsertIndex),
+      ];
+    }
+
+    const mergedMetadataByKey: Record<string, TMDBData> = {
+      ...cardPreloadedTMDB,
+      ...heroPreloadedTMDB,
+    };
+
+    const topRatedLaunchItems = filteredCategories
+      .filter((category) => isLancamentosCategory(category.title))
+      .flatMap((category) => category.items)
+      .map((item, originalIndex) => {
+        const mediaKey = getHeroMediaKey(item);
+        const metadata = mediaKey ? mergedMetadataByKey[mediaKey] : null;
+        const voteAverageRaw =
+          Number.isFinite(metadata?.voteAverage as number)
+            ? Number(metadata?.voteAverage)
+            : Number.parseFloat(String(metadata?.rating || '0'));
+        const voteAverage = Number.isFinite(voteAverageRaw) ? voteAverageRaw : 0;
+        const voteCount = Number(metadata?.voteCount || 0);
+        const popularity = Number(metadata?.popularity || 0);
+        return {
+          item,
+          originalIndex,
+          voteAverage,
+          voteCount,
+          popularity,
+        };
+      })
+      .filter((entry) => entry.voteAverage >= 8.5)
+      .sort((left, right) => {
+        if (right.voteAverage !== left.voteAverage) return right.voteAverage - left.voteAverage;
+        if (right.voteCount !== left.voteCount) return right.voteCount - left.voteCount;
+        if (right.popularity !== left.popularity) return right.popularity - left.popularity;
+        return left.originalIndex - right.originalIndex;
+      })
+      .reduce((acc, entry) => {
+        const key = getHeroMediaKey(entry.item);
+        if (!key || acc.seen.has(key)) return acc;
+        acc.seen.add(key);
+        acc.items.push(entry.item);
+        return acc;
+      }, { seen: new Set<string>(), items: [] as Media[] })
+      .items
+      .slice(0, 40);
+
+    if (topRatedLaunchItems.length === 0) {
+      return withFavorites;
+    }
+
+    const topRatedCategory: Category = {
+      id: 'home-top-rated-lancamentos',
+      title: 'Mais Conceituados TMDB (Lançamentos)',
+      type: 'movie',
+      items: topRatedLaunchItems,
+    };
+
+    const topRatedInsertIndex = Math.min(3, withFavorites.length);
+    return [
+      ...withFavorites.slice(0, topRatedInsertIndex),
+      topRatedCategory,
+      ...withFavorites.slice(topRatedInsertIndex),
+    ];
+  }, [
+    activeFilter,
+    cardPreloadedTMDB,
+    categoriesWithCoverCards,
+    favoriteItems,
+    filteredCategories,
+    heroPreloadedTMDB,
+  ]);
+
+  const searchResultCount = useMemo(
+    () => categoriesForRows.reduce((acc, category) => acc + category.items.length, 0),
+    [categoriesForRows],
+  );
+  const searchInsetLeft = (shouldRenderSideMenu ? sideMenuCollapsedWidth : 0) + (layout.isTvProfile ? 24 : 20);
+  const searchInsetRight = layout.isTvProfile ? 28 : 20;
+  const virtualKeyboardRows = useMemo(
+    () => [
+      ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J'],
+      ['K', 'L', 'M', 'N', 'O', 'P', 'Q', 'R', 'S', 'T'],
+      ['U', 'V', 'W', 'X', 'Y', 'Z', '0', '1', '2', '3'],
+      ['4', '5', '6', '7', '8', '9', ' ', '-', "'"],
+    ],
+    [],
+  );
+
+  const appendSearchCharacter = useCallback((character: string) => {
+    setSearchQuery(`${searchQuery}${character}`);
+  }, [searchQuery, setSearchQuery]);
+
+  const removeLastSearchCharacter = useCallback(() => {
+    setSearchQuery(searchQuery.slice(0, -1));
+  }, [searchQuery, setSearchQuery]);
+  const searchQueryNormalized = searchQuery.trim();
+  const searchFilteredItems = useMemo(() => {
+    const seen = new Set<string>();
+    const flat = categoriesForRows.flatMap((category) => category.items);
+    return flat.filter((item) => {
+      const key = item.id || item.videoUrl;
+      if (!key || seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+  }, [categoriesForRows]);
+  const searchPreviewItems = useMemo(() => {
+    const seen = new Set<string>();
+    return catalogPreviewCategories
+      .filter((category) => category.type === 'movie' || category.type === 'series')
+      .flatMap((category) => category.items)
+      .filter((item) => {
+        const key = item.id || item.videoUrl;
+        if (!key || seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      })
+      .slice(0, 60);
+  }, [catalogPreviewCategories]);
+  const searchDisplayItems = searchQueryNormalized.length > 0 ? searchFilteredItems : searchPreviewItems;
+  const searchDisplayCount = searchDisplayItems.length;
 
   const nextEpisode = useMemo(() => {
     if (!playingMedia || playingMedia.type !== 'series' || !playingMedia.currentEpisode) return null;
@@ -1078,7 +1441,7 @@ const HomeScreen: React.FC<{ onLogout: () => void }> = ({ onLogout }) => {
   const hasCatalogButEmptyView =
     catalogPreviewCategories.length > 0
     && !loading
-    && categoriesWithCoverCards.length === 0
+    && categoriesForRows.length === 0
     && activeFilter !== 'search'
     && activeFilter !== 'mylist';
 
@@ -1088,7 +1451,7 @@ const HomeScreen: React.FC<{ onLogout: () => void }> = ({ onLogout }) => {
       playlistStatus,
       hasPlaylistError: Boolean(playlistError),
       catalogPreviewCategories: catalogPreviewCategories.length,
-      categoriesWithCoverCards: categoriesWithCoverCards.length,
+      categoriesWithCoverCards: categoriesForRows.length,
       isPlaylistStillBooting,
       hasBlockingPlaylistError,
       hasCatalogButEmptyView,
@@ -1096,7 +1459,7 @@ const HomeScreen: React.FC<{ onLogout: () => void }> = ({ onLogout }) => {
     });
   }, [
     activeFilter,
-    categoriesWithCoverCards.length,
+    categoriesForRows.length,
     catalogPreviewCategories.length,
     hasBlockingPlaylistError,
     hasCatalogButEmptyView,
@@ -1105,6 +1468,25 @@ const HomeScreen: React.FC<{ onLogout: () => void }> = ({ onLogout }) => {
     playlistError,
     playlistStatus,
   ]);
+
+  // Foco inicial quando a interface carrega.
+  // Isso evita que a Engine de TV pegue o "SideBar" (primeiro node da DOM)
+  // e inicie abrindo a lateral da TV sem o usuário ter pedido.
+  useEffect(() => {
+    if (!loading && isTvMode && isHomeNavActive && activeFilter !== 'live' && activeFilter !== 'sports') {
+      const initTimer = setTimeout(() => {
+        try {
+          if (!document.activeElement?.closest('.side-menu-panel')) {
+             setFocusedId('hero-play'); 
+          }
+        } catch (error) {
+          void error;
+        }
+      }, 500);
+      return () => clearTimeout(initTimer);
+    }
+  }, [loading, isTvMode, isHomeNavActive, activeFilter, setFocusedId]);
+
   if (catalogPreviewCategories.length === 0 && !hasBlockingPlaylistError) {
     return (
       <LoadingScreen
@@ -1205,6 +1587,7 @@ const HomeScreen: React.FC<{ onLogout: () => void }> = ({ onLogout }) => {
   }
 
   const isAnyOverlayActive = isDetailsVisible || !!gridCategory || isSettingsVisible;
+  const shouldBlockBaseInteractions = !!gridCategory || isSettingsVisible;
   const centeredContentMaxWidth = layout.isTvProfile
     ? null
     : null; // No centering on TV for full-bleed Hero appearance
@@ -1214,45 +1597,52 @@ const HomeScreen: React.FC<{ onLogout: () => void }> = ({ onLogout }) => {
       {!hasBlockingPlaylistError && (
       <View 
         style={{ flex: 1, flexDirection: 'row', width: '100%', height: '100%' }}
-        aria-hidden={isAnyOverlayActive}
-        pointerEvents={isAnyOverlayActive ? 'none' : 'auto'}
+        aria-hidden={shouldBlockBaseInteractions}
+        pointerEvents={shouldBlockBaseInteractions ? 'none' : 'auto'}
       >
         {/* Sidebar Navigation - Fixed Rail */}
-        {shouldRenderSideMenu && (
-          <View style={{ width: isTvProfile ? 0 : sideMenuCollapsedWidth, height: '100%', zIndex: 250 }}>
-            <SideMenu 
-              onSelect={handleCategorySelect} 
-              activeId={activeFilter} 
-              onLogout={onLogout}
-              onExpandedChange={setIsSideMenuExpanded}
-            />
-          </View>
+        {shouldShowSideMenu && (
+          <SideMenu 
+            onSelect={handleCategorySelect} 
+            activeId={activeFilter} 
+            onLogout={onLogout}
+            onExpandedChange={setIsSideMenuExpanded}
+          />
         )}
 
         {/* Main Content Area */}
-        <motion.div
-          style={{ flex: 1, minWidth: 0, display: 'flex', width: '100%' }}
-          animate={{ marginLeft: isTvProfile ? 0 : mainContentShift }}
-          transition={{ duration: 0.2, ease: 'easeOut' }}
+        <div
+          style={{ 
+            flex: 1, 
+            minWidth: 0, 
+            display: 'flex', 
+            flexDirection: 'column',
+            width: '100%',
+            height: '100%',
+            marginLeft: 0,
+            transition: 'margin-left 200ms ease-out',
+            willChange: 'margin-left'
+          }}
         >
         <View style={{ flex: 1 }}>
-          {activeFilter === 'live' ? (
+          {activeFilter === 'live' || activeFilter === 'sports' ? (
             <Suspense fallback={<LoadingScreen />}>
               <LiveTVGrid 
+                key={activeFilter}
                 categories={filteredCategories}
                 onPlayFull={handlePlay} 
                 layout={layout}
                 externalMedia={null}
                 isGlobalPlayerActive={!!activeVideoUrl}
+                section={activeFilter}
               />
             </Suspense>
-          ) : (
+          ) : activeFilter === 'search' ? (
             <div
               ref={scrollRef as any}
               className="main-scrollview custom-scrollbar"
-              onScroll={handleMainListScroll}
               style={{
-                ...styles.scrollContentTv,
+                width: '100%',
                 flex: 1,
                 overflowY: 'auto',
                 overflowX: 'hidden',
@@ -1265,24 +1655,226 @@ const HomeScreen: React.FC<{ onLogout: () => void }> = ({ onLogout }) => {
               <div
                 style={{
                   width: '100%',
+                  paddingLeft: searchInsetLeft,
+                  paddingRight: searchInsetRight,
+                  paddingTop: layout.isTvProfile ? 26 : 88,
+                  paddingBottom: 30,
+                }}
+              >
+                <div
+                  style={{
+                    display: 'grid',
+                    gridTemplateColumns: layout.isTvProfile ? '300px 1fr' : '1fr',
+                    gap: layout.isTvProfile ? 24 : 16,
+                    alignItems: 'start',
+                  }}
+                >
+                  <div
+                    style={{
+                      position: layout.isTvProfile ? 'sticky' : 'relative',
+                      top: layout.isTvProfile ? 16 : 0,
+                      alignSelf: 'start',
+                      border: '1px solid rgba(255,255,255,0.12)',
+                      borderRadius: 14,
+                      padding: 14,
+                      background: 'rgba(12,12,12,0.9)',
+                    }}
+                  >
+                    <h2 style={{ margin: 0, color: '#fff', fontSize: 22, fontWeight: 900, letterSpacing: -0.4 }}>
+                      Busca
+                    </h2>
+                    <div
+                      style={{
+                        marginTop: 10,
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: 8,
+                        border: '1px solid rgba(255,255,255,0.14)',
+                        borderRadius: 10,
+                        padding: '10px 12px',
+                        background: 'rgba(0,0,0,0.35)',
+                      }}
+                    >
+                      <Search size={16} color="rgba(255,255,255,0.6)" />
+                      <input
+                        data-nav-id="search-input"
+                        value={searchQuery}
+                        onChange={(event) => setSearchQuery(event.target.value)}
+                        placeholder="Digite para buscar"
+                        style={{
+                          flex: 1,
+                          border: 'none',
+                          outline: 'none',
+                          background: 'transparent',
+                          color: 'white',
+                          fontSize: 16,
+                          fontWeight: 700,
+                        }}
+                      />
+                    </div>
+
+                    <div style={{ marginTop: 10, display: 'flex', flexDirection: 'column', gap: 7 }}>
+                      {virtualKeyboardRows.map((row, rowIndex) => (
+                        <div key={`vk-row-${rowIndex}`} style={{ display: 'grid', gridTemplateColumns: 'repeat(10, minmax(0, 1fr))', gap: 6 }}>
+                          {row.map((keyLabel) => (
+                            <button
+                              key={`vk-key-${rowIndex}-${keyLabel}`}
+                              onClick={() => appendSearchCharacter(keyLabel)}
+                              style={{
+                                height: 34,
+                                borderRadius: 8,
+                                border: '1px solid rgba(255,255,255,0.15)',
+                                background: 'rgba(255,255,255,0.07)',
+                                color: 'white',
+                                fontSize: 13,
+                                fontWeight: 800,
+                                cursor: 'pointer',
+                              }}
+                            >
+                              {keyLabel === ' ' ? '_' : keyLabel}
+                            </button>
+                          ))}
+                        </div>
+                      ))}
+                    </div>
+
+                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, marginTop: 10 }}>
+                      <button
+                        onClick={removeLastSearchCharacter}
+                        style={{
+                          height: 36,
+                          borderRadius: 8,
+                          border: '1px solid rgba(255,255,255,0.15)',
+                          background: 'rgba(255,255,255,0.1)',
+                          color: 'white',
+                          fontWeight: 800,
+                          cursor: 'pointer',
+                        }}
+                      >
+                        Apagar
+                      </button>
+                      <button
+                        onClick={() => setSearchQuery('')}
+                        style={{
+                          height: 36,
+                          borderRadius: 8,
+                          border: '1px solid rgba(255,255,255,0.15)',
+                          background: 'rgba(229,9,20,0.22)',
+                          color: 'white',
+                          fontWeight: 800,
+                          cursor: 'pointer',
+                        }}
+                      >
+                        Limpar
+                      </button>
+                    </div>
+                  </div>
+
+                  <div>
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
+                      <h1 style={{ margin: 0, color: 'white', fontSize: layout.isTvProfile ? 34 : 26, fontWeight: 900, letterSpacing: -0.8 }}>
+                        {searchQueryNormalized.length > 0 ? `"${searchQueryNormalized}"` : 'Sugestões para você'}
+                      </h1>
+                      <span style={{ color: 'rgba(255,255,255,0.7)', fontSize: 12, fontWeight: 800, letterSpacing: 1, textTransform: 'uppercase' }}>
+                        {searchDisplayCount} itens
+                      </span>
+                    </div>
+
+                    {searchDisplayCount === 0 ? (
+                      <div style={{ color: 'rgba(255,255,255,0.6)', fontSize: 15 }}>
+                        Nenhum conteúdo encontrado.
+                      </div>
+                    ) : (
+                      <div
+                        style={{
+                          display: 'grid',
+                          gridTemplateColumns: 'repeat(auto-fill, minmax(190px, 1fr))',
+                          gap: 12,
+                        }}
+                      >
+                        {searchDisplayItems.map((item, index) => (
+                          <div
+                            key={`search-grid-${item.id}-${index}`}
+                            role="button"
+                            tabIndex={0}
+                            onClick={() => handleMediaPress(item)}
+                            onKeyDown={(event) => {
+                              if (event.key === 'Enter') handleMediaPress(item);
+                            }}
+                            style={{
+                              cursor: 'pointer',
+                              borderRadius: 12,
+                              overflow: 'hidden',
+                              background: '#101827',
+                              border: '1px solid rgba(255,255,255,0.1)',
+                              position: 'relative',
+                              minHeight: 280,
+                            }}
+                          >
+                            <img
+                              src={item.thumbnail || item.backdrop || ''}
+                              alt={item.title}
+                              style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }}
+                            />
+                            <div
+                              style={{
+                                position: 'absolute',
+                                left: 0,
+                                right: 0,
+                                bottom: 0,
+                                padding: '12px 10px',
+                                background: 'linear-gradient(to top, rgba(0,0,0,0.95), rgba(0,0,0,0.05))',
+                              }}
+                            >
+                              <div
+                                style={{
+                                  color: '#fff',
+                                  fontSize: 14,
+                                  fontWeight: 800,
+                                  lineHeight: 1.2,
+                                  whiteSpace: 'nowrap',
+                                  overflow: 'hidden',
+                                  textOverflow: 'ellipsis',
+                                }}
+                              >
+                                {item.title}
+                              </div>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </div>
+            </div>
+          ) : (
+            <div
+              ref={scrollRef as any}
+              className="main-scrollview custom-scrollbar"
+              onScroll={handleMainListScroll}
+              style={{
+                width: '100%',
+                flex: 1,
+                overflowY: 'auto',
+                overflowX: 'hidden',
+                paddingLeft: 0,
+                paddingRight: 0,
+                paddingTop: 0,
+                paddingBottom: 100,
+              }}
+            >
+                <div
+                  style={{
+                    width: '100%',
                   maxWidth: (layout.isTvProfile || !centeredContentMaxWidth) ? '100%' : centeredContentMaxWidth,
                   marginLeft: (layout.isTvProfile || !centeredContentMaxWidth) ? 0 : 'auto',
                   marginRight: (layout.isTvProfile || !centeredContentMaxWidth) ? 0 : 'auto',
-                  paddingLeft: layout.isTvProfile ? 0 : layout.horizontalPadding,
-                  paddingRight: layout.isTvProfile ? 0 : Math.max(36, layout.horizontalPadding),
-                  paddingTop: layout.isTvProfile
-                    ? 0
-                    : layout.topHeaderPadding + (layout.isCompact ? 10 : 20),
-                }}
-              >
-                {/* Meus Favoritos (Etapa 12) */}
-                {favorites.length > 0 && (
-                  <CategoryRow 
-                    title="Meus Favoritos" 
-                    items={favorites} 
-                    rowIndex={-1} 
-                  />
-                )}
+                  paddingLeft: 0,
+                  paddingRight: 0,
+                  paddingTop: 0,
+                  }}
+                >
                 {/* 
                   Otimização de Performance: 
                   Utilizamos o useVirtualizer para a lista de linhas de categorias. 
@@ -1290,7 +1882,7 @@ const HomeScreen: React.FC<{ onLogout: () => void }> = ({ onLogout }) => {
                   simultaneamente, focando apenas no que está na tela.
                 */}
                 <RowsVirtualList 
-                  categories={categoriesWithCoverCards}
+                  categories={categoriesForRows}
                   cardPreloadedTMDB={cardPreloadedTMDB}
                   cardTMDBMissedByKey={cardTMDBMissedByKey}
                   handleCategoryMediaFocus={handleCategoryMediaFocus}
@@ -1305,7 +1897,13 @@ const HomeScreen: React.FC<{ onLogout: () => void }> = ({ onLogout }) => {
                   setDetailsMedia={setDetailsMedia}
                   isHeroVisibleInList={isHeroVisibleInList}
                   handlePlay={handlePlay}
-                  scrollRef={scrollRef}
+                  onHeroPrev={handleHeroPrev}
+                  onHeroNext={handleHeroNext}
+                  heroPaginationIndex={heroPaginationState.index}
+                  heroPaginationTotal={heroPaginationState.total}
+                  canHeroPaginate={heroSelectionCandidates.length > 1}
+                  onTrailerError={handleTrailerError}
+                  scrollRef={scrollRef as any}
                 />
               </div>
             </div>
@@ -1314,18 +1912,40 @@ const HomeScreen: React.FC<{ onLogout: () => void }> = ({ onLogout }) => {
           {/* Header Overlay Branding */}
           {!activeVideoUrl && (
             <View style={[styles.header, { 
-              top: layout.isTvProfile ? 10 : 20,
+              top: layout.isTvProfile ? 24 : 16,
+              right: layout.isTvProfile ? 40 : 24,
+              left: 'auto',
               position: 'absolute',
-              height: 60,
-              paddingLeft: layout.isTvProfile ? 22 : 20 
+              zIndex: 50,
             }]}>
-              <Text style={[styles.logo, { fontSize: layout.isTvProfile ? 24 : 56, letterSpacing: layout.isTvProfile ? -1.4 : -3 }]}>XANDEFLIX</Text>
+              {isBackgroundSyncing && (
+                <View 
+                  style={{ 
+                    marginRight: 16, 
+                    flexDirection: 'row', 
+                    alignItems: 'center', 
+                    gap: 8, 
+                    backgroundColor: 'rgba(0,0,0,0.6)', 
+                    paddingVertical: 6,
+                    paddingHorizontal: 14, 
+                    borderRadius: 24, 
+                    borderWidth: 1,
+                    borderColor: 'rgba(255,255,255,0.08)' 
+                  }}
+                >
+                  <View style={{ width: 8, height: 8, borderRadius: 4, backgroundColor: '#E50914' }} />
+                  <Text style={{ color: 'rgba(255,255,255,0.6)', fontSize: layout.isTvProfile ? 10 : 12, fontWeight: '600' }}>
+                    Sincronizando {playlistProgress}%
+                  </Text>
+                </View>
+              )}
+              <Text style={[styles.logo, { fontSize: layout.isTvProfile ? 11 : 22, letterSpacing: -1, opacity: 0.8 }]}>XANDEFLIX</Text>
             </View>
           )}
         </View>
-        </motion.div>
+        </div>
       </View>
-      )}
+     )}
 
       {/* Overlays */}
       <AnimatePresence>
@@ -1386,20 +2006,21 @@ const HomeScreen: React.FC<{ onLogout: () => void }> = ({ onLogout }) => {
                 />
               </motion.div>
             ) : (
-              <VideoPlayer
-                ref={activePlayerRef}
-                key={`${activeVideoUrl}-fullscreen`}
-                url={activeVideoUrl}
-                mediaType={videoType || 'live'}
+                <VideoPlayer
+                  ref={activePlayerRef}
+                  url={activeVideoUrl}
+                  mediaType={videoType || 'live'}
                 media={playingMedia}
                 nextEpisode={nextEpisode}
                 onPlayNextEpisode={nextEpisode ? () => handlePlay(nextEpisode) : undefined}
-                onClose={closeActivePlayer}
-                isMinimized={false}
-                isPreview={false}
-                channelBrowserCategories={filteredCategories}
-                onZap={handlePlay}
-              />
+                  onClose={closeActivePlayer}
+                  isMinimized={false}
+                  isPreview={false}
+                  isBrowseMode={videoType === 'live'}
+                  showChannelSidebar={videoType === 'live'}
+                  channelBrowserCategories={filteredCategories}
+                  onZap={handlePlay}
+                />
             )}
           </Suspense>
         )}
@@ -1421,7 +2042,7 @@ const HomeScreen: React.FC<{ onLogout: () => void }> = ({ onLogout }) => {
       <SettingsModal
         isVisible={isSettingsVisible}
         onClose={() => setIsSettingsVisible(false)}
-        onSave={() => {}}
+        onSave={(_url, hiddenIds) => setHiddenCategoryIds(hiddenIds)}
         onLogout={onLogout}
         allCategories={catalogPreviewCategories}
         hiddenCategoryIds={hiddenCategoryIds}
@@ -1435,6 +2056,11 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: '#050505',
     flexDirection: 'row',
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
   },
   scrollView: {
     flex: 1,

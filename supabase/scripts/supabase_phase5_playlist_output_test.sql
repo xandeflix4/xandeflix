@@ -26,6 +26,16 @@ create table if not exists public.playlist_output_test_state (
   updated_at timestamptz not null default timezone('utc', now())
 );
 
+alter table public.playlist_output_test_state enable row level security;
+
+drop policy if exists "admins_manage_playlist_output_test_state" on public.playlist_output_test_state;
+create policy "admins_manage_playlist_output_test_state"
+on public.playlist_output_test_state
+for all
+to authenticated
+using (public.is_xandeflix_admin())
+with check (public.is_xandeflix_admin());
+
 create or replace function public.resolve_playlist_output_url(
   p_original_url text,
   p_output text
@@ -71,6 +81,14 @@ declare
   v_user public.xandeflix_users%rowtype;
   v_identifier text := lower(trim(coalesce(p_identifier, '')));
 begin
+  if auth.role() = 'anon' then
+    raise exception 'Apenas usuarios autenticados podem executar o teste de output da playlist.'
+      using errcode = '42501';
+  elsif auth.role() = 'authenticated' and not public.is_xandeflix_admin() then
+    raise exception 'Apenas administradores podem executar o teste de output da playlist.'
+      using errcode = '42501';
+  end if;
+
   if v_identifier = '' then
     raise exception 'Informe username, access_id ou email.';
   end if;
@@ -314,6 +332,12 @@ begin
     'URL original restaurada com sucesso.'::text;
 end;
 $$;
+
+revoke all on function public.resolve_playlist_output_url(text, text) from public, anon;
+revoke all on function public.resolve_xandeflix_user_for_test(text) from public, anon;
+revoke all on function public.playlist_output_test_start(text) from public, anon;
+revoke all on function public.playlist_output_test_next(text) from public, anon;
+revoke all on function public.playlist_output_test_rollback(text) from public, anon;
 
 grant execute on function public.resolve_playlist_output_url(text, text) to authenticated, service_role;
 grant execute on function public.resolve_xandeflix_user_for_test(text) to authenticated, service_role;

@@ -1,4 +1,3 @@
-import { hashSync } from 'bcryptjs';
 import { supabase, isSupabaseConfigured } from './supabase';
 import { deletePlaylistCatalogSnapshotForUser } from './playlistCatalogSnapshot';
 import type {
@@ -11,9 +10,14 @@ import type {
 
 const DEFAULT_WINDOW_HOURS = 24;
 const MAX_WINDOW_HOURS = 24 * 14;
-const DEFAULT_USER_PASSWORD = '123';
 const MAX_TEXT_LENGTH = 160;
 const ADMIN_REQUEST_TIMEOUT_MS = 20_000;
+
+function generateSecurePassword(length = 12): string {
+  const charset = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789!@#$';
+  const values = crypto.getRandomValues(new Uint8Array(length));
+  return Array.from(values, (v) => charset[v % charset.length]).join('');
+}
 
 function withTimeout<T>(
   promiseLike: PromiseLike<T>,
@@ -162,6 +166,46 @@ function normalizeManagedUserIdentifier(value: string): string {
 function normalizeManagedUserPassword(value?: string | null): string | undefined {
   const normalized = (value || '').trim();
   return normalized || undefined;
+}
+
+async function hashManagedUserPassword(password: string): Promise<string> {
+  const normalizedPassword = normalizeManagedUserPassword(password);
+  if (!normalizedPassword) {
+    throw new Error('Informe uma senha valida.');
+  }
+
+  const { data, error } = await withTimeout(
+    supabase.rpc('admin_hash_legacy_password', {
+      p_password: normalizedPassword,
+    }),
+    ADMIN_REQUEST_TIMEOUT_MS,
+    'Tempo limite ao gerar hash de senha no Supabase.',
+  );
+
+  if (error) {
+    const code = typeof error?.code === 'string' ? error.code.toUpperCase() : '';
+    const message = typeof error?.message === 'string' ? error.message.toLowerCase() : '';
+
+    if (
+      code === 'PGRST202' ||
+      code === '42883' ||
+      message.includes('admin_hash_legacy_password')
+    ) {
+      throw new Error(
+        'A funcao admin_hash_legacy_password nao existe no banco. Execute o SQL supabase_phase8_password_hardening.sql.',
+      );
+    }
+
+    throw new Error(
+      formatSupabaseError(error, 'Nao foi possivel gerar hash de senha no Supabase.'),
+    );
+  }
+
+  if (typeof data !== 'string' || !data.trim()) {
+    throw new Error('Supabase retornou hash de senha invalido.');
+  }
+
+  return data;
 }
 
 function buildProblemScore(channel: PlayerTelemetryChannel): number {
@@ -359,7 +403,7 @@ export async function activateNewSubscriber(
 ): Promise<ManagedUser> {
   assertSupabaseConfigured();
 
-  const rawPassword = password || DEFAULT_USER_PASSWORD;
+  const rawPassword = password || generateSecurePassword();
   const username = email.split('@')[0];
 
   // 1. Criar Usuario no Auth
@@ -415,7 +459,7 @@ export async function createManagedUser(input: ManagedUserDraft): Promise<Manage
   const name = normalizeManagedUserName(input.name);
   const username = normalizeManagedUserIdentifier(input.username);
   const playlistUrl = (input.playlistUrl || '').trim();
-  const rawPassword = normalizeManagedUserPassword(input.password) || DEFAULT_USER_PASSWORD;
+  const rawPassword = normalizeManagedUserPassword(input.password) || generateSecurePassword();
 
   if (!name) {
     throw new Error('Informe o nome do cliente.');
@@ -429,7 +473,7 @@ export async function createManagedUser(input: ManagedUserDraft): Promise<Manage
     name,
     username,
     access_id: username,
-    password: hashSync(rawPassword, 10),
+    password: await hashManagedUserPassword(rawPassword),
     playlist_url: playlistUrl,
     is_blocked: false,
     role: 'user',
@@ -486,7 +530,7 @@ export async function updateManagedUser(
   if (input.password !== undefined) {
     const password = normalizeManagedUserPassword(input.password);
     if (password) {
-      payload.password = hashSync(password, 10);
+      payload.password = await hashManagedUserPassword(password);
     }
   }
 

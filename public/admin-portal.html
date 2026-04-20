@@ -146,6 +146,8 @@
         <div class="glass p-12 rounded-[40px] max-w-md w-full mx-4 text-center border-red-600/10 shadow-2xl">
             <div class="text-5xl font-black text-[#E50914] mb-2 italic tracking-tighter uppercase">XANDEFLIX</div>
             <div class="text-[11px] font-black text-white/20 mb-10 tracking-[0.4em] uppercase">Setor Administrativo</div>
+            <input type="text" id="loginSupabaseUrl" class="input-dark w-full mb-3 text-left font-mono text-[10px]" placeholder="Supabase URL (https://xxxxx.supabase.co)">
+            <input type="password" id="loginSupabaseKey" class="input-dark w-full mb-4 text-left font-mono text-[10px]" placeholder="Supabase Anon Key (JWT)">
             <input type="text" id="loginUser" onkeyup="if(event.key==='Enter')handleSystemLogin()" class="input-dark w-full mb-4" placeholder="E-mail ou ID Admin">
             <input type="password" id="loginPass" onkeyup="if(event.key==='Enter')handleSystemLogin()" class="input-dark w-full mb-6" placeholder="Senha Master">
             <button onclick="handleSystemLogin()" id="btnLogin" class="btn-primary w-full py-5 rounded-2xl font-black uppercase text-xs text-white">Validar Identidade</button>
@@ -156,12 +158,37 @@
         const MASTER_URL = "https://vvmsmrcyovwnfstohbiv.supabase.co";
         const MASTER_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InZ2bXNtcmN5b3Z3bmZzdG9oYml2Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzQ3ODQyNzIsImV4cCI6MjA5MDM2MDI3Mn0.fiOYERdIXRppudh4-UH8UM2gMGn-NDRFG04PVhoQcDs";
         let S_URL = localStorage.getItem('XF_S_URL') || MASTER_URL;
-        let S_KEY = localStorage.getItem('XF_S_KEY') || MASTER_KEY; 
+        let S_KEY = localStorage.getItem('XF_S_KEY') || MASTER_KEY;
         let xfClientInstance = null;
         let scannerFullData = {};
 
+        function hydrateConnectionFields() {
+            const urlInput = document.getElementById('loginSupabaseUrl');
+            const keyInput = document.getElementById('loginSupabaseKey');
+            if (urlInput) urlInput.value = S_URL;
+            if (keyInput) keyInput.value = S_KEY;
+        }
+
+        function applyConnectionFields() {
+            const urlInput = document.getElementById('loginSupabaseUrl');
+            const keyInput = document.getElementById('loginSupabaseKey');
+            const nextUrl = (urlInput?.value || '').trim();
+            const nextKey = (keyInput?.value || '').trim();
+
+            S_URL = nextUrl;
+            S_KEY = nextKey;
+            xfClientInstance = null;
+
+            if (nextUrl) localStorage.setItem('XF_S_URL', nextUrl);
+            else localStorage.removeItem('XF_S_URL');
+
+            if (nextKey) localStorage.setItem('XF_S_KEY', nextKey);
+            else localStorage.removeItem('XF_S_KEY');
+        }
+
         function getClient() {
             if (xfClientInstance) return xfClientInstance;
+            if (!S_URL || !S_KEY) return null;
             if (window.supabase) { xfClientInstance = window.supabase.createClient(S_URL, S_KEY); return xfClientInstance; }
             return null;
         }
@@ -169,20 +196,67 @@
         async function handleSystemLogin() {
             const user = document.getElementById('loginUser').value.trim();
             const pass = document.getElementById('loginPass').value.trim();
-            if (user === "1234") return grantAccess(); // Bypass
+            const loginButton = document.getElementById('btnLogin');
+            applyConnectionFields();
+
+            if (!user || !pass) {
+                alert('Informe usuario e senha para continuar.');
+                return;
+            }
+
+            const originalText = loginButton.innerText;
+            loginButton.disabled = true;
+            loginButton.innerText = 'Validando...';
+
+            if (!S_URL || !S_KEY) {
+                alert('Informe Supabase URL e Supabase Anon Key para continuar.');
+                loginButton.disabled = false;
+                loginButton.innerText = originalText;
+                return;
+            }
+
             const client = getClient();
+            if (!client) {
+                alert('Falha ao inicializar cliente Supabase. Verifique URL/KEY.');
+                loginButton.disabled = false;
+                loginButton.innerText = originalText;
+                return;
+            }
+
             try {
-                const { data: authData } = await client.auth.signInWithPassword({ email: user, password: pass });
+                const { data: authData, error: authError } = await client.auth.signInWithPassword({ email: user, password: pass });
                 if (authData.user) {
                     const { data: p } = await client.from('xandeflix_users').select('role').eq('auth_user_id', authData.user.id).single();
                     if (p && p.role === 'admin') return grantAccess();
                 }
-                const { data: dbU } = await client.from('xandeflix_users').select('*').or(`username.eq.${user},email.eq.${user},access_id.eq.${user}`);
-                if (dbU && dbU.length > 0) {
-                    const am = dbU.find(u => u.role === 'admin');
-                    if (am && (am.password === pass || (window.dcodeIO && dcodeIO.bcrypt && dcodeIO.bcrypt.compareSync(pass, am.password)))) return grantAccess();
+
+                const { data: dbUsers, error: dbError } = await client
+                    .from('xandeflix_users')
+                    .select('*')
+                    .or(`username.eq.${user},email.eq.${user},access_id.eq.${user}`);
+
+                if (dbUsers && dbUsers.length > 0) {
+                    const adminMatch = dbUsers.find((u) => u.role === 'admin');
+                    if (adminMatch) {
+                        const plainMatch = adminMatch.password === pass;
+                        const bcryptMatch = window.dcodeIO && window.dcodeIO.bcrypt
+                            ? window.dcodeIO.bcrypt.compareSync(pass, adminMatch.password || '')
+                            : false;
+                        if (plainMatch || bcryptMatch) {
+                            return grantAccess();
+                        }
+                    }
                 }
-            } catch (e) {}
+
+                const reason = authError?.message || dbError?.message || 'Credenciais invalidas ou perfil sem permissao de administrador.';
+                alert(`Acesso negado.\n${reason}`);
+            } catch (e) {
+                const message = e && e.message ? e.message : 'Falha na autenticacao. Verifique credenciais e configuracao do Supabase.';
+                alert(message);
+            } finally {
+                loginButton.disabled = false;
+                loginButton.innerText = originalText;
+            }
         }
 
         function grantAccess() {
@@ -385,6 +459,10 @@
 
         async function saveUserForm() {
             const client = getClient();
+            if (!client) {
+                alert('Configure Supabase URL/KEY e faca login novamente.');
+                return;
+            }
             const id = document.getElementById('editUserId').value;
             const nm = document.getElementById('addUName').value.trim();
             const un = document.getElementById('addUUser').value.trim();
@@ -398,7 +476,18 @@
             
             try {
                 let updates = { name: nm, username: un, role: rl };
-                if (pw) { updates.password = window.dcodeIO ? window.dcodeIO.bcrypt.hashSync(pw, 10) : pw; }
+                if (pw) {
+                    if (!(window.dcodeIO && window.dcodeIO.bcrypt)) {
+                        throw new Error('Biblioteca de hash indisponivel no navegador.');
+                    }
+
+                    updates.password = await new Promise((resolve, reject) => {
+                        window.dcodeIO.bcrypt.hash(pw, 10, (err, hash) => {
+                            if (err || !hash) reject(err || new Error('Falha ao gerar hash da senha.'));
+                            else resolve(hash);
+                        });
+                    });
+                }
                 if (pl) updates.playlist_url = pl;
 
                 if (id) { await client.from('xandeflix_users').update(updates).eq('id', id); }
@@ -408,6 +497,7 @@
             finally { btn.disabled = false; }
         }
 
+        hydrateConnectionFields();
         getClient();
         checkAdminSession();
     </script>

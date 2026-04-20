@@ -318,7 +318,7 @@ export async function fetchRemoteText(
       
       // Calculate remaining budget, but guarantee at least 60s for subsequent attempts
       // so a slow block on attempt 1 doesn't instantly kill attempt 2.
-      let currentTimeoutMs = Math.max(timeoutMs - elapsedTotalMs, 60000);
+      const currentTimeoutMs = Math.max(timeoutMs - elapsedTotalMs, 60000);
 
       try {
         console.log(`[Fetch] Tentativa ${i + 1}/${attempts.length}: Ocultando como '${attempt.name}'...`);

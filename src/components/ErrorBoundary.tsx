@@ -10,7 +10,7 @@ interface State {
 }
 
 export class ErrorBoundary extends Component<Props, State> {
-  public state: State = {
+  public override state: State = {
     hasError: false,
     error: null,
   };
@@ -19,7 +19,7 @@ export class ErrorBoundary extends Component<Props, State> {
     return { hasError: true, error };
   }
 
-  public componentDidCatch(error: Error, errorInfo: ErrorInfo) {
+  public override componentDidCatch(error: Error, errorInfo: ErrorInfo) {
     console.error('[ErrorBoundary] Erro capturado:', error, errorInfo);
     console.log('[ErrorBoundary] Mensagem simplificada:', error?.message || 'erro desconhecido');
   }
@@ -28,7 +28,7 @@ export class ErrorBoundary extends Component<Props, State> {
     window.location.reload();
   };
 
-  public render() {
+  public override render() {
     if (this.state.hasError) {
       return (
         <div
@@ -114,7 +114,10 @@ export class ErrorBoundary extends Component<Props, State> {
             className="mt-12 opacity-20 text-[10px] uppercase tracking-widest font-mono"
             style={{ marginTop: 18, opacity: 0.75, fontSize: 12, fontFamily: 'monospace' }}
           >
-            Error Code: {this.state.error?.name || 'GENERIC_CRASH'}
+            Error Code: {this.state.error?.name || 'GENERIC_CRASH'}<br/><br/>
+            <span style={{ fontSize: 10, color: '#f8aba6', textTransform: 'none' }}>
+              Message: {this.state.error?.message || 'Unknown Error'}
+            </span>
           </div>
         </div>
       );

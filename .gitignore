@@ -9,6 +9,10 @@ coverage/
 
 # Android / Build items
 .gradle-user/
+android/.gradle/
+android/build/
+android/app/build/
+android/capacitor-cordova-android-plugins/build/
 *.apk
 *.png
 

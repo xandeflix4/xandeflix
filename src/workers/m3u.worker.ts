@@ -1,9 +1,12 @@
 import { M3UParser } from '../lib/m3uParser';
 import { Media, MediaType } from '../types';
 
-const DEFAULT_BATCH_SIZE = 2000;
-const YIELD_EVERY_LINES = 4000;
+const DEFAULT_BATCH_SIZE = 200; // Reduzido drasticamente para 200 para playlists de 300k+ canais
+const YIELD_EVERY_LINES = 1000; // Reduzido para 1000 para liberar memoria mais frequentemente
 const TUPLE_WIDTH = 5;
+const MAX_CHANNELS_HARD_LIMIT = 350000; // Limite aumentado para 350k canais
+const MEMORY_PRESSURE_CHECK_INTERVAL = 1000; // Verificar pressao de memoria a cada 1000 canais
+const PREVIEW_READY_THRESHOLD = 3000; // Emitir preview apos N canais para fast boot
 
 const TYPE_FLAG_LIVE = 0;
 const TYPE_FLAG_MOVIE = 1;
@@ -40,6 +43,7 @@ type WorkerRuntime = {
   dictionaries: WorkerCatalogDictionaries;
   maps: WorkerCatalogMaps;
   dictionaryDelta: WorkerCatalogDictionaries;
+  previewEmitted: boolean;
 };
 
 function postToMain(message: unknown, transfer?: Transferable[]): void {
@@ -217,13 +221,28 @@ function postChunk(runtime: WorkerRuntime, isFinal: boolean): void {
   postToMain(chunk, transferList);
   postToMain({ type: 'PROGRESS', count: runtime.totalLoaded, epgUrl: runtime.epgUrl });
 
+  // Emitir PREVIEW_READY uma unica vez apos atingir o threshold
+  if (!runtime.previewEmitted && runtime.totalLoaded >= PREVIEW_READY_THRESHOLD) {
+    runtime.previewEmitted = true;
+    postToMain({ type: 'PREVIEW_READY', count: runtime.totalLoaded, epgUrl: runtime.epgUrl });
+  }
+
   runtime.tupleBatch = [];
   resetDictionaryDelta(runtime);
 }
 
-function processLine(runtime: WorkerRuntime, rawLine: string): void {
+function processLine(runtime: WorkerRuntime, rawLine: string): boolean {
   const line = rawLine.trim();
-  if (!line) return;
+  if (!line) return true; // continua processamento
+
+  // Verifica limite maximo de canais para evitar OOM
+  if (runtime.totalLoaded >= MAX_CHANNELS_HARD_LIMIT) {
+    postToMain({ 
+      type: 'ERROR', 
+      message: `Playlist excede limite maximo de ${MAX_CHANNELS_HARD_LIMIT} canais. Contato o administrador para reduzir a lista.` 
+    });
+    return false; // para processamento
+  }
 
   runtime.lineNumber += 1;
 
@@ -235,13 +254,15 @@ function processLine(runtime: WorkerRuntime, rawLine: string): void {
   if (line.toUpperCase().startsWith('#EXTINF')) {
     const { attributes, name } = extractExtinfPayload(line);
     runtime.currentItemAttributes = M3UParser.parseAttributes(attributes, name, runtime.lineNumber);
-    return;
+    return true;
   }
 
   if (line.startsWith('http') && runtime.currentItemAttributes) {
     encodeChannelTuple(runtime, runtime.currentItemAttributes, line);
     runtime.currentItemAttributes = null;
   }
+  
+  return true;
 }
 
 async function parseTextInChunks(text: string, runtime: WorkerRuntime): Promise<void> {
@@ -256,10 +277,21 @@ async function parseTextInChunks(text: string, runtime: WorkerRuntime): Promise<
     if (charCode === 13 && text.charCodeAt(index + 1) === 10) index += 1;
     lineStart = index + 1;
 
-    processLine(runtime, line);
+    if (!processLine(runtime, line)) return; // parou por limite de canais
 
     if ((runtime.tupleBatch.length / TUPLE_WIDTH) >= runtime.batchSize) {
       postChunk(runtime, false);
+      
+      // GC agressivo para playlists massivas - yields extras e GC forcado
+      if (runtime.totalLoaded % MEMORY_PRESSURE_CHECK_INTERVAL === 0) {
+        // Yield duplo para garantir que o main thread processe o chunk
+        await waitTick();
+        await waitTick();
+        // GC forcado se disponivel
+        if (typeof (globalThis as any).gc === 'function') {
+          (globalThis as any).gc();
+        }
+      }
     }
 
     processedSinceYield += 1;
@@ -310,10 +342,21 @@ async function parseStreamInChunks(response: Response, runtime: WorkerRuntime): 
       if (charCode === 13 && textBuffer.charCodeAt(index + 1) === 10) index += 1;
       lineStart = index + 1;
 
-      processLine(runtime, line);
+      if (!processLine(runtime, line)) return; // parou por limite de canais
 
       if ((runtime.tupleBatch.length / TUPLE_WIDTH) >= runtime.batchSize) {
         postChunk(runtime, false);
+        
+        // GC agressivo para playlists massivas - yields extras e GC forcado
+        if (runtime.totalLoaded % MEMORY_PRESSURE_CHECK_INTERVAL === 0) {
+          // Yield duplo para garantir que o main thread processe o chunk
+          await waitTick();
+          await waitTick();
+          // GC forcado se disponivel
+          if (typeof (globalThis as any).gc === 'function') {
+            (globalThis as any).gc();
+          }
+        }
       }
 
       processedSinceYield += 1;
@@ -359,6 +402,7 @@ function createRuntime(batchSize: number): WorkerRuntime {
       urls: [],
       logos: [],
     },
+    previewEmitted: false,
   };
 }
 

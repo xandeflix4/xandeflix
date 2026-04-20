@@ -61,7 +61,15 @@ export default function App() {
 
   useEffect(() => {
     const syncTvMode = () => {
-      setIsTvMode(detectTvEnvironment());
+      const isTv = detectTvEnvironment();
+      setIsTvMode(isTv);
+
+      // Aplica zoom CSS 70% na raiz do documento para TVs.
+      // Isso encolhe TODOS os elementos uniformemente (fontes, ícones, cards, botões).
+      // O Chromium WebView do Android suporta a propriedade CSS zoom nativamente.
+      if (typeof document !== 'undefined') {
+        document.documentElement.style.zoom = isTv ? '0.7' : '1';
+      }
     };
 
     syncTvMode();

@@ -358,6 +358,12 @@ export interface Database {
           username: string | null;
         }[];
       };
+      admin_hash_legacy_password: {
+        Args: {
+          p_password: string;
+        };
+        Returns: string;
+      };
       sync_auth_users_to_xandeflix_users: {
         Args: Record<string, never>;
         Returns: {

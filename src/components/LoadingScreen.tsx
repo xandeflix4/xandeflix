@@ -37,15 +37,13 @@ export const LoadingScreen: React.FC<LoadingScreenProps> = ({ message, details, 
     <div
       style={{
         width: '100%',
-        minHeight: '100vh',
         backgroundColor: '#050505',
         display: 'flex',
         flexDirection: 'column',
         justifyContent: 'center',
         alignItems: 'center',
         position: 'fixed',
-        top: 0,
-        left: 0,
+        inset: 0,
         zIndex: 9999,
         padding: isTvProfile ? '24px 18px' : 24,
       }}

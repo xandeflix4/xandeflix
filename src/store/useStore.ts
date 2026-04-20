@@ -6,6 +6,7 @@ import { EPGProgram, Media, PlaylistItem } from '../types';
 import { fetchRemoteText } from '../lib/api';
 import { parseM3U } from '../lib/m3uParser';
 import { parseXMLTV } from '../lib/epgParser';
+import { cleanMediaTitle } from '../lib/titleCleaner';
 
 export type AdultAccessState = {
   enabled: boolean;
@@ -23,6 +24,14 @@ type SavePlaybackProgressInput = {
   url: string;
   currentTime: number;
   duration?: number;
+};
+
+export type LastLiveChannelState = {
+  categoryId: string;
+  mediaId: string;
+  mediaTitle: string;
+  section: string; // 'live' | 'sports' etc.
+  timestamp: number;
 };
 
 const safeStateStorage: StateStorage = {
@@ -86,8 +95,8 @@ interface XandeflixState {
   setIsUsingMock: (using: boolean) => void;
 
   // New persistent states
-  favorites: PlaylistItem[]; 
-  toggleFavorite: (item: PlaylistItem) => void;
+  favorites: string[];
+  toggleFavorite: (key: string) => void;
   
   lastPlaylistUrl: string | null;
   lastEpgUrl: string | null;
@@ -128,10 +137,28 @@ interface XandeflixState {
   isLoadingEPG: boolean;
   epgError: string | null;
   fetchEPG: (url: string) => Promise<void>;
+
+  lastLiveChannel: LastLiveChannelState | null;
+  setLastLiveChannel: (state: LastLiveChannelState | null) => void;
 }
 
 const initialTvMode = detectTvEnvironment();
 const MAX_VISIBLE_ITEMS = 220;
+
+function organizeSeasons(episodes: any[]) {
+  const seasonsMap: Record<number, any[]> = {};
+  episodes.forEach(ep => {
+    if (!seasonsMap[ep.seasonNumber]) seasonsMap[ep.seasonNumber] = [];
+    seasonsMap[ep.seasonNumber].push(ep);
+  });
+
+  return Object.entries(seasonsMap)
+    .map(([num, eps]) => ({
+      seasonNumber: parseInt(num, 10),
+      episodes: eps.sort((a, b) => a.episodeNumber - b.episodeNumber)
+    }))
+    .sort((a, b) => a.seasonNumber - b.seasonNumber);
+}
 
 export const useStore = create<XandeflixState>()(
   persist(
@@ -157,6 +184,9 @@ export const useStore = create<XandeflixState>()(
       isTvMode: initialTvMode,
       focusedId: null,
       playerMode: 'closed',
+      lastLiveChannel: null,
+
+      setLastLiveChannel: (channelState) => set({ lastLiveChannel: channelState }),
 
       setIsTvMode: (enabled) => set({ isTvMode: enabled }),
       setFocusedId: (id) => set({ focusedId: id }),
@@ -194,12 +224,12 @@ export const useStore = create<XandeflixState>()(
       
       setHiddenCategoryIds: (ids) => set({ hiddenCategoryIds: ids }),
 
-      toggleFavorite: (item) =>
+      toggleFavorite: (key) =>
         set((state) => {
-          const isFavorite = state.favorites.some((f) => f.id === item.id);
+          const isFavorite = state.favorites.includes(key);
           const newFavorites = isFavorite
-            ? state.favorites.filter((f) => f.id !== item.id)
-            : [...state.favorites, item];
+            ? state.favorites.filter((f) => f !== key)
+            : [...state.favorites, key];
           return { favorites: newFavorites };
         }),
 
@@ -309,49 +339,85 @@ export const useStore = create<XandeflixState>()(
         }),
 
       playlistCategories: {},
-      isLoadingPlaylist: false,
       playlistError: null,
 
       fetchPlaylist: async (url: string) => {
         if (!url) return;
-        set({ isLoadingPlaylist: true, playlistError: null, lastPlaylistUrl: url });
+        set({ playlistError: null, lastPlaylistUrl: url });
 
         try {
           // Roteamento de Proxy CORS (Etapa 15)
           const isNative = detectTvEnvironment() || (typeof window !== 'undefined' && (window as any).Capacitor);
           const finalUrl = isNative ? url : `/api/proxy?url=${encodeURIComponent(url)}`;
-          
+
           const content = await fetchRemoteText(finalUrl, { timeoutMs: 15000 });
-          
+
           // 2. Parse (Etapa 6)
           const flatItems = parseM3U(content);
-          
+
           if (flatItems.length === 0) {
             throw new Error('Nenhum canal válido encontrado nesta lista.');
           }
 
-          // 3. Agrupamento (Etapa 7)
+          // 3. Agrupamento e Consolidação de Séries (Etapa 20)
           const grouped: Record<string, PlaylistItem[]> = {};
+          const seriesData: Record<string, { main: PlaylistItem, episodes: any[] }> = {};
+
           flatItems.forEach(item => {
             const category = item.group || 'OUTROS';
+            const { cleanTitle, season, episode } = cleanMediaTitle(item.title);
+            
+            // Se for identificado como episódio de série (tem SxxExx no título)
+            if (season !== undefined && episode !== undefined) {
+              const seriesKey = `${cleanTitle}-${category}`.toLowerCase();
+              if (!seriesData[seriesKey]) {
+                seriesData[seriesKey] = {
+                  main: { 
+                    ...item, 
+                    title: cleanTitle, 
+                    id: `series-${seriesKey}`
+                  },
+                  episodes: []
+                };
+              }
+              seriesData[seriesKey].episodes.push({
+                id: item.id,
+                title: item.title,
+                seasonNumber: season,
+                episodeNumber: episode,
+                videoUrl: item.url
+              });
+            } else {
+              if (!grouped[category]) grouped[category] = [];
+              grouped[category].push(item);
+            }
+          });
+
+          // Injetar as séries agrupadas de volta nas categorias
+          Object.values(seriesData).forEach(group => {
+            const item = group.main;
+            const category = item.group || 'OUTROS';
             if (!grouped[category]) grouped[category] = [];
+            
+            // Anexa os episódios encontrados ao item principal
+            (item as any).seasons = organizeSeasons(group.episodes);
+            (item as any).type = 'series';
+            
             grouped[category].push(item);
           });
 
-          set({ 
-            playlistCategories: grouped, 
-            isLoadingPlaylist: false,
+          set({
+            playlistCategories: grouped,
             selectedCategoryName: Object.keys(grouped)[0] || null
           });
         } catch (error: any) {
           const isCorsError = error.message?.toLowerCase().includes('fetch') || error.name === 'AbortError';
-          const errorMessage = isCorsError 
+          const errorMessage = isCorsError
             ? 'Erro de CORS: O servidor da lista bloqueou o acesso direto pelo navegador. Tente usar um Proxy ou o App nativo.'
             : error.message || 'Erro ao carregar playlist.';
-            
-          set({ 
-            playlistError: errorMessage, 
-            isLoadingPlaylist: false 
+
+          set({
+            playlistError: errorMessage,
           });
           console.error('[Store] Falha no carregamento M3U:', error);
         }
@@ -400,6 +466,7 @@ export const useStore = create<XandeflixState>()(
         hiddenCategoryIds: state.hiddenCategoryIds,
         isAdminMode: state.isAdminMode,
         adultAccess: state.adultAccess,
+        lastLiveChannel: state.lastLiveChannel,
       }),
       storage: createJSONStorage(() => safeStateStorage),
     }

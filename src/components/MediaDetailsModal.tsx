@@ -1,7 +1,7 @@
 import React, { useMemo, useState, useEffect, useRef, useCallback } from 'react';
 import { View, Text, StyleSheet, TouchableHighlight, Image, ImageBackground, ScrollView, FlatList } from 'react-native';
 import { motion } from 'motion/react';
-import { Play, ArrowLeft, Star, Loader2, Heart, Share2, Clapperboard, X } from 'lucide-react';
+import { Play, ArrowLeft, Star, Loader2, Heart, Clapperboard, X } from 'lucide-react';
 import { Media } from '../types';
 import { useTMDB } from '../hooks/useTMDB';
 import { useEmbeddableTrailerKey } from '../hooks/useEmbeddableTrailerKey';
@@ -31,14 +31,24 @@ export const MediaDetailsPage: React.FC<MediaDetailsPageProps> = ({
   const [trailerErrorTitle, setTrailerErrorTitle] = useState('Trailer indisponível no player');
   const [trailerErrorMessage, setTrailerErrorMessage] = useState('');
   const [trailerReloadToken, setTrailerReloadToken] = useState(0);
+  const trailerLoadTimeoutRef = useRef<number | null>(null);
   const layout = useResponsiveLayout();
   const isTvMode = useStore(state => state.isTvMode);
-  const { registerNode, setFocusedId } = useTvNavigation({ isActive: isTvMode, onBack: onClose, subscribeFocused: false });
-  const scrollViewRef = useRef<ScrollView>(null);
   const isTv = layout.isTvProfile;
-  const contentPadding = isTv ? 40 : layout.isMobile ? 16 : layout.isTablet ? 24 : 80;
-  const backdropHeight = isTv ? '50vh' : layout.isMobile ? '52vh' : layout.isTablet ? '60vh' : '70vh';
-  const spacerHeight = layout.height * (isTv ? 0.18 : layout.isMobile ? 0.22 : layout.isTablet ? 0.28 : 0.35);
+  const shouldEnableTvNav = isTvMode && isTv;
+  const { registerNode, setFocusedId } = useTvNavigation({ isActive: shouldEnableTvNav, onBack: onClose, subscribeFocused: false });
+  const scrollViewRef = useRef<ScrollView>(null);
+  const safeLayoutWidth = Number.isFinite(layout.width) && layout.width > 0 ? layout.width : 1280;
+  const viewportWidth =
+    typeof window !== 'undefined' && Number.isFinite(window.innerWidth) && window.innerWidth > 0
+      ? window.innerWidth
+      : safeLayoutWidth;
+  const shouldStackDetails = !isTv && viewportWidth < 980;
+  const isCompactDetails = !isTv && viewportWidth < 760;
+  const sideRailOffset = (!layout.isMobile || layout.isTvProfile) ? layout.sideRailCollapsedWidth : 0;
+  const contentPadding = isTv ? 40 : isCompactDetails ? 16 : viewportWidth < 1200 ? 24 : 56;
+  const backdropHeight = isTv ? '54vh' : isCompactDetails ? '52vh' : layout.isTablet ? '60vh' : '70vh';
+  const detailsTopPadding = isTv ? 118 : isCompactDetails ? 84 : 104;
 
   useEffect(() => {
     if (media.seasons && media.seasons.length > 0) {
@@ -56,23 +66,50 @@ export const MediaDetailsPage: React.FC<MediaDetailsPageProps> = ({
     setTrailerReloadToken(0);
   }, [media.id]);
 
+  useEffect(() => {
+    // Garante que cada abertura de título começa no topo da página de detalhes.
+    const resetScroll = () => {
+      try {
+        scrollViewRef.current?.scrollTo?.({ y: 0, animated: false });
+      } catch {
+        // no-op
+      }
+      if (typeof document !== 'undefined') {
+        const modalScroll = document.querySelector('[data-details-scroll="1"]') as HTMLElement | null;
+        if (modalScroll) modalScroll.scrollTop = 0;
+      }
+    };
+
+    const timerA = setTimeout(resetScroll, 30);
+    const timerB = setTimeout(resetScroll, 260);
+    return () => {
+      clearTimeout(timerA);
+      clearTimeout(timerB);
+    };
+  }, [media.id]);
+
   const watchHistory = useStore(state => state.watchHistory);
   const favorites = useStore(state => state.favorites);
   const toggleFavorite = useStore(state => state.toggleFavorite);
   const { items: relatedDiskItems } = useDiskCategory(media.category, 0, 140);
-  const { data: tmdbData, loading: tmdbLoading } = useTMDB(media.title, media.type);
+  const tmdbLookupType = useMemo<'movie' | 'series'>(() => {
+    if (media.type === 'series') return 'series';
+    if (media.type === 'movie') return 'movie';
+    return media.seasons && media.seasons.length > 0 ? 'series' : 'movie';
+  }, [media.seasons, media.type]);
+  const { data: tmdbData, loading: tmdbLoading } = useTMDB(media.title, tmdbLookupType, { categoryHint: media.category });
   const favoriteKey = media.videoUrl || `media:${media.id}`;
   const isFavorite = favorites.includes(favoriteKey) || favorites.includes(media.id);
 
   // Auto-focus the primary action when modal opens
   useEffect(() => {
-    if (!isTvMode) return;
+    if (!shouldEnableTvNav) return;
     const timer = setTimeout(() => {
       const targetId = (media.videoUrl || (media.seasons && media.seasons.length > 0)) ? 'details-play' : 'details-back';
       setFocusedId(targetId);
     }, 300);
     return () => clearTimeout(timer);
-  }, [media.videoUrl, media.seasons, setFocusedId, isTvMode]);
+  }, [media.videoUrl, media.seasons, setFocusedId, shouldEnableTvNav]);
 
   const primaryActionMedia = useMemo(() => {
     if (!media.seasons || media.seasons.length === 0) {
@@ -146,7 +183,7 @@ export const MediaDetailsPage: React.FC<MediaDetailsPageProps> = ({
   const fallbackBg = `https://images.unsplash.com/photo-1594909122845-11baa439b7bf?q=80&w=1920&auto=format&fit=crop`;
 
   const displayData = useMemo(() => {
-    if (!media) return null;
+
 
     // 1. Tenta usar o backdrop vindo do TMDB
     let finalBackdrop = tmdbData?.backdrop;
@@ -171,6 +208,11 @@ export const MediaDetailsPage: React.FC<MediaDetailsPageProps> = ({
       thumbnail: tmdbData?.thumbnail || media.thumbnail,
     };
   }, [media, tmdbData]);
+  const genreLabel = useMemo(() => {
+    const genres = Array.isArray(tmdbData?.genres) ? tmdbData?.genres.filter(Boolean) : [];
+    if (genres.length > 0) return genres.slice(0, 3).join(', ');
+    return media.category;
+  }, [media.category, tmdbData?.genres]);
 
   const rawTrailerKey = tmdbData?.trailerKey || null;
   const { trailerKey } = useEmbeddableTrailerKey(rawTrailerKey, { timeoutMs: 4800 });
@@ -180,7 +222,7 @@ export const MediaDetailsPage: React.FC<MediaDetailsPageProps> = ({
     if (!trailerKey) return '';
     const origin =
       typeof window !== 'undefined' ? `&origin=${encodeURIComponent(window.location.origin)}` : '';
-    return `https://www.youtube.com/embed/${trailerKey}?autoplay=1&mute=0&controls=1&modestbranding=1&playsinline=1&rel=0&enablejsapi=1&playerapiid=${trailerPlayerId}&cacheBust=${trailerReloadToken}${origin}`;
+    return `https://www.youtube-nocookie.com/embed/${trailerKey}?autoplay=1&mute=0&controls=1&modestbranding=1&playsinline=1&rel=0&iv_load_policy=3&fs=1&cc_load_policy=0&disablekb=0&enablejsapi=1&playerapiid=${trailerPlayerId}&cacheBust=${trailerReloadToken}${origin}`;
   }, [trailerKey, trailerPlayerId, trailerReloadToken]);
 
   const closeTrailerModal = () => {
@@ -195,6 +237,14 @@ export const MediaDetailsPage: React.FC<MediaDetailsPageProps> = ({
     setTrailerErrorTitle('Trailer indisponível no player');
     setTrailerErrorMessage('');
     setTrailerReloadToken((current) => current + 1);
+  };
+
+  const clearTrailerLoadTimeout = () => {
+    if (typeof window === 'undefined') return;
+    if (trailerLoadTimeoutRef.current !== null) {
+      window.clearTimeout(trailerLoadTimeoutRef.current);
+      trailerLoadTimeoutRef.current = null;
+    }
   };
 
   useEffect(() => {
@@ -237,14 +287,16 @@ export const MediaDetailsPage: React.FC<MediaDetailsPageProps> = ({
       };
     };
 
-    const timeoutId = window.setTimeout(() => {
+    clearTrailerLoadTimeout();
+    trailerLoadTimeoutRef.current = window.setTimeout(() => {
       setTrailerStatus((current) => {
         if (current === 'ready') return current;
         setTrailerErrorTitle('Falha ao carregar trailer');
         setTrailerErrorMessage('Tempo de resposta excedido no carregamento do trailer.');
         return 'error';
       });
-    }, 10000);
+      trailerLoadTimeoutRef.current = null;
+    }, 22000);
 
     const handleMessage = (event: MessageEvent) => {
       if (
@@ -274,7 +326,7 @@ export const MediaDetailsPage: React.FC<MediaDetailsPageProps> = ({
       }
 
       if (payload.event === 'onReady') {
-        window.clearTimeout(timeoutId);
+        clearTrailerLoadTimeout();
         setTrailerStatus('ready');
         setTrailerErrorMessage('');
         return;
@@ -283,14 +335,14 @@ export const MediaDetailsPage: React.FC<MediaDetailsPageProps> = ({
       if (payload.event === 'onStateChange') {
         const stateCode = Number(payload.info);
         if (stateCode === 1 || stateCode === 3 || stateCode === 2 || stateCode === 5) {
-          window.clearTimeout(timeoutId);
+          clearTrailerLoadTimeout();
           setTrailerStatus('ready');
         }
         return;
       }
 
       if (payload.event === 'onError') {
-        window.clearTimeout(timeoutId);
+        clearTrailerLoadTimeout();
         setTrailerStatus('error');
         const mappedError = mapTrailerError(Number(payload.info));
         setTrailerErrorTitle(mappedError.title);
@@ -300,7 +352,7 @@ export const MediaDetailsPage: React.FC<MediaDetailsPageProps> = ({
 
     window.addEventListener('message', handleMessage);
     return () => {
-      window.clearTimeout(timeoutId);
+      clearTrailerLoadTimeout();
       window.removeEventListener('message', handleMessage);
     };
   }, [isTrailerModalOpen, trailerPlayerId, trailerUrl]);
@@ -314,10 +366,10 @@ export const MediaDetailsPage: React.FC<MediaDetailsPageProps> = ({
       style={{
         position: 'fixed',
         top: 0,
-        left: 0,
+        left: sideRailOffset,
         right: 0,
         bottom: 0,
-        zIndex: 900,
+        zIndex: 220,
         backgroundColor: 'rgba(5,5,5,0.98)',
         display: 'flex',
         flexDirection: 'column',
@@ -361,7 +413,7 @@ export const MediaDetailsPage: React.FC<MediaDetailsPageProps> = ({
       <View
         style={[
           styles.topBar,
-          layout.isCompact && styles.topBarCompact,
+          isCompactDetails && styles.topBarCompact,
           {
             paddingHorizontal: contentPadding,
             paddingTop: layout.isMobile ? 18 : 30,
@@ -372,11 +424,11 @@ export const MediaDetailsPage: React.FC<MediaDetailsPageProps> = ({
           role="button"
           tabIndex={0}
           data-nav-id="details-back"
-          ref={(el) => el && registerNode('details-back', el, 'modal', {
+          ref={(el) => { if (el) registerNode('details-back', el, 'modal', {
             onFocus: () => {},
             onEnter: onClose,
             disableAutoScroll: true,
-          })}
+            }); } }
           onClick={onClose}
           style={{
             cursor: 'pointer',
@@ -391,28 +443,41 @@ export const MediaDetailsPage: React.FC<MediaDetailsPageProps> = ({
             </View>
           </View>
         </div>
-        <Text style={[styles.topLogo, layout.isCompact && styles.topLogoCompact]}>XANDEFLIX</Text>
+        <Text style={[styles.topLogo, isCompactDetails && styles.topLogoCompact]}>XANDEFLIX</Text>
       </View>
 
       {/* Scrollable content */}
       <ScrollView
+        ref={scrollViewRef as any}
+        data-details-scroll="1"
         style={{ flex: 1, zIndex: 2 }}
         contentContainerStyle={[
           styles.scrollContent,
-          layout.isCompact && styles.scrollContentCompact,
+          isCompactDetails && styles.scrollContentCompact,
           {
+            width: '100%',
+            minWidth: '100%',
             paddingHorizontal: contentPadding,
+            paddingTop: detailsTopPadding,
             paddingBottom: layout.bottomNavigationHeight + 40,
           },
         ]}
         showsVerticalScrollIndicator={false}
       >
-        {/* Spacer to push content below the backdrop */}
-        <View style={{ height: spacerHeight }} />
-
         {/* Main Content */}
-        <View style={styles.contentContainer}>
-          <View style={[styles.mainRow, layout.isCompact && styles.mainRowCompact, isTv && { flexDirection: 'row' as any }]}>
+        <View
+          style={[
+            styles.contentContainer,
+            {
+              width: '100%',
+              maxWidth: isTv ? 1380 : 1280,
+              alignSelf: 'stretch',
+              marginLeft: 'auto',
+              marginRight: 'auto',
+            },
+          ]}
+        >
+          <View style={[styles.mainRow, shouldStackDetails && styles.mainRowCompact]}>
             {/* Poster */}
             <motion.div
               initial={{ opacity: 0, x: -30 }}
@@ -421,12 +486,12 @@ export const MediaDetailsPage: React.FC<MediaDetailsPageProps> = ({
             >
               <View style={[
                 styles.posterWrap, 
-                layout.isCompact && styles.posterWrapCompact,
+                isCompactDetails && styles.posterWrapCompact,
                 isTv && { width: 160, height: 240, marginRight: 30 },
               ]}>
                 <Image
                   source={{ uri: displayData.thumbnail }}
-                  style={styles.poster}
+                  style={styles.poster as any}
                   resizeMode="contain"
                 />
               </View>
@@ -437,75 +502,107 @@ export const MediaDetailsPage: React.FC<MediaDetailsPageProps> = ({
               initial={{ opacity: 0, y: 20 }}
               animate={{ opacity: 1, y: 0 }}
               transition={{ duration: 0.6, delay: 0.3 }}
-              style={{ flex: 1 }}
+              style={{
+                flex: 1,
+                minWidth: shouldStackDetails ? 0 : 320,
+                display: 'flex',
+                flexDirection: 'column',
+              }}
             >
-              <Text style={[
-                styles.title, 
-                layout.isCompact && styles.titleCompact,
-                isTv && { fontSize: 28, lineHeight: 34, marginBottom: 10 },
-              ]}>{cleanMediaTitle(media.title).cleanTitle}</Text>
+              <h1
+                style={{
+                  margin: 0,
+                  color: 'white',
+                  fontFamily: 'Outfit, sans-serif',
+                  fontWeight: 900,
+                  letterSpacing: -1.2,
+                  lineHeight: isTv ? '34px' : isCompactDetails ? '38px' : '56px',
+                  fontSize: isTv ? 28 : isCompactDetails ? 32 : 56,
+                  marginBottom: isCompactDetails ? 16 : 20,
+                }}
+              >
+                {cleanMediaTitle(media.title).cleanTitle || media.title}
+              </h1>
 
-              {/* Meta badges */}
-              <View style={styles.metaRow}>
-                <View style={styles.typeBadge}>
-                  <Text style={styles.typeBadgeText}>{media.type === 'movie' ? 'FILME' : 'SÉRIE'}</Text>
-                </View>
-                <View style={styles.metaItem}>
-                  <View style={styles.iconWrap}><Star size={16} color="#EAB308" fill="#EAB308" /></View>
-                  <Text style={styles.ratingVal}>{displayData.rating}</Text>
-                </View>
-                <Text style={styles.metaSep}>•</Text>
-                <Text style={styles.metaText}>{displayData.year}</Text>
-                <Text style={styles.metaSep}>•</Text>
-                <Text style={styles.metaText}>{media.duration || 'VOD'}</Text>
-                <Text style={styles.metaSep}>•</Text>
-                <Text style={styles.metaText}>{media.category}</Text>
-              </View>
+              <div
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  flexWrap: 'wrap',
+                  gap: 10,
+                  marginBottom: 28,
+                }}
+              >
+                <div
+                  style={{
+                    backgroundColor: '#E50914',
+                    color: 'white',
+                    borderRadius: 4,
+                    padding: '4px 12px',
+                    fontSize: 13,
+                    fontWeight: 800,
+                    letterSpacing: 1,
+                  }}
+                >
+                  {media.type === 'movie' ? 'FILME' : 'SÉRIE'}
+                </div>
+                <div style={{ display: 'flex', alignItems: 'center', color: '#EAB308', fontWeight: 800, fontSize: 18 }}>
+                  <Star size={16} color="#EAB308" fill="#EAB308" />
+                  <span style={{ marginLeft: 6 }}>{displayData.rating}</span>
+                </div>
+                <span style={{ color: 'rgba(255,255,255,0.75)', fontSize: 18 }}>{displayData.year}</span>
+                <span style={{ color: 'rgba(255,255,255,0.35)', fontSize: 18 }}>•</span>
+                <span style={{ color: 'rgba(255,255,255,0.75)', fontSize: 18 }}>{media.duration || 'VOD'}</span>
+                <span style={{ color: 'rgba(255,255,255,0.35)', fontSize: 18 }}>•</span>
+                <span style={{ color: 'rgba(255,255,255,0.75)', fontSize: 18 }}>{genreLabel}</span>
+              </div>
 
-              {/* Actions */}
-              <View style={[styles.actionRow, layout.isCompact && styles.actionRowCompact]}>
+              <div
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  flexWrap: isCompactDetails ? 'wrap' : 'nowrap',
+                  gap: 12,
+                  marginBottom: isCompactDetails ? 28 : 36,
+                }}
+              >
                 {primaryActionMedia && (
-                  <div
-                    role="button"
-                    tabIndex={0}
+                  <button
+                    type="button"
                     data-nav-id="details-play"
-                    ref={(el) => el && registerNode('details-play', el, 'modal', {
+                    ref={(el) => { if (el) registerNode('details-play', el, 'modal', {
                       onFocus: () => {},
                       onEnter: () => onPlay(primaryActionMedia),
                       disableAutoScroll: true,
-                    })}
+            }); } }
                     onClick={() => onPlay(primaryActionMedia)}
                     style={{
                       cursor: 'pointer',
-                      borderRadius: 8,
+                      borderRadius: 10,
                       outline: 'none',
+                      display: 'inline-flex',
+                      border: 'none',
+                      background: '#E50914',
+                      color: 'white',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      padding: isTv ? '10px 20px' : isCompactDetails ? '14px 24px' : '16px 36px',
+                      fontSize: isTv ? 14 : isCompactDetails ? 16 : 20,
+                      fontWeight: 800,
+                      fontFamily: 'Outfit, sans-serif',
+                      gap: 10,
                     }}
                   >
-                    <View style={[
-                      styles.playBtn, 
-                      layout.isCompact && styles.playBtnCompact,
-                      isTv && { paddingHorizontal: 20, paddingVertical: 10 },
-                    ]}>
-                      <View style={styles.playBtnInner}>
-                        <View style={styles.iconWrap}><Play size={isTv ? 16 : 22} color="white" fill="white" /></View>
-                        <Text style={[
-                          styles.playBtnText, 
-                          layout.isCompact && styles.playBtnTextCompact,
-                          isTv && { fontSize: 14 },
-                        ]}>
-                          {shouldResumePlayback ? 'Continuar Assistindo' : 'Assistir Agora'}
-                        </Text>
-                      </View>
-                    </View>
-                  </div>
+                    <Play size={isTv ? 16 : 22} color="white" fill="white" />
+                    {shouldResumePlayback ? 'Continuar Assistindo' : 'Assistir Agora'}
+                  </button>
                 )}
 
                 {trailerKey && (
-                  <div
-                    role="button"
-                    tabIndex={0}
+                  <button
+                    type="button"
                     data-nav-id="details-trailer"
-                    ref={(el) => el && registerNode('details-trailer', el, 'modal', {
+                    ref={(el) => { if (el) registerNode('details-trailer', el, 'modal', {
                       onFocus: () => {},
                       disableAutoScroll: true,
                       onEnter: () => {
@@ -514,7 +611,7 @@ export const MediaDetailsPage: React.FC<MediaDetailsPageProps> = ({
                         setTrailerErrorMessage('');
                         setIsTrailerModalOpen(true);
                       },
-                    })}
+                    }); } }
                     onClick={() => {
                       setTrailerStatus('loading');
                       setTrailerErrorTitle('Trailer indisponível no player');
@@ -525,84 +622,94 @@ export const MediaDetailsPage: React.FC<MediaDetailsPageProps> = ({
                       cursor: 'pointer',
                       borderRadius: 25,
                       outline: 'none',
+                      display: 'inline-flex',
+                      border: '1px solid rgba(255,255,255,0.2)',
+                      background: 'rgba(255,255,255,0.04)',
+                      color: 'white',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      minHeight: isTv ? 38 : 50,
+                      padding: isTv ? '0 12px' : '0 18px',
+                      fontSize: isTv ? 12 : 15,
+                      fontWeight: 700,
+                      fontFamily: 'Outfit, sans-serif',
+                      gap: 10,
                     }}
                   >
-                    <View style={[styles.trailerBtn, isTv && { minHeight: 38, paddingHorizontal: 12 }]}>
-                      <View style={styles.favoriteBtnInner}>
-                        <Clapperboard size={isTv ? 16 : 20} color="white" />
-                        <Text style={[styles.favoriteBtnText, isTv && { fontSize: 12 }]}>Trailer</Text>
-                      </View>
-                    </View>
-                  </div>
+                    <Clapperboard size={isTv ? 16 : 20} color="white" />
+                    Trailer
+                  </button>
                 )}
 
-                <div
-                  role="button"
-                  tabIndex={0}
+                <button
+                  type="button"
                   data-nav-id="details-favorite"
-                  ref={(el) => el && registerNode('details-favorite', el, 'modal', {
+                  ref={(el) => { if (el) registerNode('details-favorite', el, 'modal', {
                     onFocus: () => {},
                     onEnter: () => toggleFavorite(favoriteKey),
                     disableAutoScroll: true,
-                  })}
+            }); } }
                   onClick={() => toggleFavorite(favoriteKey)}
                   style={{
                     cursor: 'pointer',
                     borderRadius: 25,
                     outline: 'none',
+                    display: 'inline-flex',
+                    border: isFavorite ? '1px solid rgba(229,9,20,0.45)' : '1px solid rgba(255,255,255,0.2)',
+                    background: isFavorite ? 'rgba(229,9,20,0.12)' : 'rgba(255,255,255,0.04)',
+                    color: 'white',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    minHeight: isTv ? 38 : 50,
+                    padding: isTv ? '0 12px' : '0 18px',
+                    fontSize: isTv ? 12 : 15,
+                    fontWeight: 700,
+                    fontFamily: 'Outfit, sans-serif',
+                    gap: 10,
                   }}
                 >
-                  <View style={[styles.favoriteBtn, isFavorite && styles.favoriteBtnActive, isTv && { minHeight: 38, paddingHorizontal: 12 }]}>
-                    <View style={styles.favoriteBtnInner}>
-                      <Heart size={isTv ? 16 : 22} color={isFavorite ? '#E50914' : 'white'} fill={isFavorite ? '#E50914' : 'transparent'} />
-                      <Text style={[styles.favoriteBtnText, isFavorite && styles.favoriteBtnTextActive, isTv && { fontSize: 12 }]}>
-                        {isFavorite ? 'Favoritado' : 'Favoritar'}
-                      </Text>
-                    </View>
-                  </View>
-                </div>
+                  <Heart size={isTv ? 16 : 22} color={isFavorite ? '#E50914' : 'white'} fill={isFavorite ? '#E50914' : 'transparent'} />
+                  {isFavorite ? 'Favoritado' : 'Favoritar'}
+                </button>
+              </div>
 
+              <div style={{ maxWidth: isTv ? 500 : 700 }}>
                 <div
-                  role="button"
-                  tabIndex={0}
-                  data-nav-id="details-share"
-                  ref={(el) => el && registerNode('details-share', el, 'modal', {
-                    onFocus: () => {},
-                    onEnter: () => {},
-                    disableAutoScroll: true,
-                  })}
-                  onClick={() => {}}
                   style={{
-                    cursor: 'pointer',
-                    borderRadius: 25,
-                    outline: 'none',
+                    fontSize: isTv ? 11 : 14,
+                    fontWeight: 800,
+                    color: 'rgba(255,255,255,0.45)',
+                    textTransform: 'uppercase',
+                    letterSpacing: 2,
+                    marginBottom: isTv ? 8 : 12,
+                    fontFamily: 'Outfit, sans-serif',
                   }}
                 >
-                  <View style={[styles.circleBtn, isTv && { width: 38, height: 38 }]}>
-                    <View style={styles.iconWrap}><Share2 size={isTv ? 16 : 22} color="white" /></View>
-                  </View>
+                  Sinopse
                 </div>
-              </View>
-
-              {/* Synopsis */}
-              <View style={[styles.synopsisBlock, layout.isCompact && styles.synopsisBlockCompact, isTv && { maxWidth: 500 }]}>
-                <Text style={[styles.sectionLabel, isTv && { fontSize: 11, marginBottom: 8 }]}>Sinopse</Text>
                 {tmdbLoading ? (
-                  <View style={styles.loaderRow}>
-                    <motion.div animate={{ rotate: 360 }} transition={{ repeat: Infinity, duration: 1, ease: 'linear' }}>
-                      <Loader2 color="#E50914" size={isTv ? 16 : 22} />
-                    </motion.div>
-                    <Text style={[styles.loaderText, isTv && { fontSize: 12 }]}>Buscando informações...</Text>
-                  </View>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '10px 0', color: 'rgba(255,255,255,0.65)' }}>
+                    <Loader2 color="#E50914" size={isTv ? 16 : 22} />
+                    <span style={{ fontSize: isTv ? 12 : 16 }}>Buscando informações...</span>
+                  </div>
                 ) : (
-                  <Text style={[
-                    styles.synopsisText,
-                    isTv && { fontSize: 13, lineHeight: 20 },
-                  ]} numberOfLines={isTv ? 4 : undefined}>
+                  <p
+                    style={{
+                      margin: 0,
+                      fontSize: isTv ? 13 : 19,
+                      color: 'rgba(255,255,255,0.78)',
+                      lineHeight: isTv ? '20px' : '30px',
+                      fontFamily: 'Outfit, sans-serif',
+                      display: '-webkit-box',
+                      WebkitBoxOrient: 'vertical',
+                      WebkitLineClamp: isTv ? 4 : 'unset',
+                      overflow: 'hidden',
+                    }}
+                  >
                     {displayData.description || 'Nenhuma sinopse disponível para este título.'}
-                  </Text>
+                  </p>
                 )}
-              </View>
+              </div>
             </motion.div>
           </View>
         </View>
@@ -618,11 +725,11 @@ export const MediaDetailsPage: React.FC<MediaDetailsPageProps> = ({
                      role="button"
                      tabIndex={0}
                      data-nav-id={`details-season-${season.seasonNumber}`}
-                     ref={(el) => el && registerNode(`details-season-${season.seasonNumber}`, el, 'modal-seasons', {
+                     ref={(el) => { if (el) registerNode(`details-season-${season.seasonNumber}`, el, 'modal-seasons', {
                        onFocus: () => {},
                        onEnter: () => setSelectedSeason(season.seasonNumber),
                        disableAutoScroll: true,
-                     })}
+            }); } }
                      onClick={() => setSelectedSeason(season.seasonNumber)}
                      style={{
                        cursor: 'pointer',
@@ -631,11 +738,11 @@ export const MediaDetailsPage: React.FC<MediaDetailsPageProps> = ({
                    >
                      <View style={[
                        styles.seasonTab,
-                       selectedSeason === season.seasonNumber && styles.seasonTabActive,
+                       selectedSeason === season.seasonNumber ? styles.seasonTabActive : undefined,
                      ]}>
                        <Text style={[
                          styles.seasonTabText,
-                         selectedSeason === season.seasonNumber && styles.seasonTabTextActive
+                         selectedSeason === season.seasonNumber ? styles.seasonTabTextActive : undefined
                        ]}>
                          Temporada {season.seasonNumber}
                        </Text>
@@ -648,7 +755,7 @@ export const MediaDetailsPage: React.FC<MediaDetailsPageProps> = ({
              <View style={styles.episodesGrid}>
                {media.seasons.find(s => s.seasonNumber === selectedSeason)?.episodes.map((ep, idx) => {
                  const currentPos = watchHistory[ep.videoUrl];
-                 const isStarted = currentPos && currentPos > 10;
+                 const isStarted = Boolean(currentPos && currentPos > 10);
 
                  return (
                  <div
@@ -656,7 +763,7 @@ export const MediaDetailsPage: React.FC<MediaDetailsPageProps> = ({
                    role="button"
                    tabIndex={0}
                    data-nav-id={`details-episode-${ep.id}`}
-                   ref={(el) => el && registerNode(`details-episode-${ep.id}`, el, 'modal-episodes', {
+                   ref={(el) => { if (el) registerNode(`details-episode-${ep.id}`, el, 'modal-episodes', {
                      onFocus: () => {},
                      disableAutoScroll: true,
                      onEnter: () => onPlay({ 
@@ -665,8 +772,8 @@ export const MediaDetailsPage: React.FC<MediaDetailsPageProps> = ({
                        title: `${media.title} - ${ep.title}`,
                        currentEpisode: ep,
                        currentSeasonNumber: selectedSeason,
-                     }),
-                   })}
+                      }),
+                    }); } }
                    onClick={() => onPlay({ 
                      ...media,
                      videoUrl: ep.videoUrl,
@@ -682,11 +789,11 @@ export const MediaDetailsPage: React.FC<MediaDetailsPageProps> = ({
                  >
                    <View style={[styles.episodeCard]}>
                      <View style={[styles.episodeInner, { overflow: 'hidden' }]}>
-                       <View style={[styles.episodeIndex, isStarted && { opacity: 0.5 }]}>
+                       <View style={[styles.episodeIndex, isStarted ? { opacity: 0.5 } : undefined]}>
                          <Text style={styles.episodeIndexText}>{idx + 1}</Text>
                        </View>
                        <View style={styles.episodeInfo}>
-                         <Text style={[styles.episodeTitle, isStarted && { color: '#E50914' }]}>{ep.title}</Text>
+                         <Text style={[styles.episodeTitle, isStarted ? { color: '#E50914' } : undefined]}>{ep.title}</Text>
                          <Text style={styles.episodeSubtitle}>
                            Episódio {ep.episodeNumber} {isStarted ? `• Em andamento (${Math.floor(currentPos / 60)}m)` : ''}
                          </Text>
@@ -709,6 +816,7 @@ export const MediaDetailsPage: React.FC<MediaDetailsPageProps> = ({
             <CategoryRow 
               category={relatedCategory}
               rowIndex={999}
+              disableSideMenuOffset
               onSeeAll={() => {}}
               onMediaFocus={() => {}}
               onMediaPress={(m) => onSelectMedia && onSelectMedia(m)}
@@ -741,6 +849,13 @@ export const MediaDetailsPage: React.FC<MediaDetailsPageProps> = ({
                 src={trailerUrl}
                 allow="autoplay; encrypted-media; picture-in-picture"
                 allowFullScreen
+                onLoad={() => {
+                  // Em Android WebView, o evento postMessage do YouTube nem sempre chega.
+                  // Se o iframe carregou, liberamos o estado para esconder "Carregando...".
+                  clearTrailerLoadTimeout();
+                  setTrailerStatus((current) => (current === 'error' ? current : 'ready'));
+                  setTrailerErrorMessage('');
+                }}
                 style={styles.trailerFrame as any}
               />
               {trailerStatus === 'loading' && (
@@ -844,9 +959,12 @@ const styles = StyleSheet.create({
   },
   contentContainer: {
     zIndex: 10,
+    minHeight: 360,
   },
   mainRow: {
     flexDirection: 'row',
+    alignItems: 'flex-start',
+    width: '100%',
   } as any,
   mainRowCompact: {
     flexDirection: 'column',
@@ -939,7 +1057,6 @@ const styles = StyleSheet.create({
     paddingHorizontal: 36,
     paddingVertical: 16,
     borderRadius: 8,
-    marginRight: 16,
   },
   playBtnCompact: {
     paddingHorizontal: 24,
@@ -967,7 +1084,6 @@ const styles = StyleSheet.create({
     borderColor: 'rgba(255,255,255,0.2)',
     justifyContent: 'center',
     alignItems: 'center',
-    marginRight: 12,
   },
   favoriteBtn: {
     minHeight: 50,
@@ -977,7 +1093,6 @@ const styles = StyleSheet.create({
     borderColor: 'rgba(255,255,255,0.2)',
     justifyContent: 'center',
     alignItems: 'center',
-    marginRight: 12,
     backgroundColor: 'rgba(255,255,255,0.04)',
   },
   favoriteBtnActive: {
@@ -1006,7 +1121,6 @@ const styles = StyleSheet.create({
     borderColor: 'rgba(255,255,255,0.2)',
     justifyContent: 'center',
     alignItems: 'center',
-    marginRight: 12,
     backgroundColor: 'rgba(255,255,255,0.04)',
   },
   iconWrap: {

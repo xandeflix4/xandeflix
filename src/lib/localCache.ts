@@ -1,7 +1,7 @@
 import localforage from 'localforage';
 import { Category, EPGProgram } from '../types';
 
-export const PLAYLIST_CACHE_SCHEMA_VERSION = 3;
+export const PLAYLIST_CACHE_SCHEMA_VERSION = 4;
 
 // Configuração do Banco IndexedDB
 localforage.config({

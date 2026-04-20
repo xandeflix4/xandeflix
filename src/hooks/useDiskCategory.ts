@@ -1,4 +1,4 @@
-﻿import { useEffect, useState } from 'react';
+import { useEffect, useState } from 'react';
 import type { Media } from '../types';
 import { getChannelsByCategory } from '../lib/db';
 
@@ -9,7 +9,7 @@ interface UseDiskCategoryResult {
   hasMore: boolean;
 }
 
-export const DISK_CATEGORY_PAGE_SIZE = 50;
+export const DISK_CATEGORY_PAGE_SIZE = 150;
 
 export function useDiskCategory(
   categoryName: string | null | undefined,

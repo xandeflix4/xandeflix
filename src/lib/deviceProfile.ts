@@ -22,27 +22,43 @@ export const detectTvEnvironment = (): boolean => {
     return false;
   }
 
+  // DEV: Allow forcing TV mode via URL param (?forceTv=true) for tablet preview.
+  // The flag is persisted in sessionStorage so it survives in-app navigation.
+  try {
+    const params = new URLSearchParams(window.location.search);
+    if (params.get('forceTv') === 'true') {
+      sessionStorage.setItem('__xf_forceTv', '1');
+    } else if (params.get('forceTv') === 'false') {
+      sessionStorage.removeItem('__xf_forceTv');
+    }
+    if (sessionStorage.getItem('__xf_forceTv') === '1') {
+      return true;
+    }
+  } catch {
+    // sessionStorage may be unavailable; ignore silently.
+  }
+
   const userAgent = String(navigator.userAgent || '');
   const vendor = String(navigator.vendor || '');
   const deviceSignature = `${userAgent} ${vendor}`;
   const hasTvUserAgent = TV_USER_AGENT_PATTERNS.some((pattern) => pattern.test(deviceSignature));
 
+  // Prioridade 1: User Agent específico de TV (Firestick, Android TV, etc)
   if (hasTvUserAgent) {
     return true;
   }
 
-  if (!Capacitor.isNativePlatform()) {
+  // Prioridade 2: Se tem touch, muito provavelmente é um Tablet ou Celular (a menos que seja forçado)
+  const hasTouchInput = (navigator.maxTouchPoints || 0) > 0;
+  if (hasTouchInput) {
     return false;
   }
 
+  // Fallback: Se não tem touch e a tela é grande, tratamos como ambiente de TV (DPad)
   const viewportWidth = Math.max(window.innerWidth || 0, window.screen?.width || 0);
   const viewportHeight = Math.max(window.innerHeight || 0, window.screen?.height || 0);
   const shortestSide = Math.min(viewportWidth, viewportHeight);
   const longestSide = Math.max(viewportWidth, viewportHeight);
-  const hasTouchInput = (navigator.maxTouchPoints || 0) > 0;
-  const coarsePointer =
-    typeof window.matchMedia === 'function' && window.matchMedia('(pointer: coarse)').matches;
-  const looksLikeTvViewport = shortestSide >= 720 && longestSide >= 1280;
 
-  return looksLikeTvViewport && !hasTouchInput && !coarsePointer;
+  return shortestSide >= 720 && longestSide >= 1280;
 };

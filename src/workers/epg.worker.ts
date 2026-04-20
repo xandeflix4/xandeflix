@@ -65,12 +65,14 @@ function parseXmltvTimestamp(value: string | null): number | null {
 
 if (typeof self !== 'undefined') {
   self.onmessage = async (e: MessageEvent<WorkerTask>) => {
-  const { xmlText, chunkSize = 2000 } = e.data;
-  
+  const { xmlText, chunkSize = 1000 } = e.data; // Reduzido de 2000 para 1000 para evitar OOM
+
   if (!xmlText || typeof xmlText !== 'string' || xmlText.trim().length === 0) {
     self.postMessage({ type: 'ERROR', message: 'O arquivo de guia (EPG) está vazio ou é inválido.' });
     return;
   }
+
+  const MAX_EPG_PROGRAMS = 100000; // Limite maximo para EPG
 
   try {
     let totalItemsProcessed = 0;
@@ -79,13 +81,18 @@ if (typeof self !== 'undefined') {
 
     const flushChunk = () => {
       if (Object.keys(pendingChunk).length > 0) {
-        self.postMessage({ 
-          type: 'CHUNK', 
-          data: pendingChunk, 
-          totalLoaded: totalItemsProcessed 
+        self.postMessage({
+          type: 'CHUNK',
+          data: pendingChunk,
+          totalLoaded: totalItemsProcessed
         });
         pendingChunk = {};
         itemsInCurrentChunk = 0;
+        
+        // Ajuda garbage collector
+        if (typeof (globalThis as any).gc === 'function') {
+          (globalThis as any).gc();
+        }
       }
     };
 
@@ -93,7 +100,7 @@ if (typeof self !== 'undefined') {
     // [^>]*? for attributes to be non-greedy
     // [\s\S]*? for inner content to match everything including newlines
     const programmeRegex = /<programme([^>]+)>([\s\S]*?)<\/programme>/g;
-    
+
     // Sub-regex for attributes and tags inside <programme>
     const attrRegex = /(\w+)="([^"]*)"/g;
     const titleRegex = /<title[^>]*>([\s\S]*?)<\/title>/;
@@ -101,6 +108,15 @@ if (typeof self !== 'undefined') {
 
     let match;
     while ((match = programmeRegex.exec(xmlText)) !== null) {
+      // Verifica limite para evitar OOM
+      if (totalItemsProcessed >= MAX_EPG_PROGRAMS) {
+        self.postMessage({ 
+          type: 'ERROR', 
+          message: `Guia EPG excede limite de ${MAX_EPG_PROGRAMS} programas. Contato o administrador.` 
+        });
+        return;
+      }
+
       const attrString = match[1];
       const innerContent = match[2];
 
@@ -108,7 +124,7 @@ if (typeof self !== 'undefined') {
       let channelId = '';
       let startStr = '';
       let stopStr = '';
-      
+
       let attrMatch;
       while ((attrMatch = attrRegex.exec(attrString)) !== null) {
         const key = attrMatch[1];
@@ -122,13 +138,13 @@ if (typeof self !== 'undefined') {
 
       const start = parseXmltvTimestamp(startStr);
       const stop = parseXmltvTimestamp(stopStr);
-      
+
       if (start === null) continue;
 
       // Parse title and desc
       const titleMatch = innerContent.match(titleRegex);
       const descMatch = innerContent.match(descRegex);
-      
+
       const title = normalizeText(titleMatch ? titleMatch[1] : 'Programação indisponível');
       const description = normalizeText(descMatch ? descMatch[1] : '');
 

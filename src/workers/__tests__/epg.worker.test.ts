@@ -29,9 +29,17 @@ describe('EPG Worker', () => {
     await mockSelf.onmessage({ data: { xmlText: xmlContent, chunkSize: 100 } } as any);
 
     const doneMsg = mockSelf.postMessage.mock.calls.find(call => call[0].type === 'DONE');
+    expect(doneMsg).toBeDefined();
+    if (!doneMsg) {
+      throw new Error('Mensagem DONE nao encontrada');
+    }
     expect(doneMsg[0].totalLoaded).toBe(1);
     
     const chunkMsg = mockSelf.postMessage.mock.calls.find(call => call[0].type === 'CHUNK');
+    expect(chunkMsg).toBeDefined();
+    if (!chunkMsg) {
+      throw new Error('Mensagem CHUNK nao encontrada');
+    }
     expect(chunkMsg[0].data['HBO']).toBeDefined();
     expect(chunkMsg[0].data['HBO'][0].title).toBe('Interestelar');
   });
@@ -55,6 +63,10 @@ describe('EPG Worker', () => {
     await mockSelf.onmessage({ data: { xmlText: malformedXml } } as any);
 
     const doneMsg = mockSelf.postMessage.mock.calls.find(call => call[0].type === 'DONE');
+    expect(doneMsg).toBeDefined();
+    if (!doneMsg) {
+      throw new Error('Mensagem DONE nao encontrada');
+    }
     // Deve ignorar os malformados e processar apenas o válido
     expect(doneMsg[0].totalLoaded).toBe(1);
   });

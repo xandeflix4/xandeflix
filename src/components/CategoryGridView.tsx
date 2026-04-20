@@ -23,6 +23,7 @@ const GridItem = React.memo(({ item, navId, onPress, onFocus, cardWidth, cardHei
   const { registerNode } = useTvNavigation({ isActive: false, subscribeFocused: false });
   const { data: tmdbData, loading: tmdbLoading } = useTMDB(item.title, item.type, {
     includeDetails: false,
+    categoryHint: item.category,
   });
   const [imgError, setImgError] = useState(false);
   const [isHovered, setIsHovered] = useState(false);
@@ -83,55 +84,44 @@ const GridItem = React.memo(({ item, navId, onPress, onFocus, cardWidth, cardHei
         }}
       >
         {hasRenderableImage ? (
-          <>
-            {!imageLoaded && (
-              <Skeleton 
-                width="100%" 
-                height="100%" 
-                borderRadius={12} 
-                style={{ position: 'absolute', top: 0, left: 0, zIndex: 1 }} 
-              />
-            )}
-            <img
-              src={targetImage || undefined}
-              alt={item.title}
-              loading="lazy"
-              decoding="async"
-              width={cardWidth}
-              height={cardHeight}
-              onLoad={() => setImageLoaded(true)}
-              onError={() => setImgError(true)}
-              className={`image-fade-in ${imageLoaded ? 'image-loaded' : ''}`}
-              style={{
-                width: '100%',
-                height: '100%',
-                objectFit: displayMode as 'cover' | 'contain',
-                display: 'block',
-                position: 'relative',
-                zIndex: imageLoaded ? 2 : 0,
-              }}
-            />
-          </>
-        ) : (
-          <div
+          <img
+            src={targetImage || undefined}
+            alt={item.title}
+            onLoad={() => setImageLoaded(true)}
+            onError={() => setImgError(true)}
             style={{
               width: '100%',
               height: '100%',
+              objectFit: displayMode as 'cover' | 'contain',
+              opacity: imageLoaded ? 1 : 0,
+              transition: 'opacity 350ms ease-in-out',
+              display: 'block',
+              position: 'relative',
+              zIndex: 2,
+            }}
+          />
+        ) : null}
+
+        {(!imageLoaded || imgError) && (
+          <div
+            style={{
+              position: 'absolute',
+              inset: 0,
               display: 'flex',
               alignItems: 'center',
               justifyContent: 'center',
               textAlign: 'center',
               padding: 12,
-              color: 'rgba(255,255,255,0.75)',
-              fontSize: 12,
-              fontWeight: 800,
-              letterSpacing: 0.6,
+              color: 'rgba(255,255,255,0.78)',
+              fontSize: 18,
+              fontWeight: 900,
+              letterSpacing: 2,
               textTransform: 'uppercase',
-              background:
-                'linear-gradient(160deg, rgba(34,34,34,0.95) 0%, rgba(22,22,22,0.98) 55%, rgba(12,12,12,1) 100%)',
+              background: 'linear-gradient(135deg, #1f2937, #0f172a, #111827)',
+              zIndex: 1,
             }}
           >
-            {' '}
+            <span style={{ opacity: 0.12 }}>{String(item.title || '?').slice(0, 2)}</span>
           </div>
         )}
 
@@ -255,19 +245,75 @@ export const CategoryGridView: React.FC<CategoryGridViewProps> = ({ category, on
   }, [category.title, setSelectedCategoryName, setVisibleItems]);
 
   useEffect(() => {
-    setDiskItems((previous) => {
-      const base = page === 0 ? [] : previous;
-      const seen = new Set(base.map((item) => `${item.id}::${item.videoUrl}`));
-      const merged = [...base];
+    // Import helper functions
+    import('../lib/titleCleaner').then(({ cleanMediaTitle, extractSeriesInfo }) => {
+      setDiskItems((previous) => {
+        const base = page === 0 ? [] : previous;
+        const seen = new Set(base.map((item) => `${item.id}`));
+        const merged = [...base];
+        const seriesFound = new Map<string, Media>();
+        
+        // Identifica as séries já existentes para atualização de episódios
+        merged.forEach(item => {
+          if (item.type === 'series') {
+            seriesFound.set(item.title.toLowerCase().trim(), item);
+          }
+        });
 
-      for (const item of pageItems) {
-        const key = `${item.id}::${item.videoUrl}`;
-        if (seen.has(key)) continue;
-        seen.add(key);
-        merged.push(item);
-      }
+        for (const item of pageItems) {
+          const { cleanTitle, season, episode } = cleanMediaTitle(item.title);
+          
+          if (season !== undefined && episode !== undefined) {
+            const seriesKey = cleanTitle.toLowerCase().trim();
+            let existingSeries = seriesFound.get(seriesKey);
+            
+            if (!existingSeries) {
+              existingSeries = {
+                ...item,
+                id: `grid-series-${item.id}`,
+                title: cleanTitle,
+                type: 'series' as any,
+                seasons: []
+              };
+              seriesFound.set(seriesKey, existingSeries);
+              merged.push(existingSeries);
+            }
+            
+            // Adiciona o episódio à estrutura de temporadas
+            const ep = {
+              id: item.id,
+              seasonNumber: season,
+              episodeNumber: episode,
+              title: item.title,
+              videoUrl: item.videoUrl
+            };
+            
+            const seasons = (existingSeries as any).seasons || [];
+            let seasonObj = seasons.find((s: any) => s.seasonNumber === season);
+            if (!seasonObj) {
+              seasonObj = { seasonNumber: season, episodes: [] };
+              seasons.push(seasonObj);
+              seasons.sort((a: any, b: any) => a.seasonNumber - b.seasonNumber);
+            }
+            
+            // Evita duplicatas de episódios
+            if (!seasonObj.episodes.find((e: any) => e.id === ep.id)) {
+              seasonObj.episodes.push(ep);
+              seasonObj.episodes.sort((a: any, b: any) => a.episodeNumber - b.episodeNumber);
+            }
+            
+            existingSeries.seasons = seasons;
+          } else {
+            const key = `${item.id}`;
+            if (!seen.has(key)) {
+              seen.add(key);
+              merged.push(item);
+            }
+          }
+        }
 
-      return merged;
+        return merged;
+      });
     });
   }, [page, pageItems]);
 
