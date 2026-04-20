@@ -7,6 +7,7 @@ export interface SessionUserData {
   name: string;
   username: string;
   playlistUrl: string;
+  epgUrl?: string | null;
   isBlocked: boolean;
   lastAccess?: string;
   adultAccess: {
@@ -81,11 +82,13 @@ function resolveAccessIdLoginEmail(candidate: string | null | undefined, accessI
 }
 
 function mapUserRowToSessionUserData(user: XandeflixUserRow): SessionUserData {
+  const userWithEpg = user as XandeflixUserRow & { epg_url?: string | null };
   return {
     id: user.id,
     name: user.name,
     username: user.username || user.access_id || user.id,
     playlistUrl: user.playlist_url || '',
+    epgUrl: userWithEpg.epg_url || null,
     isBlocked: user.is_blocked,
     lastAccess: user.last_access || undefined,
     adultAccess: {

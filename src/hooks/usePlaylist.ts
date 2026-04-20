@@ -205,6 +205,35 @@ function buildPlaylistUrlCandidates(playlistUrl: string): string[] {
   }
 }
 
+function deriveEpgUrlFromPlaylistUrl(playlistUrl: string): string | null {
+  const raw = String(playlistUrl || '').trim();
+  if (!raw) return null;
+
+  try {
+    const parsed = new URL(raw);
+    const username = parsed.searchParams.get('username') || '';
+    const password = parsed.searchParams.get('password') || '';
+    if (!username || !password) return null;
+
+    if (/\/get\.php$/i.test(parsed.pathname)) {
+      parsed.pathname = parsed.pathname.replace(/\/get\.php$/i, '/xmltv.php');
+    } else if (/\/player_api\.php$/i.test(parsed.pathname)) {
+      parsed.pathname = parsed.pathname.replace(/\/player_api\.php$/i, '/xmltv.php');
+    } else if (!/\/xmltv\.php$/i.test(parsed.pathname)) {
+      parsed.pathname = parsed.pathname.replace(/\/+$/, '') + '/xmltv.php';
+    }
+
+    const next = new URL(parsed.origin + parsed.pathname);
+    next.searchParams.set('username', username);
+    next.searchParams.set('password', password);
+    next.searchParams.set('type', parsed.searchParams.get('type') || 'm3u_plus');
+    next.searchParams.set('output', parsed.searchParams.get('output') || 'ts');
+    return next.toString();
+  } catch {
+    return null;
+  }
+}
+
 async function buildCategoriesPreviewFromCatalog(
   onUpdate?: (msg: string, progressHint?: number) => void,
 ): Promise<Category[]> {
@@ -769,6 +798,8 @@ export const usePlaylist = () => {
       appendProgressLog('[Sistema] Iniciando sincronizacao da conta...');
 
       let playlistUrl = '';
+      let configuredEpgUrl: string | null = null;
+      let derivedEpgUrl: string | null = null;
       let cacheScope = '';
       let hasValidatedUser = false;
 
@@ -797,6 +828,8 @@ export const usePlaylist = () => {
         }
 
         playlistUrl = userData.playlistUrl;
+        configuredEpgUrl = String(userData.epgUrl || '').trim() || null;
+        derivedEpgUrl = deriveEpgUrlFromPlaylistUrl(playlistUrl);
         cacheScope = buildPlaylistCacheScope(userData.id || 'anonymous', playlistUrl);
         setEpgData(null);
 
@@ -832,7 +865,7 @@ export const usePlaylist = () => {
             setIsUsingMock(false);
             setPlaylistStatus('success');
             setPlaylistSource(describePlaylistSource(playlistUrl));
-            void hydrateEpgData(cached.epgUrl || null, cacheScope);
+            void hydrateEpgData(configuredEpgUrl || derivedEpgUrl || cached.epgUrl || null, cacheScope);
             setPlaylistProgress((prev) => Math.max(prev, hasFreshCache ? 30 : 27));
             appendProgressLog(`[Concluido] Catalogo restaurado do cache com ${cachedPreview.length} categorias.`);
             appendProgressLog('[Atualizacao] Revalidando catalogo completo em segundo plano...');
@@ -900,7 +933,7 @@ export const usePlaylist = () => {
                   appendProgressLog(`[Fast Boot] Vitrine exibida com ${previewCount} canais. Download continua em background.`);
 
                   // Iniciar EPG em paralelo
-                  void hydrateEpgData(previewEpgUrl, cacheScope);
+                  void hydrateEpgData(configuredEpgUrl || derivedEpgUrl || previewEpgUrl, cacheScope);
                 }
               } catch (err) {
                 // Falha silenciosa - o fluxo completo ainda vai finalizar
@@ -944,6 +977,7 @@ export const usePlaylist = () => {
         const finalCategories = await buildCategoriesPreviewFromCatalog(updateDiag);
 
         if (finalCategories.length > 0) {
+          const effectiveEpgUrl = configuredEpgUrl || derivedEpgUrl || parsedPlaylist.epgUrl;
           updateDiag('[UI] Atualizando vitrine de hardware...', 94);
           
           if (!hasData) {
@@ -971,15 +1005,15 @@ export const usePlaylist = () => {
 
           updateDiag('[Cache] Salvando vitrine compacta para boot rapido...', 96);
           await withTimeout(
-            savePlaylistCache(finalCategories, cacheScope, parsedPlaylist.epgUrl),
+            savePlaylistCache(finalCategories, cacheScope, effectiveEpgUrl),
             CACHE_IO_TIMEOUT_MS,
             'Timeout: Falha write-to-disk',
           ).catch(() => null);
 
-          void syncCatalogSnapshot(userData.id, playlistUrl, parsedPlaylist.epgUrl, finalCategories);
+          void syncCatalogSnapshot(userData.id, playlistUrl, effectiveEpgUrl, finalCategories);
           setPlaylistStatus('success');
           if (!hasData) {
-            void hydrateEpgData(parsedPlaylist.epgUrl, cacheScope);
+            void hydrateEpgData(effectiveEpgUrl, cacheScope);
           }
           setIsBackgroundSyncing(false);
           setPlaylistProgress(100);

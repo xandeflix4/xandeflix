@@ -97,6 +97,78 @@ export const LiveTVGrid: React.FC<LiveTVGridProps> = ({ categories, onPlayFull, 
     () => liveCategories.find((c) => c.id === selectedCatId) || null,
     [liveCategories, selectedCatId],
   );
+  const normalizeChannelKey = useCallback((value: string | null | undefined) => {
+    const raw = String(value || '')
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .toLowerCase()
+      .replace(/\b(canal|channel|tv|hd|fhd|h265|h264|sd|4k|uhd)\b/g, ' ')
+      .replace(/[^a-z0-9]+/g, ' ')
+      .trim()
+      .replace(/\s+/g, ' ');
+    return raw;
+  }, []);
+  const epgEntries = useMemo(() => Object.entries(epgData || {}), [epgData]);
+  const resolveProgramsForMedia = useCallback((media: Media) => {
+    if (!epgData) return [];
+
+    const directById = media.tvgId ? epgData[media.tvgId] : null;
+    if (directById && directById.length > 0) return directById;
+
+    const directByName = media.tvgName ? epgData[media.tvgName] : null;
+    if (directByName && directByName.length > 0) return directByName;
+
+    const wantedId = String(media.tvgId || '').trim().toLowerCase();
+    const wantedName = String(media.tvgName || '').trim().toLowerCase();
+    const wantedTitle = normalizeChannelKey(media.title);
+
+    for (const [key, programs] of epgEntries) {
+      if (!programs || programs.length === 0) continue;
+      const normalizedKeyRaw = key.trim().toLowerCase();
+      if (
+        (wantedId && normalizedKeyRaw === wantedId) ||
+        (wantedName && normalizedKeyRaw === wantedName)
+      ) {
+        return programs;
+      }
+    }
+
+    if (!wantedTitle) return [];
+
+    for (const [key, programs] of epgEntries) {
+      if (!programs || programs.length === 0) continue;
+      const normalizedKey = normalizeChannelKey(key);
+      if (!normalizedKey) continue;
+      if (
+        normalizedKey === wantedTitle ||
+        (wantedTitle.length >= 4 && normalizedKey.includes(wantedTitle)) ||
+        (normalizedKey.length >= 4 && wantedTitle.includes(normalizedKey))
+      ) {
+        return programs;
+      }
+    }
+
+    return [];
+  }, [epgData, epgEntries, normalizeChannelKey]);
+  const previewPrograms = useMemo(() => {
+    if (!previewMedia) return [];
+    return resolveProgramsForMedia(previewMedia);
+  }, [previewMedia, resolveProgramsForMedia]);
+  const currentPreviewProgram = useMemo(
+    () => previewPrograms.find((program) => now >= program.start && now < program.stop) || null,
+    [now, previewPrograms],
+  );
+  const upcomingPreviewPrograms = useMemo(
+    () => previewPrograms.filter((program) => program.start > now).slice(0, 2),
+    [now, previewPrograms],
+  );
+
+  const formatProgramTime = useCallback((timestamp: number) => {
+    const date = new Date(timestamp);
+    const hours = String(date.getHours()).padStart(2, '0');
+    const minutes = String(date.getMinutes()).padStart(2, '0');
+    return `${hours}:${minutes}`;
+  }, []);
   const { items: pageItems, loading: pageLoading, hasMore: hasMorePages } = useDiskCategory(
     selectedCategory?.title || null,
     page,
@@ -642,7 +714,7 @@ export const LiveTVGrid: React.FC<LiveTVGridProps> = ({ categories, onPlayFull, 
         >
           {filteredItems.map((media, index) => {
             const isFavorite = favorites.includes(media.videoUrl || `media:${media.id}`) || favorites.includes(media.id);
-            const channelPrograms = (media.tvgId && epgData?.[media.tvgId]) || (media.tvgName && epgData?.[media.tvgName]) || [];
+            const channelPrograms = resolveProgramsForMedia(media);
             const currentProgram = channelPrograms.find((program) => now >= program.start && now < program.stop);
 
             return (
@@ -765,6 +837,34 @@ export const LiveTVGrid: React.FC<LiveTVGridProps> = ({ categories, onPlayFull, 
                        <Text style={styles.fullScreenTextSmall}>TELA CHEIA</Text>
                      </View>
                    </TouchableHighlight>
+                </View>
+                <View style={styles.previewEpgPanel}>
+                  <Text style={styles.previewEpgTitle}>Guia de Programação</Text>
+                  {currentPreviewProgram ? (
+                    <View style={styles.previewEpgCurrentCard}>
+                      <Text style={styles.previewEpgCurrentLabel}>Agora</Text>
+                      <Text style={styles.previewEpgCurrentName} numberOfLines={1}>
+                        {currentPreviewProgram.title}
+                      </Text>
+                      <Text style={styles.previewEpgCurrentTime}>
+                        {formatProgramTime(currentPreviewProgram.start)} - {formatProgramTime(currentPreviewProgram.stop)}
+                      </Text>
+                    </View>
+                  ) : (
+                    <Text style={styles.previewEpgEmptyText}>Sem programa atual disponível no EPG.</Text>
+                  )}
+                  {upcomingPreviewPrograms.length > 0 && (
+                    <View style={styles.previewEpgUpcomingList}>
+                      {upcomingPreviewPrograms.map((program) => (
+                        <View key={program.id} style={styles.previewEpgUpcomingItem}>
+                          <Text style={styles.previewEpgUpcomingTime}>{formatProgramTime(program.start)}</Text>
+                          <Text style={styles.previewEpgUpcomingName} numberOfLines={1}>
+                            {program.title}
+                          </Text>
+                        </View>
+                      ))}
+                    </View>
+                  )}
                 </View>
               </View>
             </motion.div>
@@ -1109,6 +1209,87 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: 'rgba(255,255,255,0.1)',
   } as any,
+  previewEpgPanel: {
+    marginTop: 10,
+    marginHorizontal: 20,
+    marginBottom: 12,
+    paddingVertical: 14,
+    paddingHorizontal: 16,
+    backgroundColor: 'rgba(0,0,0,0.62)',
+    backdropFilter: 'blur(8px)',
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.08)',
+    gap: 10,
+  } as any,
+  previewEpgTitle: {
+    color: 'rgba(255,255,255,0.7)',
+    fontSize: 11,
+    fontWeight: '800',
+    letterSpacing: 1.1,
+    textTransform: 'uppercase',
+    fontFamily: 'Outfit',
+  },
+  previewEpgCurrentCard: {
+    backgroundColor: 'rgba(255,255,255,0.05)',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.08)',
+    borderRadius: 10,
+    paddingVertical: 9,
+    paddingHorizontal: 11,
+    gap: 4,
+  },
+  previewEpgCurrentLabel: {
+    color: '#E50914',
+    fontSize: 10,
+    fontWeight: '900',
+    textTransform: 'uppercase',
+    letterSpacing: 0.8,
+    fontFamily: 'Outfit',
+  },
+  previewEpgCurrentName: {
+    color: '#ffffff',
+    fontSize: 13,
+    fontWeight: '800',
+    fontFamily: 'Outfit',
+  },
+  previewEpgCurrentTime: {
+    color: 'rgba(255,255,255,0.62)',
+    fontSize: 11,
+    fontWeight: '600',
+    fontFamily: 'Outfit',
+  },
+  previewEpgUpcomingList: {
+    gap: 6,
+  },
+  previewEpgUpcomingItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    paddingVertical: 6,
+    borderBottomWidth: 1,
+    borderBottomColor: 'rgba(255,255,255,0.06)',
+  },
+  previewEpgUpcomingTime: {
+    color: 'rgba(255,255,255,0.6)',
+    minWidth: 44,
+    fontSize: 11,
+    fontWeight: '700',
+    fontFamily: 'Outfit',
+  },
+  previewEpgUpcomingName: {
+    flex: 1,
+    color: 'rgba(255,255,255,0.9)',
+    fontSize: 12,
+    fontWeight: '700',
+    fontFamily: 'Outfit',
+  },
+  previewEpgEmptyText: {
+    color: 'rgba(255,255,255,0.5)',
+    fontSize: 12,
+    fontWeight: '600',
+    fontFamily: 'Outfit',
+  },
   previewTitleSmall: {
     fontSize: 18,
     fontWeight: '800',
