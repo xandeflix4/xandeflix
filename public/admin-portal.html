@@ -401,6 +401,8 @@
                 const parsed = new URL(raw);
                 const username = parsed.searchParams.get('username') || '';
                 const password = parsed.searchParams.get('password') || '';
+                const type = parsed.searchParams.get('type') || 'm3u_plus';
+                const output = parsed.searchParams.get('output') || 'ts';
                 if (!username || !password) return '';
 
                 if (/\/get\.php$/i.test(parsed.pathname)) {
@@ -414,6 +416,8 @@
                 const next = new URL(parsed.origin + parsed.pathname);
                 next.searchParams.set('username', username);
                 next.searchParams.set('password', password);
+                next.searchParams.set('type', type);
+                next.searchParams.set('output', output);
                 return next.toString();
             } catch (_) {
                 return '';
