@@ -1105,11 +1105,22 @@ export const VideoPlayer = React.forwardRef<VideoPlayerHandle, VideoPlayerProps>
       let endedHandler: (() => void) | null = null;
       let hlsManifestParsedHandler: (() => void) | null = null;
       let hlsErrorHandler: ((event: string, data: any) => void) | null = null;
+      let stallWatchdogId: ReturnType<typeof setInterval> | null = null;
+      let lastLiveProgressAt = Date.now();
+      let lastObservedLiveTime = 0;
+      let liveRecoveryAttempts = 0;
 
       const clearStartupTimeout = () => {
         if (startupTimeoutId) {
           clearTimeout(startupTimeoutId);
           startupTimeoutId = null;
+        }
+      };
+
+      const clearStallWatchdog = () => {
+        if (stallWatchdogId) {
+          clearInterval(stallWatchdogId);
+          stallWatchdogId = null;
         }
       };
 
@@ -1204,10 +1215,54 @@ export const VideoPlayer = React.forwardRef<VideoPlayerHandle, VideoPlayerProps>
 
       const teardownCurrentSource = () => {
         clearStartupTimeout();
+        clearStallWatchdog();
         removeVideoEventListeners();
         destroyMpegtsInstance();
         destroyHlsInstance();
         releaseHtml5Video();
+      };
+
+      const startLiveStallWatchdog = () => {
+        clearStallWatchdog();
+        if (!isLiveStream) {
+          return;
+        }
+
+        lastLiveProgressAt = Date.now();
+        lastObservedLiveTime = video.currentTime || 0;
+
+        stallWatchdogId = setInterval(() => {
+          if (disposed || video.paused || video.ended) {
+            return;
+          }
+
+          const currentTime = video.currentTime || 0;
+          const readyState = video.readyState;
+          const hasTimeAdvanced = currentTime > lastObservedLiveTime + 0.01;
+
+          if (hasTimeAdvanced || readyState >= 3) {
+            lastObservedLiveTime = currentTime;
+            lastLiveProgressAt = Date.now();
+            liveRecoveryAttempts = 0;
+            return;
+          }
+
+          if (Date.now() - lastLiveProgressAt < 12000) {
+            return;
+          }
+
+          if (liveRecoveryAttempts >= 3) {
+            console.error('[Live-Stall] Tentativas maximas de recuperacao atingidas para este canal.');
+            setInlineError('Sinal instavel: aguardando reconexao...');
+            lastLiveProgressAt = Date.now();
+            return;
+          }
+
+          liveRecoveryAttempts += 1;
+          console.warn(`[Live-Stall] Stream congelada. Reiniciando canal (tentativa ${liveRecoveryAttempts})...`);
+          setInlineError('Reconectando canal...');
+          playCurrentSource();
+        }, 2000);
       };
 
       const playCurrentSource = () => {
@@ -1268,6 +1323,7 @@ export const VideoPlayer = React.forwardRef<VideoPlayerHandle, VideoPlayerProps>
             void video.play().catch((playError) => {
               console.error('[Preview] Erro ao iniciar play:', playError);
             });
+            startLiveStallWatchdog();
           };
           hls.on(Hls.Events.MANIFEST_PARSED, hlsManifestParsedHandler);
 
@@ -1350,9 +1406,12 @@ export const VideoPlayer = React.forwardRef<VideoPlayerHandle, VideoPlayerProps>
             };
             playingHandler = () => {
               clearStartupTimeout();
+              startLiveStallWatchdog();
             };
             timeUpdateHandler = () => {
               lastKnownTimeRef.current = Math.max(0, Math.floor(video.currentTime || 0));
+              lastObservedLiveTime = video.currentTime || 0;
+              lastLiveProgressAt = Date.now();
             };
 
             video.addEventListener('loadedmetadata', loadedMetadataHandler);
@@ -1388,6 +1447,7 @@ export const VideoPlayer = React.forwardRef<VideoPlayerHandle, VideoPlayerProps>
         };
         playingHandler = () => {
           clearStartupTimeout();
+          startLiveStallWatchdog();
         };
         nativeErrorHandler = () => {
           const err = video.error;
@@ -1410,9 +1470,12 @@ export const VideoPlayer = React.forwardRef<VideoPlayerHandle, VideoPlayerProps>
         };
         timeUpdateHandler = () => {
           lastKnownTimeRef.current = Math.max(0, Math.floor(video.currentTime || 0));
+          lastObservedLiveTime = video.currentTime || 0;
+          lastLiveProgressAt = Date.now();
         };
         endedHandler = () => {
           clearStartupTimeout();
+          clearStallWatchdog();
         };
 
         video.addEventListener('loadedmetadata', loadedMetadataHandler);
@@ -1428,6 +1491,7 @@ export const VideoPlayer = React.forwardRef<VideoPlayerHandle, VideoPlayerProps>
       return () => {
         disposed = true;
         clearStartupTimeout();
+        clearStallWatchdog();
         removeVideoEventListeners();
         destroyMpegtsInstance();
         destroyHlsInstance();
