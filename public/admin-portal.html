@@ -302,12 +302,33 @@
         }
 
         async function startM3UScan() {
-            const url = document.getElementById('m3uUrlInput').value.trim(); if(!url) return;
-            document.getElementById('scanMainBtn').disabled = true;
+            const url = document.getElementById('m3uUrlInput').value.trim(); 
+            if(!url) return;
+            
+            const btn = document.getElementById('scanMainBtn');
+            const originalText = btn.innerText;
+            btn.disabled = true;
+            btn.innerText = "BAIXANDO...";
+            
             scannerFullData = {};
-            const r = await fetch(`https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(url)}`);
-            if (r.ok) await processStream(r.body);
-            document.getElementById('scanMainBtn').disabled = false;
+            try {
+                let r = await fetch(`https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(url)}`);
+                if (!r.ok) {
+                    r = await fetch(`https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`);
+                }
+                
+                if (r.ok) {
+                    btn.innerText = "PROCESSANDO...";
+                    await processStream(r.body);
+                } else {
+                    alert('Falha ao acessar a URL. O servidor pode estar bloqueando proxies ou a URL é inválida.');
+                }
+            } catch (e) {
+                alert('Erro de conexão ao tentar ler a playlist: ' + e.message);
+            } finally {
+                btn.disabled = false;
+                btn.innerText = originalText;
+            }
         }
 
         async function processStream(stream) {

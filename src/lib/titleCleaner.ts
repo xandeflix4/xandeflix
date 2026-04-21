@@ -19,13 +19,14 @@ export const extractSeriesInfo = (title: string): { cleanTitle: string, season?:
 
   // Padrões comuns: S01E01, S01 E01, EP 01, T1 E1, etc.
   const patterns = [
-    /s(\d+)\s*e(\d+)/i,           // S01E01 ou S01 E01
-    /t(\d+)\s*e(\d+)/i,           // T01E01 ou T01 E01
-    /s(\d+)\s*ep(\d+)/i,          // S01EP01
-    /ep(\d+)/i,                  // EP01 (Assume season 1 se não houver)
-    /cap(?:itulo)?\s*(\d+)/i,    // CAP 01 ou Capitulo 01
-    /temporada\s*(\d+).*episodio\s*(\d+)/i, // Temporada 1 Episodio 1
-    /season\s*(\d+).*episode\s*(\d+)/i      // Season 1 Episode 1
+    /s(\d+)\s*e(\d+)/i,                     // S01E01 ou S01 E01
+    /s(\d+)[\s._-]*ep(?:isodio)?[\s._-]*(\d+)/i, // S01EP01 / S01-EP01
+    /t(\d+)\s*e(\d+)/i,                     // T01E01 ou T01 E01
+    /temporada[\s._-]*(\d+)[^\d]+episodio[\s._-]*(\d+)/i, // Temporada 1 Episodio 2
+    /season[\s._-]*(\d+)[^\d]+episode[\s._-]*(\d+)/i,     // Season 1 Episode 2
+    /(\d{1,2})\s*x\s*(\d{1,3})/i,           // 1x02 / 01x002
+    /ep(\d+)/i,                             // EP01 (assume temporada 1)
+    /cap(?:itulo)?\s*(\d+)/i,               // CAP 01 ou Capitulo 01 (assume temporada 1)
   ];
 
   for (const p of patterns) {
@@ -78,10 +79,16 @@ export const cleanMediaTitle = (rawTitle: string): CleanedMedia => {
   // 2. Remover Tags de Categoria/Lançamento
   title = title.replace(/\|[^|]+\||\[[^\]]+\]/g, ' ');
 
+  // 3. Remover conteúdo entre parênteses que restou (geralmente (PT-BR), (DUBLADO), exceto ano que já foi tirado)
+  title = title.replace(/\([^)]+\)/g, ' ');
+
+  // 3.5 Remover prefixos de IPTV comuns
+  title = title.replace(/^(SÉRIES|SERIES|SÉRIE|SERIE|FILMES|FILME|NOVELAS|NOVELA|ANIMES|ANIME|LANCAMENTOS|LANCAMENTO|LANÇAMENTOS|LANÇAMENTO|CINEMA)\s*[-|:]?\s*/i, '');
+
   // 4. Remover Resoluções e Qualidade
   const technicalTags = [
     /\bFHD\b/gi, /\b4K\b/gi, /\b1080P\b/gi, /\b720P\b/gi, /\bHD\b/gi, 
-    /\bSD\b/gi, /\bUHD\b/gi, /\bCAM\b/gi, /\bTS\b/gi, /\bWEB-DL\b/gi, /\bBLURAY\b/gi
+    /\bSD\b/gi, /\bUHD\b/gi, /\bCAM\b/gi, /\bTS\b/gi, /\bWEB-DL\b/gi, /\bBLURAY\b/gi, /\bBRRIP\b/gi, /\bHDRIP\b/gi
   ];
   technicalTags.forEach(regex => {
     title = title.replace(regex, '');
@@ -89,8 +96,8 @@ export const cleanMediaTitle = (rawTitle: string): CleanedMedia => {
 
   // 5. Remover Idiomas e Dublagem
   const localeTags = [
-    /\bLEG\b/gi, /\bDUBLADO\b/gi, /\bLEGENDADO\b/gi, /\bDUAL\b/gi, 
-    /\bPT-BR\b/gi, /\bPORTUGUES\b/gi, /\bH264\b/gi, /\bH265\b/gi, /\bx264\b/gi
+    /\bLEG\b/gi, /\bDUBLADO\b/gi, /\bLEGENDADO\b/gi, /\bDUAL\b/gi, /\bAUDIO\b/gi,
+    /\bPT-BR\b/gi, /\bPTBR\b/gi, /\bPORTUGUES\b/gi, /\bNACIONAL\b/gi, /\bH264\b/gi, /\bH265\b/gi, /\bx264\b/gi
   ];
   localeTags.forEach(regex => {
     title = title.replace(regex, '');

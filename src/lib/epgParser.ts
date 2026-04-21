@@ -49,8 +49,25 @@ export function parseXMLTV(xmlString: string): Record<string, EPGProgram[]> {
   const parser = new DOMParser();
   const xml = parser.parseFromString(xmlSource, 'application/xml');
   const groupedPrograms: Record<string, EPGProgram[]> = {};
-  const programmeNodes = xml.getElementsByTagName('programme');
   
+  // 1. Mapear IDs de canais para Display Names
+  const channelNodes = xml.getElementsByTagName('channel');
+  const channelIdToNames: Record<string, string[]> = {};
+  for (let i = 0; i < channelNodes.length; i++) {
+    const channelNode = channelNodes[i];
+    const id = normalizeText(channelNode.getAttribute('id'));
+    if (!id) continue;
+    
+    const displayNames: string[] = [];
+    const nameNodes = channelNode.getElementsByTagName('display-name');
+    for (let j = 0; j < nameNodes.length; j++) {
+      const name = normalizeText(nameNodes[j].textContent);
+      if (name) displayNames.push(name);
+    }
+    channelIdToNames[id] = displayNames;
+  }
+
+  const programmeNodes = xml.getElementsByTagName('programme');
   const now = Date.now();
   const sixHoursAgo = now - (6 * 60 * 60 * 1000);
   const twentyFourHoursAhead = now + (24 * 60 * 60 * 1000);
@@ -62,31 +79,40 @@ export function parseXMLTV(xmlString: string): Record<string, EPGProgram[]> {
     const stop = parseXmltvTimestamp(programmeNode.getAttribute('stop')) || start;
 
     if (!channelId || start === null || stop === null) continue;
-
-    // Otimização: Ignorar programas muito antigos ou muito distantes no futuro
     if (stop < sixHoursAgo || start > twentyFourHoursAhead) continue;
 
     const titleNode = programmeNode.getElementsByTagName('title')[0];
     const descNode = programmeNode.getElementsByTagName('desc')[0];
     const title = normalizeText(titleNode?.textContent) || 'Sem título';
 
-    if (!groupedPrograms[channelId]) {
-      groupedPrograms[channelId] = [];
-    }
-
-    groupedPrograms[channelId].push({
+    const program: EPGProgram = {
       id: `${channelId}:${start}:${i}`,
       channelId,
       start,
       stop,
       title,
       description: normalizeText(descNode?.textContent),
+    };
+
+    // Indexar pelo ID original (normalizado para lowercase)
+    const normalizedId = channelId.toLowerCase();
+    if (!groupedPrograms[normalizedId]) groupedPrograms[normalizedId] = [];
+    groupedPrograms[normalizedId].push(program);
+
+    // Indexar por todos os Display Names (normalizados para lowercase)
+    const names = channelIdToNames[channelId] || [];
+    names.forEach(name => {
+      const normalizedName = name.toLowerCase();
+      if (normalizedName !== normalizedId) {
+        if (!groupedPrograms[normalizedName]) groupedPrograms[normalizedName] = [];
+        groupedPrograms[normalizedName].push(program);
+      }
     });
   }
 
-  // Ordenação final
-  for (const channelId in groupedPrograms) {
-    groupedPrograms[channelId].sort((a, b) => a.start - b.start);
+  // Ordenação final e remoção de duplicatas por canal
+  for (const key in groupedPrograms) {
+    groupedPrograms[key].sort((a, b) => a.start - b.start);
   }
 
   return groupedPrograms;

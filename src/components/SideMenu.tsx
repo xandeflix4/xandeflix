@@ -159,7 +159,7 @@ export const SideMenu: React.FC<SideMenuProps> = ({ onSelect, activeId = 'home',
   const showBackdrop = isTvDevice && menuHasFocus;
   const collapsedWidth = layout.sideRailCollapsedWidth || 80;
   const expandedWidth = layout.sideRailExpandedWidth || 280;
-  const iconSize = layout.menuIconSize || 22;
+  const iconSize = layout.menuIconSize || 28;
   const labelFontSize = layout.menuLabelSize || 18;
   const panelHorizontalPadding = layout.isTvProfile ? 12 : 16;
   const panelVerticalPadding = layout.isTvProfile ? 24 : 32;
@@ -241,7 +241,7 @@ export const SideMenu: React.FC<SideMenuProps> = ({ onSelect, activeId = 'home',
                 className="bg-gradient-to-br from-blue-600 to-indigo-800 rounded-lg flex items-center justify-center shadow-lg shrink-0"
                 style={{ width: layout.isTvProfile ? 36 : 40, height: layout.isTvProfile ? 36 : 40 }}
               >
-                <User color="white" size={layout.isTvProfile ? 18 : 20} />
+                <User color="white" size={layout.isTvProfile ? 22 : 24} />
               </div>
               {isExpanded && (
                 isTvDevice ? (
@@ -304,7 +304,7 @@ export const SideMenu: React.FC<SideMenuProps> = ({ onSelect, activeId = 'home',
                   className="flex flex-row items-center"
                   style={{ width: isExpanded ? '100%' : 'auto', justifyContent: isExpanded ? 'flex-start' : 'center' }}
                 >
-                  <div className="w-6 flex items-center justify-center shrink-0 transition-transform duration-300 group-hover:scale-110">
+                  <div className="w-8 flex items-center justify-center shrink-0 transition-transform duration-300 group-hover:scale-110">
                     <Icon 
                       size={iconSize} 
                       color={(isFocused || isActive) ? "#E50914" : "rgba(255,255,255,0.6)"} 
@@ -378,7 +378,7 @@ export const SideMenu: React.FC<SideMenuProps> = ({ onSelect, activeId = 'home',
               className="flex flex-row items-center"
               style={{ width: isExpanded ? '100%' : 'auto', justifyContent: isExpanded ? 'flex-start' : 'center' }}
             >
-              <div className="w-6 flex items-center justify-center shrink-0 transition-transform duration-300 group-hover:scale-110">
+              <div className="w-8 flex items-center justify-center shrink-0 transition-transform duration-300 group-hover:scale-110">
                 <LogOut 
                   size={iconSize} 
                   color={focusedItem === 'logout' ? "#E50914" : "rgba(255,255,255,0.6)"} 

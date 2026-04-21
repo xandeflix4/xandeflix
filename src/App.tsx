@@ -42,8 +42,10 @@ export default function App() {
   const hydrateProfileState = useStore((state) => state.hydrateProfileState);
   const clearSessionState = useStore((state) => state.clearSessionState);
   const setAdultAccessSettings = useStore((state) => state.setAdultAccessSettings);
+  const fetchEPG = useStore((state) => state.fetchEPG);
   const [hasCrashLog, setHasCrashLog] = useState(false);
   const [crashDetails, setCrashDetails] = useState<string | null>(null);
+  const [showExitConfirmation, setShowExitConfirmation] = useState(false);
 
   useEffect(() => {
     const crash = getLastCrash();
@@ -82,9 +84,18 @@ export default function App() {
 
   useEffect(() => {
     if (Capacitor.isNativePlatform()) {
-      const backButtonListener = CapacitorApp.addListener('backButton', () => {
-        const escapeEvent = new KeyboardEvent('keydown', { key: 'Escape', bubbles: true });
-        window.dispatchEvent(escapeEvent);
+      const backButtonListener = CapacitorApp.addListener('backButton', ({ canGoBack }) => {
+        // Se houver modais abertos ou navegação interna, enviamos o Escape
+        const hasOpenModals = document.querySelector('[role="dialog"], .modal-open, #player-overlay');
+        
+        if (hasOpenModals) {
+          const escapeEvent = new KeyboardEvent('keydown', { key: 'Escape', bubbles: true });
+          window.dispatchEvent(escapeEvent);
+          return;
+        }
+
+        // Se estiver na tela principal e não houver nada aberto, mostrar confirmação de saída
+        setShowExitConfirmation(true);
       });
 
       const enforceFullscreen = async () => {
@@ -112,6 +123,7 @@ export default function App() {
 
 
   const resetSession = useCallback(() => {
+    console.log('[AppBootstrap] Resetando sessao (logout/expirado).');
     clearLegacyAuthStorage();
     setSessionRole(null);
     setIsAdminMode(false);
@@ -127,13 +139,27 @@ export default function App() {
 
       if (snapshot.role === 'user' && snapshot.data) {
         setAdultAccessSettings(snapshot.data.adultAccess);
-        hydrateProfileState(snapshot.data.id);
+        hydrateProfileState();
+        
+        if (snapshot.data.epgUrl) {
+          void fetchEPG(snapshot.data.epgUrl);
+        }
+      } else if (snapshot.role === 'admin') {
+        // Admin nao tem perfil de usuario limitado, mas mantemos o estado
+        setAdultAccessSettings({ enabled: true, totpEnabled: false });
+        hydrateProfileState();
+        
+        // Para admin, tentamos restaurar o ultimo EPG usado se disponivel
+        const lastEpg = useStore.getState().lastEpgUrl;
+        if (lastEpg) {
+          void fetchEPG(lastEpg);
+        }
       } else {
         setAdultAccessSettings(null);
         clearSessionState();
       }
     },
-    [clearSessionState, hydrateProfileState, setAdultAccessSettings, setIsAdminMode],
+    [clearSessionState, hydrateProfileState, setAdultAccessSettings, setIsAdminMode, fetchEPG],
   );
 
   useEffect(() => {
@@ -284,6 +310,87 @@ export default function App() {
     return <LoginScreen onLoginSuccess={handleLoginSuccess} />;
   }
 
-  return <HomeScreen onLogout={handleLogout} />;
+  return (
+    <>
+      <HomeScreen onLogout={handleLogout} />
+      
+      {showExitConfirmation && (
+        <View style={{
+          position: 'absolute',
+          top: 0,
+          left: 0,
+          right: 0,
+          bottom: 0,
+          backgroundColor: 'rgba(0,0,0,0.85)',
+          justifyContent: 'center',
+          alignItems: 'center',
+          zIndex: 9999,
+        }}>
+          <View style={{
+            width: 500,
+            backgroundColor: '#1a1a1a',
+            borderRadius: 20,
+            padding: 40,
+            borderWidth: 1,
+            borderColor: 'rgba(255,255,255,0.1)',
+            shadowColor: '#000',
+            shadowOffset: { width: 0, height: 10 },
+            shadowOpacity: 0.5,
+            shadowRadius: 20,
+          }}>
+            <Text style={{
+              color: 'white',
+              fontSize: 28,
+              fontWeight: '900',
+              textAlign: 'center',
+              marginBottom: 16,
+              fontFamily: 'Outfit',
+            }}>Sair do Xandeflix?</Text>
+            
+            <Text style={{
+              color: 'rgba(255,255,255,0.6)',
+              fontSize: 18,
+              textAlign: 'center',
+              marginBottom: 40,
+              lineHeight: 26,
+              fontFamily: 'Outfit',
+            }}>
+              Sua programação atual será pausada. Tem certeza que deseja fechar o aplicativo?
+            </Text>
+
+            <View style={{ flexDirection: 'row', gap: 16 }}>
+              <TouchableHighlight
+                onPress={() => setShowExitConfirmation(false)}
+                underlayColor="rgba(255,255,255,0.1)"
+                style={{
+                  flex: 1,
+                  backgroundColor: 'rgba(255,255,255,0.05)',
+                  borderRadius: 12,
+                  paddingVertical: 18,
+                  alignItems: 'center',
+                }}
+              >
+                <Text style={{ color: 'white', fontSize: 18, fontWeight: '800', fontFamily: 'Outfit' }}>CONTINUAR ASSISTINDO</Text>
+              </TouchableHighlight>
+
+              <TouchableHighlight
+                onPress={() => CapacitorApp.exitApp()}
+                underlayColor="#dc2626"
+                style={{
+                  flex: 1,
+                  backgroundColor: '#E50914',
+                  borderRadius: 12,
+                  paddingVertical: 18,
+                  alignItems: 'center',
+                }}
+              >
+                <Text style={{ color: 'white', fontSize: 18, fontWeight: '800', fontFamily: 'Outfit' }}>SAIR AGORA</Text>
+              </TouchableHighlight>
+            </View>
+          </View>
+        </View>
+      )}
+    </>
+  );
 }
 

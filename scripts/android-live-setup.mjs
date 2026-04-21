@@ -69,6 +69,32 @@ const collectAdbCandidates = () => {
     }
   }
 
+  const nativeWindowsRoot = 'C:\\Users';
+  if (existsSync(nativeWindowsRoot)) {
+    try {
+      const users = readdirSync(nativeWindowsRoot, { withFileTypes: true });
+      for (const user of users) {
+        if (!user.isDirectory() || user.name.startsWith('.')) {
+          continue;
+        }
+        pushIfPresent(
+          path.join(
+            nativeWindowsRoot,
+            user.name,
+            'AppData',
+            'Local',
+            'Android',
+            'Sdk',
+            'platform-tools',
+            'adb.exe'
+          )
+        );
+      }
+    } catch (e) {
+      // Ignore
+    }
+  }
+
   pushIfPresent('adb');
   pushIfPresent('adb.exe');
 

@@ -1,7 +1,7 @@
 import React, { useMemo, useState, useEffect, useRef, useCallback } from 'react';
 import { View, Text, StyleSheet, TouchableHighlight, Image, ImageBackground, ScrollView, FlatList } from 'react-native';
 import { motion } from 'motion/react';
-import { Play, ArrowLeft, Star, Loader2, Heart, Clapperboard, X } from 'lucide-react';
+import { Play, ArrowLeft, Star, Loader2, Heart, Clapperboard, X, ChevronDown } from 'lucide-react';
 import { Media } from '../types';
 import { useTMDB } from '../hooks/useTMDB';
 import { useEmbeddableTrailerKey } from '../hooks/useEmbeddableTrailerKey';
@@ -26,6 +26,7 @@ export const MediaDetailsPage: React.FC<MediaDetailsPageProps> = ({
   onSelectMedia
 }) => {
   const [selectedSeason, setSelectedSeason] = useState<number | null>(null);
+  const [isSeasonDropdownOpen, setIsSeasonDropdownOpen] = useState(false);
   const [isTrailerModalOpen, setIsTrailerModalOpen] = useState(false);
   const [trailerStatus, setTrailerStatus] = useState<'idle' | 'loading' | 'ready' | 'error'>('idle');
   const [trailerErrorTitle, setTrailerErrorTitle] = useState('Trailer indisponível no player');
@@ -49,14 +50,6 @@ export const MediaDetailsPage: React.FC<MediaDetailsPageProps> = ({
   const contentPadding = isTv ? 40 : isCompactDetails ? 16 : viewportWidth < 1200 ? 24 : 56;
   const backdropHeight = isTv ? '54vh' : isCompactDetails ? '52vh' : layout.isTablet ? '60vh' : '70vh';
   const detailsTopPadding = isTv ? 118 : isCompactDetails ? 84 : 104;
-
-  useEffect(() => {
-    if (media.seasons && media.seasons.length > 0) {
-      setSelectedSeason(media.seasons[0].seasonNumber);
-    } else {
-      setSelectedSeason(null);
-    }
-  }, [media]);
 
   useEffect(() => {
     setIsTrailerModalOpen(false);
@@ -89,14 +82,98 @@ export const MediaDetailsPage: React.FC<MediaDetailsPageProps> = ({
   }, [media.id]);
 
   const watchHistory = useStore(state => state.watchHistory);
+  const playbackProgress = useStore(state => state.playbackProgress);
   const favorites = useStore(state => state.favorites);
   const toggleFavorite = useStore(state => state.toggleFavorite);
-  const { items: relatedDiskItems } = useDiskCategory(media.category, 0, 140);
+  const { items: relatedDiskItems } = useDiskCategory(media.category, 0, 1200);
+  const normalizeSeriesKey = useCallback((value: string) => {
+    return cleanMediaTitle(String(value || '').trim())
+      .cleanTitle
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .replace(/[^a-zA-Z0-9]+/g, ' ')
+      .trim()
+      .toLowerCase();
+  }, []);
+  const mergedSeriesSeasons = useMemo(() => {
+    const baseTitleKey = normalizeSeriesKey(media.title);
+    const seasonsMap = new Map<number, Map<string, any>>();
+
+    const appendEpisode = (input: {
+      id?: string;
+      title?: string;
+      videoUrl?: string;
+      seasonNumber?: number;
+      episodeNumber?: number;
+    }) => {
+      const seasonNumber = Number(input.seasonNumber);
+      const episodeNumber = Number(input.episodeNumber);
+      const videoUrl = String(input.videoUrl || '').trim();
+      if (!Number.isFinite(seasonNumber) || !Number.isFinite(episodeNumber) || !videoUrl) return;
+      if (!seasonsMap.has(seasonNumber)) seasonsMap.set(seasonNumber, new Map());
+      const seasonMap = seasonsMap.get(seasonNumber)!;
+      const epKey = `${episodeNumber}::${videoUrl}`;
+      if (seasonMap.has(epKey)) return;
+      seasonMap.set(epKey, {
+        id: String(input.id || `ep-${seasonNumber}-${episodeNumber}-${videoUrl}`),
+        title: String(input.title || `Episódio ${episodeNumber}`),
+        seasonNumber,
+        episodeNumber,
+        videoUrl,
+      });
+    };
+
+    (media.seasons || []).forEach((season) => {
+      season.episodes.forEach((ep) => appendEpisode(ep as any));
+    });
+
+    relatedDiskItems.forEach((item: any) => {
+      const itemTitleKey = normalizeSeriesKey(item.title);
+      if (itemTitleKey !== baseTitleKey) return;
+
+      const parsed = cleanMediaTitle(item.title);
+      if (parsed.season !== undefined && parsed.episode !== undefined) {
+        appendEpisode({
+          id: item.id,
+          title: item.title,
+          seasonNumber: parsed.season,
+          episodeNumber: parsed.episode,
+          videoUrl: item.videoUrl,
+        });
+      }
+
+      if (Array.isArray(item.seasons)) {
+        item.seasons.forEach((season: any) => {
+          if (!Array.isArray(season?.episodes)) return;
+          season.episodes.forEach((ep: any) => appendEpisode(ep));
+        });
+      }
+    });
+
+    return Array.from(seasonsMap.entries())
+      .map(([seasonNumber, seasonEntries]) => ({
+        seasonNumber,
+        episodes: Array.from(seasonEntries.values()).sort((a, b) => a.episodeNumber - b.episodeNumber),
+      }))
+      .sort((a, b) => a.seasonNumber - b.seasonNumber);
+  }, [media.seasons, media.title, normalizeSeriesKey, relatedDiskItems]);
+  useEffect(() => {
+    if (mergedSeriesSeasons.length === 0) {
+      setSelectedSeason(null);
+      return;
+    }
+    setSelectedSeason((current) => {
+      if (current !== null && mergedSeriesSeasons.some((s) => s.seasonNumber === current)) {
+        return current;
+      }
+      return mergedSeriesSeasons[0].seasonNumber;
+    });
+  }, [mergedSeriesSeasons]);
   const tmdbLookupType = useMemo<'movie' | 'series'>(() => {
     if (media.type === 'series') return 'series';
     if (media.type === 'movie') return 'movie';
-    return media.seasons && media.seasons.length > 0 ? 'series' : 'movie';
-  }, [media.seasons, media.type]);
+    return mergedSeriesSeasons.length > 0 ? 'series' : 'movie';
+  }, [media.type, mergedSeriesSeasons.length]);
   const { data: tmdbData, loading: tmdbLoading } = useTMDB(media.title, tmdbLookupType, { categoryHint: media.category });
   const favoriteKey = media.videoUrl || `media:${media.id}`;
   const isFavorite = favorites.includes(favoriteKey) || favorites.includes(media.id);
@@ -105,18 +182,18 @@ export const MediaDetailsPage: React.FC<MediaDetailsPageProps> = ({
   useEffect(() => {
     if (!shouldEnableTvNav) return;
     const timer = setTimeout(() => {
-      const targetId = (media.videoUrl || (media.seasons && media.seasons.length > 0)) ? 'details-play' : 'details-back';
+      const targetId = (media.videoUrl || mergedSeriesSeasons.length > 0) ? 'details-play' : 'details-back';
       setFocusedId(targetId);
     }, 300);
     return () => clearTimeout(timer);
-  }, [media.videoUrl, media.seasons, setFocusedId, shouldEnableTvNav]);
+  }, [media.videoUrl, mergedSeriesSeasons.length, setFocusedId, shouldEnableTvNav]);
 
   const primaryActionMedia = useMemo(() => {
-    if (!media.seasons || media.seasons.length === 0) {
+    if (mergedSeriesSeasons.length === 0) {
       return media.videoUrl ? media : null;
     }
 
-    const resumableEpisode = media.seasons
+    const resumableEpisode = mergedSeriesSeasons
       .flatMap((season) =>
         season.episodes.map((episode) => ({
           episode,
@@ -136,7 +213,7 @@ export const MediaDetailsPage: React.FC<MediaDetailsPageProps> = ({
       };
     }
 
-    const firstSeason = media.seasons[0];
+    const firstSeason = mergedSeriesSeasons[0];
     const firstEpisode = firstSeason?.episodes?.[0];
 
     if (!firstEpisode) {
@@ -150,7 +227,11 @@ export const MediaDetailsPage: React.FC<MediaDetailsPageProps> = ({
       currentEpisode: firstEpisode,
       currentSeasonNumber: firstSeason.seasonNumber,
     };
-  }, [media, watchHistory]);
+  }, [media, mergedSeriesSeasons, watchHistory]);
+  const selectedSeasonEpisodes = useMemo(() => {
+    if (selectedSeason === null) return [];
+    return mergedSeriesSeasons.find((s) => s.seasonNumber === selectedSeason)?.episodes || [];
+  }, [mergedSeriesSeasons, selectedSeason]);
 
   const shouldResumePlayback = useMemo(() => {
     if (!primaryActionMedia?.videoUrl) {
@@ -715,45 +796,91 @@ export const MediaDetailsPage: React.FC<MediaDetailsPageProps> = ({
         </View>
 
         {/* Seasons & Episodes */}
-        {media.seasons && media.seasons.length > 0 && selectedSeason !== null && (
-          <View style={styles.seasonsContainer}>
-             <View style={styles.seasonTabs}>
-               <ScrollView horizontal showsHorizontalScrollIndicator={false}>
-                 {media.seasons.map(season => (
-                   <div
-                     key={season.seasonNumber}
-                     role="button"
-                     tabIndex={0}
-                     data-nav-id={`details-season-${season.seasonNumber}`}
-                     ref={(el) => { if (el) registerNode(`details-season-${season.seasonNumber}`, el, 'modal-seasons', {
-                       onFocus: () => {},
-                       onEnter: () => setSelectedSeason(season.seasonNumber),
-                       disableAutoScroll: true,
-            }); } }
-                     onClick={() => setSelectedSeason(season.seasonNumber)}
-                     style={{
-                       cursor: 'pointer',
-                       outline: 'none',
-                     }}
-                   >
-                     <View style={[
-                       styles.seasonTab,
-                       selectedSeason === season.seasonNumber ? styles.seasonTabActive : undefined,
-                     ]}>
-                       <Text style={[
-                         styles.seasonTabText,
-                         selectedSeason === season.seasonNumber ? styles.seasonTabTextActive : undefined
-                       ]}>
-                         Temporada {season.seasonNumber}
-                       </Text>
-                     </View>
-                   </div>
-                 ))}
-               </ScrollView>
-             </View>
+        {mergedSeriesSeasons.length > 0 && selectedSeason !== null && (
+          <div style={styles.seasonsContainer as any}>
+             <div style={{ position: 'relative', marginBottom: 30, zIndex: 10, alignSelf: 'flex-start', marginLeft: 20 }}>
+               <button
+                 data-nav-id="season-selector"
+                 onClick={() => setIsSeasonDropdownOpen(!isSeasonDropdownOpen)}
+                 ref={(el) => { if (el) registerNode('season-selector', el, 'modal', {
+                    onFocus: () => {},
+                    onEnter: () => setIsSeasonDropdownOpen(prev => !prev),
+                    disableAutoScroll: true
+                 }); }}
+                 style={{
+                   backgroundColor: 'rgba(255,255,255,0.08)',
+                   border: '1px solid rgba(255,255,255,0.2)',
+                   borderRadius: 8,
+                   padding: '12px 24px',
+                   color: 'white',
+                   fontSize: 18,
+                   fontWeight: 'bold',
+                   display: 'flex',
+                   alignItems: 'center',
+                   gap: 12,
+                   cursor: 'pointer',
+                   outline: 'none',
+                   fontFamily: 'Outfit, sans-serif'
+                 }}
+               >
+                 Temporada {selectedSeason}
+                 <ChevronDown size={20} color="rgba(255,255,255,0.7)" style={{ transform: isSeasonDropdownOpen ? 'rotate(180deg)' : 'rotate(0deg)', transition: 'transform 0.2s' }} />
+               </button>
+
+               {isSeasonDropdownOpen && (
+                 <div style={{
+                   position: 'absolute',
+                   top: '100%',
+                   left: 0,
+                   marginTop: 8,
+                   backgroundColor: '#141414',
+                   border: '1px solid rgba(255,255,255,0.1)',
+                   borderRadius: 8,
+                   minWidth: 220,
+                   maxHeight: 320,
+                   overflowY: 'auto',
+                   boxShadow: '0 10px 30px rgba(0,0,0,0.8)',
+                   zIndex: 20
+                 }} className="custom-scrollbar">
+                   {mergedSeriesSeasons.map((season) => (
+                      <div
+                        key={season.seasonNumber}
+                        role="button"
+                        tabIndex={0}
+                        data-nav-id={`details-season-${season.seasonNumber}`}
+                        ref={(el) => { if (el) registerNode(`details-season-${season.seasonNumber}`, el, 'modal-seasons', {
+                           onFocus: () => {},
+                           onEnter: () => {
+                              setSelectedSeason(season.seasonNumber);
+                              setIsSeasonDropdownOpen(false);
+                              setFocusedId('season-selector');
+                           },
+                           disableAutoScroll: true
+                        }); }}
+                        onClick={() => {
+                           setSelectedSeason(season.seasonNumber);
+                           setIsSeasonDropdownOpen(false);
+                        }}
+                        style={{
+                          padding: '16px 24px',
+                          color: selectedSeason === season.seasonNumber ? 'white' : 'rgba(255,255,255,0.6)',
+                          backgroundColor: selectedSeason === season.seasonNumber ? 'rgba(255,255,255,0.08)' : 'transparent',
+                          cursor: 'pointer',
+                          fontSize: 16,
+                          fontWeight: selectedSeason === season.seasonNumber ? 'bold' : 'normal',
+                          outline: 'none',
+                          fontFamily: 'Outfit, sans-serif'
+                        }}
+                      >
+                        Temporada {season.seasonNumber}
+                      </div>
+                   ))}
+                 </div>
+               )}
+             </div>
              
-             <View style={styles.episodesGrid}>
-               {media.seasons.find(s => s.seasonNumber === selectedSeason)?.episodes.map((ep, idx) => {
+             <div style={styles.episodesGrid as any}>
+               {selectedSeasonEpisodes.map((ep, idx) => {
                  const currentPos = watchHistory[ep.videoUrl];
                  const isStarted = Boolean(currentPos && currentPos > 10);
 
@@ -800,14 +927,39 @@ export const MediaDetailsPage: React.FC<MediaDetailsPageProps> = ({
                        </View>
                        <View style={styles.episodePlayIcon}>
                          <Play size={20} color="white" />
+                        </View>
+                        {(() => {
+                            const pData = playbackProgress[ep.videoUrl] || (ep.id ? playbackProgress[ep.id] : null);
+                            if (!pData || !pData.duration || pData.currentTime < 10) return null;
+                            const pct = Math.min(100, Math.max(0, (pData.currentTime / pData.duration) * 100));
+                            return (
+                              <View 
+                                style={{ 
+                                  position: 'absolute', 
+                                  bottom: 0, 
+                                  left: 0, 
+                                  right: 0, 
+                                  height: 3, 
+                                  backgroundColor: 'rgba(255,255,255,0.1)' 
+                                }}
+                              >
+                                <View 
+                                  style={{ 
+                                    width: `${pct}%`, 
+                                    height: '100%', 
+                                    backgroundColor: '#E50914'
+                                  }} 
+                                />
+                              </View>
+                            );
+                         })()}
                        </View>
                      </View>
-                   </View>
-                 </div>
+                   </div>
                  );
                })}
-             </View>
-          </View>
+             </div>
+          </div>
         )}
 
         {/* Related Content */}
@@ -817,6 +969,7 @@ export const MediaDetailsPage: React.FC<MediaDetailsPageProps> = ({
               category={relatedCategory}
               rowIndex={999}
               disableSideMenuOffset
+              tightTopSpacing
               onSeeAll={() => {}}
               onMediaFocus={() => {}}
               onMediaPress={(m) => onSelectMedia && onSelectMedia(m)}
@@ -1301,11 +1454,15 @@ const styles = StyleSheet.create({
     marginLeft: 12,
   },
   relatedSection: {
-    marginTop: 60,
+    marginTop: 28,
     marginBottom: 20,
+    paddingTop: 10,
+    borderTopWidth: 1,
+    borderTopColor: 'rgba(255,255,255,0.08)',
   } as any,
   seasonsContainer: {
     marginTop: 50,
+    marginBottom: 42,
     width: '100%',
   },
   seasonTabs: {
@@ -1335,6 +1492,7 @@ const styles = StyleSheet.create({
   episodesGrid: {
     flexDirection: 'column',
     gap: 12,
+    width: '100%',
     maxWidth: 800,
   } as any,
   episodeCard: {

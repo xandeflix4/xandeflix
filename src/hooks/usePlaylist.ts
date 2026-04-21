@@ -317,10 +317,33 @@ async function buildCategoriesPreviewFromCatalog(
     const displayItems: Media[] = [...groupedSeries, ...standaloneItems].slice(0, 40); // 40 no total como margem
     if (!displayItems.length) continue;
 
+    let categoryType = String(displayItems[0]?.type || 'live');
+    const upperTitle = title.toUpperCase();
+
+    if (upperTitle.includes('CANAL') || upperTitle.includes('CANAIS') || upperTitle.includes('LIVE') || upperTitle.includes('TV') || upperTitle.includes('AO VIVO') || upperTitle.includes('24H') || upperTitle.includes('24/7') || upperTitle.includes('NOTICIA') || upperTitle.includes('ESPORTE') || upperTitle.includes('PREMIERE')) {
+      categoryType = 'live';
+    } else if (upperTitle.includes('FILME') || upperTitle.includes('MOVIE') || upperTitle.includes('CINEMA') || upperTitle.includes('LANCAMENTO') || upperTitle.includes('LANÇAMENTO')) {
+      categoryType = 'movie';
+    } else if (upperTitle.includes('SERIE') || upperTitle.includes('SÉRIE') || upperTitle.includes('NOVELA') || upperTitle.includes('ANIMES') || upperTitle.includes('DORAMA')) {
+      categoryType = 'series';
+    } else {
+      let liveCount = 0;
+      let movieCount = 0;
+      let seriesCount = 0;
+      displayItems.forEach(item => {
+        if (item.type === 'live') liveCount++;
+        else if (item.type === 'movie') movieCount++;
+        else if (item.type === 'series') seriesCount++;
+      });
+      if (liveCount >= movieCount && liveCount >= seriesCount) categoryType = 'live';
+      else if (movieCount >= liveCount && movieCount >= seriesCount) categoryType = 'movie';
+      else categoryType = 'series';
+    }
+
     categories.push({
       id: title.toLowerCase().replace(/[^a-z0-9]+/g, '-') || `cat-${index}`,
       title,
-      type: String(displayItems[0]?.type || 'live'),
+      type: categoryType,
       items: displayItems,
     });
 

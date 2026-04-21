@@ -14,6 +14,7 @@ interface CategoryRowProps {
   items?: RowItem[];
   rowIndex: number;
   disableSideMenuOffset?: boolean;
+  tightTopSpacing?: boolean;
   preloadedTMDBByKey?: Record<string, TMDBData>;
   tmdbMissedByKey?: Record<string, true>;
   onMediaFocus?: (media: Media, id: string) => void;
@@ -251,6 +252,7 @@ export const CategoryRow: React.FC<CategoryRowProps> = ({
   items,
   rowIndex,
   disableSideMenuOffset = false,
+  tightTopSpacing = false,
   preloadedTMDBByKey,
   onMediaFocus,
   onMediaPress,
@@ -295,7 +297,7 @@ export const CategoryRow: React.FC<CategoryRowProps> = ({
     <div
       style={{
         width: '100%',
-        paddingTop: layout.isTvProfile ? 8 : 16,
+        paddingTop: tightTopSpacing ? 0 : (layout.isTvProfile ? 8 : 16),
         paddingBottom: layout.isTvProfile ? 12 : 20,
       }}
     >
@@ -368,8 +370,8 @@ export const CategoryRow: React.FC<CategoryRowProps> = ({
           scrollSnapType: 'x mandatory',
           paddingLeft: rowPaddingX,
           paddingRight: rowPaddingX,
-          paddingBottom: 45,
-          paddingTop: 30,
+          paddingBottom: tightTopSpacing ? 28 : 45,
+          paddingTop: tightTopSpacing ? 12 : 30,
         }}
       >
         {resolvedItems.map((item, index) => (

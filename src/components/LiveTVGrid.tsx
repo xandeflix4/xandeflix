@@ -1,7 +1,7 @@
 import React, { useState, useMemo, useEffect, useRef, useCallback } from 'react';
 import { Capacitor } from '@capacitor/core';
 import { View, Text, StyleSheet, ScrollView, TouchableHighlight, Image, Dimensions, FlatList, ListRenderItem } from 'react-native';
-import { Radio, ChevronRight, Play, Maximize2, Search, Heart, Activity } from 'lucide-react';
+import { Radio, ChevronRight, Play, Maximize2, Search, Heart, Activity, RotateCcw } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { Category, Media } from '../types';
 import { VideoPlayer } from './VideoPlayer';
@@ -57,6 +57,9 @@ export const LiveTVGrid: React.FC<LiveTVGridProps> = ({ categories, onPlayFull, 
   const setVisibleItems = useStore((state) => state.setVisibleItems);
   const lastLiveChannel = useStore((state) => state.lastLiveChannel);
   const setLastLiveChannel = useStore((state) => state.setLastLiveChannel);
+  const fetchEPG = useStore((state) => state.fetchEPG);
+  const lastEpgUrl = useStore((state) => state.lastEpgUrl);
+  const isLoadingEPG = useStore((state) => state.isLoadingEPG);
   // As categorias ja chegam filtradas pelo useMediaFilter (live, sports, etc.)
   // Nao filtrar novamente por type para suportar categorias de esportes e outras
   const liveCategories = useMemo(
@@ -762,9 +765,6 @@ export const LiveTVGrid: React.FC<LiveTVGridProps> = ({ categories, onPlayFull, 
                         {currentProgram.title}
                       </Text>
                     )}
-                    <Text style={styles.channelSubtitle} numberOfLines={1}>
-                      {media.category}
-                    </Text>
                   </View>
                 </View>
               </TouchableHighlight>
@@ -827,14 +827,22 @@ export const LiveTVGrid: React.FC<LiveTVGridProps> = ({ categories, onPlayFull, 
                    </View>
                    <TouchableHighlight
                      onPress={() => {
-                       void openFullScreen(previewMedia);
+                       if (lastEpgUrl) {
+                          fetchEPG(lastEpgUrl);
+                       }
                      }}
-                     underlayColor="#B91C1C"
-                     style={styles.fullScreenBtnSmall}
+                     underlayColor="#B80710"
+                     style={[styles.fullScreenBtnSmall, { backgroundColor: '#E50914' }]}
                    >
                      <View style={styles.fullScreenBtnInner}>
-                       <Maximize2 size={16} color="white" />
-                       <Text style={styles.fullScreenTextSmall}>TELA CHEIA</Text>
+                       {isLoadingEPG ? (
+                          <Activity size={16} color="white" className="animate-spin" />
+                       ) : (
+                          <RotateCcw size={16} color="white" />
+                       )}
+                       <Text style={styles.fullScreenTextSmall}>
+                          {isLoadingEPG ? 'CARREGANDO...' : 'CARREGAR GUIA'}
+                       </Text>
                      </View>
                    </TouchableHighlight>
                 </View>
@@ -956,14 +964,14 @@ const styles = StyleSheet.create({
   groupItemInner: {
     flexDirection: 'row',
     alignItems: 'center',
-    paddingTop: 12,
-    paddingBottom: 18,
+    paddingTop: 4,
+    paddingBottom: 6,
     gap: 14,
   },
   groupText: {
     flex: 1,
     color: 'rgba(255,255,255,0.55)',
-    fontSize: 13,
+    fontSize: 16,
     fontWeight: '700',
     fontFamily: 'Outfit',
     letterSpacing: 0.3,
@@ -973,7 +981,7 @@ const styles = StyleSheet.create({
     fontWeight: '800',
   },
   itemCount: {
-    fontSize: 11,
+    fontSize: 13,
     color: 'rgba(255,255,255,0.2)',
     fontWeight: '700',
     minWidth: 28,
@@ -1014,7 +1022,7 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   diagnosticButtonText: {
-    fontSize: 12,
+    fontSize: 14,
     fontWeight: '700',
     color: 'rgba(255,255,255,0.5)',
     letterSpacing: 0.5,
@@ -1027,7 +1035,7 @@ const styles = StyleSheet.create({
     backgroundColor: 'transparent',
     borderWidth: 0,
     color: 'white',
-    fontSize: 14,
+    fontSize: 16,
     fontFamily: 'Outfit',
     outlineStyle: 'none',
   } as any,
@@ -1044,10 +1052,10 @@ const styles = StyleSheet.create({
     fontFamily: 'Outfit',
   },
   channelItem: {
-    paddingHorizontal: 14,
-    paddingVertical: 4,
+    paddingHorizontal: 20,
+    paddingVertical: 20,
     marginHorizontal: 10,
-    marginVertical: 3,
+    marginVertical: 15,
     borderRadius: 14,
     borderWidth: 1,
     borderColor: 'transparent',
@@ -1103,11 +1111,11 @@ const styles = StyleSheet.create({
   },
   channelInfo: {
     flex: 1,
-    gap: 4,
+    gap: 0,
   },
   channelTitle: {
     color: 'rgba(255,255,255,0.85)',
-    fontSize: 14,
+    fontSize: 18,
     fontWeight: '700',
     fontFamily: 'Outfit',
     letterSpacing: 0.2,
@@ -1117,13 +1125,13 @@ const styles = StyleSheet.create({
   },
   channelSubtitle: {
     color: 'rgba(255,255,255,0.28)',
-    fontSize: 11,
+    fontSize: 13,
     fontFamily: 'Outfit',
     letterSpacing: 0.3,
   },
   channelProgram: {
     color: 'rgba(255,255,255,0.55)',
-    fontSize: 11,
+    fontSize: 14,
     fontWeight: '600',
     fontFamily: 'Outfit',
   },
@@ -1224,7 +1232,7 @@ const styles = StyleSheet.create({
   } as any,
   previewEpgTitle: {
     color: 'rgba(255,255,255,0.7)',
-    fontSize: 11,
+    fontSize: 13,
     fontWeight: '800',
     letterSpacing: 1.1,
     textTransform: 'uppercase',
@@ -1241,7 +1249,7 @@ const styles = StyleSheet.create({
   },
   previewEpgCurrentLabel: {
     color: '#E50914',
-    fontSize: 10,
+    fontSize: 12,
     fontWeight: '900',
     textTransform: 'uppercase',
     letterSpacing: 0.8,
@@ -1249,13 +1257,13 @@ const styles = StyleSheet.create({
   },
   previewEpgCurrentName: {
     color: '#ffffff',
-    fontSize: 13,
+    fontSize: 16,
     fontWeight: '800',
     fontFamily: 'Outfit',
   },
   previewEpgCurrentTime: {
     color: 'rgba(255,255,255,0.62)',
-    fontSize: 11,
+    fontSize: 13,
     fontWeight: '600',
     fontFamily: 'Outfit',
   },
@@ -1273,41 +1281,48 @@ const styles = StyleSheet.create({
   previewEpgUpcomingTime: {
     color: 'rgba(255,255,255,0.6)',
     minWidth: 44,
-    fontSize: 11,
+    fontSize: 13,
     fontWeight: '700',
     fontFamily: 'Outfit',
   },
   previewEpgUpcomingName: {
     flex: 1,
     color: 'rgba(255,255,255,0.9)',
-    fontSize: 12,
+    fontSize: 14,
     fontWeight: '700',
     fontFamily: 'Outfit',
   },
   previewEpgEmptyText: {
     color: 'rgba(255,255,255,0.5)',
-    fontSize: 12,
+    fontSize: 14,
     fontWeight: '600',
     fontFamily: 'Outfit',
   },
   previewTitleSmall: {
-    fontSize: 18,
+    fontSize: 22,
     fontWeight: '800',
     color: 'white',
     fontFamily: 'Outfit',
   },
   fullScreenBtnSmall: {
-    backgroundColor: '#E50914',
-    paddingHorizontal: 16,
-    paddingVertical: 10,
-    borderRadius: 8,
+    backgroundColor: 'rgba(229,9,20,0.15)',
+    paddingHorizontal: 48,
+    paddingVertical: 20,
+    borderRadius: 14,
+    borderWidth: 1.5,
+    borderColor: 'rgba(229,9,20,0.45)',
+    shadowColor: '#E50914',
+    shadowOpacity: 0.35,
+    shadowRadius: 12,
+    shadowOffset: { width: 0, height: 0 },
   },
   fullScreenTextSmall: {
-    color: 'white',
+    color: '#ffffff',
     fontWeight: '900',
-    fontSize: 12,
-    letterSpacing: 1,
+    fontSize: 11,
+    letterSpacing: 2,
     fontFamily: 'Outfit',
+    textTransform: 'uppercase',
   },
   fullScreenBtnInner: {
     flexDirection: 'row',

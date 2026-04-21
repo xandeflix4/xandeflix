@@ -30,6 +30,23 @@ const isKidsItem = (item: Media, categoryTitle: string = ''): boolean => {
   return KIDS_KEYWORDS.some(kw => searchContent.includes(kw));
 };
 
+const isSeriesCategory = (categoryTitle: string): boolean => {
+  const normalized = categoryTitle.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+  if (normalized.includes('24h') || normalized.includes('24/7') || normalized.includes('24 hrs') || normalized.includes('24 horas') || normalized.includes('ao vivo') || normalized.includes('reality')) return false;
+  return normalized.includes('series') || normalized.includes('serie ') || normalized.includes('vod');
+};
+
+const isMovieCategory = (categoryTitle: string): boolean => {
+  const normalized = categoryTitle.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+  if (normalized.includes('24h') || normalized.includes('24/7') || normalized.includes('24 hrs') || normalized.includes('24 horas') || normalized.includes('ao vivo')) return false;
+  return normalized.includes('filme') || normalized.includes('filmes') || normalized.includes('cinema') || normalized.includes('movie') || normalized.includes('lancamentos') || normalized.includes('lancamento');
+};
+
+const isLiveCategory = (categoryTitle: string): boolean => {
+  const normalized = categoryTitle.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+  return normalized.includes('24h') || normalized.includes('24/7') || normalized.includes('24 hrs') || normalized.includes('24 horas') || normalized.includes('ao vivo') || normalized.includes(' tv ') || normalized.includes('canais') || normalized.includes('canal') || normalized.includes('reality');
+};
+
 // Helper para consolidar itens de séries dentro de uma categoria
 const consolidateItems = (items: Media[], categoryTitle: string = ''): Media[] => {
   const seriesMap = new Map<string, { main: Media, episodes: any[] }>();
@@ -181,16 +198,35 @@ export const useMediaFilter = (allCategories: Category[]) => {
     } 
     else if (activeFilter === 'live') {
       finalCategories = baseCategories
-        .filter(cat => cat.type === 'live')
+        .filter(cat => cat.type === 'live' || isLiveCategory(cat.title))
         .map(cat => ({
           ...cat,
           items: cat.items.filter(item => !isSportsItem(item, cat.title) && !isKidsItem(item, cat.title))
         }))
         .filter(cat => cat.items.length > 0);
     } 
-    else if (activeFilter === 'movie' || activeFilter === 'series') {
+    else if (activeFilter === 'movie') {
       finalCategories = baseCategories
-        .filter(cat => cat.type === activeFilter)
+        .filter(cat => {
+          if (isLiveCategory(cat.title)) return false;
+          if (isMovieCategory(cat.title)) return true;
+          if (isSeriesCategory(cat.title)) return false;
+          return cat.type === 'movie';
+        })
+        .map(cat => ({
+          ...cat,
+          items: consolidateItems(cat.items.filter(item => !isKidsItem(item, cat.title)), cat.title)
+        }))
+        .filter(cat => cat.items.length > 0);
+    }
+    else if (activeFilter === 'series') {
+      finalCategories = baseCategories
+        .filter(cat => {
+          if (isLiveCategory(cat.title)) return false;
+          if (isSeriesCategory(cat.title)) return true;
+          if (isMovieCategory(cat.title)) return false;
+          return cat.type === 'series';
+        })
         .map(cat => ({
           ...cat,
           items: consolidateItems(cat.items.filter(item => !isKidsItem(item, cat.title)), cat.title)

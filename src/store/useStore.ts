@@ -140,6 +140,14 @@ interface XandeflixState {
 
   lastLiveChannel: LastLiveChannelState | null;
   setLastLiveChannel: (state: LastLiveChannelState | null) => void;
+
+  // Video Player Persistence
+  activeVideoUrl: string | null;
+  setActiveVideoUrl: (url: string | null) => void;
+  playingMedia: Media | null;
+  setPlayingMedia: (media: Media | null) => void;
+  videoType: 'live' | 'movie' | 'series' | null;
+  setVideoType: (type: 'live' | 'movie' | 'series' | null) => void;
 }
 
 const initialTvMode = detectTvEnvironment();
@@ -162,7 +170,7 @@ function organizeSeasons(episodes: any[]) {
 
 export const useStore = create<XandeflixState>()(
   persist(
-    (set) => ({
+    (set, get) => ({
       selectedCategoryName: null,
       visibleItems: [],
       activeFilter: 'home',
@@ -185,6 +193,9 @@ export const useStore = create<XandeflixState>()(
       focusedId: null,
       playerMode: 'closed',
       lastLiveChannel: null,
+      activeVideoUrl: null,
+      playingMedia: null,
+      videoType: null,
 
       setLastLiveChannel: (channelState) => set({ lastLiveChannel: channelState }),
 
@@ -216,11 +227,17 @@ export const useStore = create<XandeflixState>()(
           };
         }),
       clearVisibleItems: () => set({ visibleItems: [] }),
-      setActiveFilter: (filter) => set({ activeFilter: filter }),
+      setActiveFilter: (filter) => {
+        console.log(`[Store] Alterando activeFilter: ${useStore.getState().activeFilter} -> ${filter}`);
+        set({ activeFilter: filter });
+      },
       setSearchQuery: (query) => set({ searchQuery: query }),
       setSelectedMedia: (media) => set({ selectedMedia: media }),
       setIsSettingsVisible: (visible) => set({ isSettingsVisible: visible }),
       setIsUsingMock: (using) => set({ isUsingMock: using }),
+      setActiveVideoUrl: (url) => set({ activeVideoUrl: url }),
+      setPlayingMedia: (media) => set({ playingMedia: media }),
+      setVideoType: (type) => set({ videoType: type }),
       
       setHiddenCategoryIds: (ids) => set({ hiddenCategoryIds: ids }),
 
@@ -310,15 +327,10 @@ export const useStore = create<XandeflixState>()(
       lockAdultContent: () => set({ isAdultUnlocked: false }),
       hydrateProfileState: () =>
         set({
-          selectedCategoryName: null,
           visibleItems: [],
-          activeFilter: 'home',
           searchQuery: '',
-          selectedMedia: null,
           isSettingsVisible: false,
           isUsingMock: false,
-          epgData: null,
-          playerMode: 'closed',
         }),
       clearSessionState: () =>
         set({
@@ -352,11 +364,15 @@ export const useStore = create<XandeflixState>()(
 
           const content = await fetchRemoteText(finalUrl, { timeoutMs: 15000 });
 
-          // 2. Parse (Etapa 6)
-          const flatItems = parseM3U(content);
+          const { items: flatItems, epgUrl } = parseM3U(content);
 
           if (flatItems.length === 0) {
             throw new Error('Nenhum canal válido encontrado nesta lista.');
+          }
+
+          // Iniciar carregamento do EPG em background se disponível
+          if (epgUrl) {
+            void get().fetchEPG(epgUrl);
           }
 
           // 3. Agrupamento e Consolidação de Séries (Etapa 20)
@@ -389,7 +405,13 @@ export const useStore = create<XandeflixState>()(
               });
             } else {
               if (!grouped[category]) grouped[category] = [];
-              grouped[category].push(item);
+              const mediaItem = { ...item };
+              // Determina se é live ou movie baseado no grupo ou metadados
+              const isLive = category.toLowerCase().includes('canais') || 
+                             category.toLowerCase().includes('live') || 
+                             category.toLowerCase().includes('radio');
+              mediaItem.type = isLive ? 'live' : 'movie';
+              grouped[category].push(mediaItem);
             }
           });
 
@@ -445,7 +467,7 @@ export const useStore = create<XandeflixState>()(
     }),
     {
       name: 'xandeflix-app-storage',
-      version: 3,
+      version: 4,
       migrate: (persistedState) => {
         if (!persistedState || typeof persistedState !== 'object') {
           return persistedState as XandeflixState;
@@ -457,6 +479,16 @@ export const useStore = create<XandeflixState>()(
           isTvMode: detectTvEnvironment(),
         } as XandeflixState;
       },
+      onRehydrateStorage: (state) => {
+        console.log('[Store] Iniciando re-hidratacao...');
+        return (hydratedState, error) => {
+          if (error) {
+            console.error('[Store] Erro na re-hidratacao:', error);
+          } else {
+            console.log('[Store] Re-hidratacao concluida. activeFilter:', hydratedState?.activeFilter);
+          }
+        };
+      },
       partialize: (state) => ({
         favorites: state.favorites,
         lastPlaylistUrl: state.lastPlaylistUrl,
@@ -467,6 +499,13 @@ export const useStore = create<XandeflixState>()(
         isAdminMode: state.isAdminMode,
         adultAccess: state.adultAccess,
         lastLiveChannel: state.lastLiveChannel,
+        activeFilter: state.activeFilter,
+        selectedCategoryName: state.selectedCategoryName,
+        selectedMedia: state.selectedMedia,
+        activeVideoUrl: state.activeVideoUrl,
+        playingMedia: state.playingMedia,
+        videoType: state.videoType,
+        playerMode: state.playerMode,
       }),
       storage: createJSONStorage(() => safeStateStorage),
     }

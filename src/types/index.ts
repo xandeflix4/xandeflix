@@ -64,4 +64,7 @@ export interface PlaylistItem {
   group: string;
   logo: string;
   url: string;
+  tvgId?: string;
+  tvgName?: string;
+  type?: string;
 }

@@ -392,13 +392,19 @@ const HomeScreen: React.FC<{ onLogout: () => void }> = ({ onLogout }) => {
   const lastPlaylistUrl = useStore((state) => state.lastPlaylistUrl);
   const fetchPlaylistAction = useStore((state) => state.fetchPlaylist);
 
+  // Video Player Global State
+  const activeVideoUrl = useStore((state) => state.activeVideoUrl);
+  const setActiveVideoUrl = useStore((state) => state.setActiveVideoUrl);
+  const videoType = useStore((state) => state.videoType);
+  const setVideoType = useStore((state) => state.setVideoType);
+  const playingMedia = useStore((state) => state.playingMedia);
+  const setPlayingMedia = useStore((state) => state.setPlayingMedia);
+
   // Local UI State
-  const [activeVideoUrl, setActiveVideoUrl] = useState<string | null>(null);
-  const [videoType, setVideoType] = useState<'live' | 'movie' | 'series' | null>(null);
-  const [playingMedia, setPlayingMedia] = useState<Media | null>(null);
   const [isAutoRotating, setIsAutoRotating] = useState(true);
-  const [detailsMedia, setDetailsMedia] = useState<Media | null>(null);
-  const [isDetailsVisible, setIsDetailsVisible] = useState(false);
+  const detailsMedia = useStore((state) => state.selectedMedia);
+  const setDetailsMedia = useStore((state) => state.setSelectedMedia);
+  const [isDetailsVisible, setIsDetailsVisible] = useState(false); // Manteremos a visibilidade local para animação, mas a mídia no store
   const [gridCategory, setGridCategory] = useState<Category | null>(null);
   const [heroMedia, setHeroMedia] = useState<Media | null>(null);
   const [isHeroVisibleInList, setIsHeroVisibleInList] = useState(true);
@@ -429,6 +435,10 @@ const HomeScreen: React.FC<{ onLogout: () => void }> = ({ onLogout }) => {
       const key = e.key;
       const isBack = key === 'Escape' || key === 'Back' || (e as any).keyCode === 4;
       
+      if (isBack) {
+        console.log(`[HomeScreen] Comando de Back detectado: ${key}`);
+      }
+      
       if (!isBack) return;
 
       if (playingMedia) {
@@ -458,7 +468,25 @@ const HomeScreen: React.FC<{ onLogout: () => void }> = ({ onLogout }) => {
         return;
       }
 
-      // Se estiver em qualquer filtro diferente de Home, voltar para Home ao invés de sair do app
+      if (isSideMenuExpanded) {
+        setIsSideMenuExpanded(false);
+        e.preventDefault();
+        return;
+      }
+
+      if (isTvMode) {
+        const activeElement = document.activeElement as HTMLElement | null;
+        const currentNavId = activeElement?.dataset?.navId || activeElement?.closest('[data-nav-id]')?.getAttribute('data-nav-id');
+        const isFocusedOnMenu = currentNavId && currentNavId.startsWith('menu-');
+
+        if (!isFocusedOnMenu) {
+          setFocusedId(`menu-${activeFilter || 'home'}`);
+          e.preventDefault();
+          return;
+        }
+      }
+
+      // Se já estiver focado no menu (ou for mobile), e não estiver na Home, volta pra Home como última rede de segurança antes de sair.
       if (activeFilter !== 'home') {
         setActiveFilter('home');
         e.preventDefault();
@@ -468,7 +496,7 @@ const HomeScreen: React.FC<{ onLogout: () => void }> = ({ onLogout }) => {
 
     window.addEventListener('keydown', handleGlobalBack);
     return () => window.removeEventListener('keydown', handleGlobalBack);
-  }, [playingMedia, isDetailsVisible, gridCategory, isSettingsVisible, setPlayerMode, setIsSettingsVisible, activeFilter, setActiveFilter]);
+  }, [playingMedia, isDetailsVisible, gridCategory, isSettingsVisible, setPlayerMode, setIsSettingsVisible, activeFilter, setActiveFilter, isSideMenuExpanded, setIsSideMenuExpanded, isTvMode, setFocusedId]);
 
   const {
     fetchPlaylist,
@@ -510,11 +538,16 @@ const HomeScreen: React.FC<{ onLogout: () => void }> = ({ onLogout }) => {
   const isInterfaceReadyForFocus = catalogPreviewCategories.length > 0;
 
   useEffect(() => {
-    if (!isTvMode || !isInterfaceReadyForFocus) {
+    if (isTvMode && !isInterfaceReadyForFocus) {
       return;
     }
 
-    if (!initialFocusSetRef.current) {
+    // REMOVIDO TEMPORARIAMENTE: Se temos uma mídia selecionada persistida, abrir o modal automaticamente
+    // if (detailsMedia && !isDetailsVisible) {
+    //   setIsDetailsVisible(true);
+    // }
+
+    if (!initialFocusSetRef.current && isInterfaceReadyForFocus) {
       // Pequeno delay para garantir que o React e a FlatList comitaram os nós no DOM (paint)
       const timeoutId = setTimeout(() => {
         const activeNavId = (document.activeElement as HTMLElement | null)?.dataset?.navId;
@@ -604,7 +637,7 @@ const HomeScreen: React.FC<{ onLogout: () => void }> = ({ onLogout }) => {
           : new Set(['movie', 'series']);
 
     const seen = new Set<string>();
-    return filteredCategories
+    let candidates = filteredCategories
       .filter((category) => {
         if (!isHeroFeaturedCategory(category.title)) return false;
         if (activeFilter === 'movie') return category.type === 'movie';
@@ -619,6 +652,22 @@ const HomeScreen: React.FC<{ onLogout: () => void }> = ({ onLogout }) => {
         seen.add(key);
         return true;
       });
+
+    // Se não encontrou nada nas categorias em destaque, pega itens normais (fallback para séries)
+    if (candidates.length === 0 && filteredCategories.length > 0) {
+      candidates = filteredCategories
+        .slice(0, 5) // Pega as primeiras 5 categorias para não pesar
+        .flatMap((category) => category.items)
+        .filter((item) => allowedTypes.has(String(item.type).toLowerCase()))
+        .filter((item) => {
+          const key = getHeroMediaKey(item);
+          if (!key || seen.has(key)) return false;
+          seen.add(key);
+          return true;
+        });
+    }
+
+    return candidates;
   }, [activeFilter, filteredCategories, isHeroRandomFilter]);
 
   const heroReadyCandidates = useMemo(
@@ -670,7 +719,7 @@ const HomeScreen: React.FC<{ onLogout: () => void }> = ({ onLogout }) => {
 
   const heroDisplayMedia = useMemo(() => {
     if (isHeroRandomFilter) {
-      return heroMedia || heroSelectionCandidates[0] || null;
+      return heroMedia || heroSelectionCandidates[0] || filteredCategories[0]?.items[0] || null;
     }
     return filteredCategories[0]?.items[0] || null;
   }, [filteredCategories, heroMedia, heroSelectionCandidates, isHeroRandomFilter]);
@@ -1446,7 +1495,7 @@ const HomeScreen: React.FC<{ onLogout: () => void }> = ({ onLogout }) => {
     && activeFilter !== 'mylist';
 
   useEffect(() => {
-    console.log('[HomeScreen] Gate de render:', {
+    console.log('[HomeScreen] Gate de render:', JSON.stringify({
       loading,
       playlistStatus,
       hasPlaylistError: Boolean(playlistError),
@@ -1456,7 +1505,9 @@ const HomeScreen: React.FC<{ onLogout: () => void }> = ({ onLogout }) => {
       hasBlockingPlaylistError,
       hasCatalogButEmptyView,
       activeFilter,
-    });
+      activeVideoUrl: !!activeVideoUrl,
+      playerMode,
+    }));
   }, [
     activeFilter,
     categoriesForRows.length,
