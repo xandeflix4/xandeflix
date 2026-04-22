@@ -183,7 +183,7 @@ const focusNode = (
   ref.focus({ preventScroll: true });
   if (!node.disableAutoScroll) {
     ref.scrollIntoView({
-      behavior: 'smooth',
+      behavior: smoothScroll ? 'smooth' : 'auto',
       block: 'center',
       inline: 'center',
     });
@@ -230,7 +230,7 @@ export const useTvNavigation = (options?: { onBack?: () => void; isActive?: bool
       element.focus({ preventScroll: true });
       if (!node?.disableAutoScroll) {
         element.scrollIntoView({
-          behavior: 'smooth',
+          behavior: isTvMode ? 'auto' : 'smooth',
           block: 'center',
           inline: 'center',
         });
@@ -397,7 +397,7 @@ export const useTvNavigation = (options?: { onBack?: () => void; isActive?: bool
           const didFocus = focusNode(
             candidate,
             () => e.preventDefault(),
-            true,
+            !isTvMode,
           );
           if (didFocus) {
             focusedIdRef.current = candidate.id;
@@ -482,7 +482,7 @@ export const useTvNavigation = (options?: { onBack?: () => void; isActive?: bool
           const targetId = groupIds[nextIdx];
           if (targetId && targetId !== currentFocusedId) {
             const target = navNodes.get(targetId);
-            if (target && focusNode(target, () => e.preventDefault(), true)) {
+            if (target && focusNode(target, () => e.preventDefault(), !isTvMode)) {
               focusedIdRef.current = target.id;
               emitFocusedId(target.id);
               return;
@@ -506,7 +506,7 @@ export const useTvNavigation = (options?: { onBack?: () => void; isActive?: bool
           const channelIds = Array.from(navNodes.keys()).filter(k => k.startsWith('tv-channel-'));
           if (channelIds.length > 0) {
             const target = navNodes.get(channelIds[0]);
-            if (target && focusNode(target, () => e.preventDefault(), true)) {
+            if (target && focusNode(target, () => e.preventDefault(), !isTvMode)) {
               focusedIdRef.current = target.id;
               emitFocusedId(target.id);
               return;
@@ -545,7 +545,7 @@ export const useTvNavigation = (options?: { onBack?: () => void; isActive?: bool
           const targetId = channelIds[nextIdx];
           if (targetId && targetId !== currentFocusedId) {
             const target = navNodes.get(targetId);
-            if (target && focusNode(target, () => e.preventDefault(), true)) {
+            if (target && focusNode(target, () => e.preventDefault(), !isTvMode)) {
               focusedIdRef.current = target.id;
               emitFocusedId(target.id);
               return;
@@ -573,7 +573,7 @@ export const useTvNavigation = (options?: { onBack?: () => void; isActive?: bool
               const el = findElementByNavId(gid);
               if (el && el.classList.contains('active')) {
                 const target = navNodes.get(gid);
-                if (target && focusNode(target, () => e.preventDefault(), true)) {
+                if (target && focusNode(target, () => e.preventDefault(), !isTvMode)) {
                   focusedIdRef.current = target.id;
                   emitFocusedId(target.id);
                   return;
@@ -582,7 +582,7 @@ export const useTvNavigation = (options?: { onBack?: () => void; isActive?: bool
             }
             // Fallback: first group
             const target = navNodes.get(groupIds[0]);
-            if (target && focusNode(target, () => e.preventDefault(), true)) {
+            if (target && focusNode(target, () => e.preventDefault(), !isTvMode)) {
               focusedIdRef.current = target.id;
               emitFocusedId(target.id);
               return;
@@ -593,7 +593,7 @@ export const useTvNavigation = (options?: { onBack?: () => void; isActive?: bool
         if (key === 'ArrowRight') {
           // Move to the preview player
           const prevTarget = navNodes.get('tv-preview-player');
-          if (prevTarget && focusNode(prevTarget, () => e.preventDefault(), true)) {
+          if (prevTarget && focusNode(prevTarget, () => e.preventDefault(), !isTvMode)) {
             focusedIdRef.current = prevTarget.id;
             emitFocusedId(prevTarget.id);
             return;
@@ -610,7 +610,7 @@ export const useTvNavigation = (options?: { onBack?: () => void; isActive?: bool
           const channelIds = Array.from(navNodes.keys()).filter(k => k.startsWith('tv-channel-'));
           if (channelIds.length > 0) {
             const target = navNodes.get(channelIds[0]);
-            if (target && focusNode(target, () => e.preventDefault(), true)) {
+            if (target && focusNode(target, () => e.preventDefault(), !isTvMode)) {
               focusedIdRef.current = target.id;
               emitFocusedId(target.id);
               return;
@@ -664,8 +664,18 @@ export const useTvNavigation = (options?: { onBack?: () => void; isActive?: bool
       let bestNode: NavNode | null = null;
       let minDistance = Infinity;
 
+      const currentSection = currentNode.section;
       for (const node of navNodes.values()) {
         if (node.id === currentFocusedId) continue;
+
+        // OTIMIZAÇÃO: Restringir busca a nós da mesma seção ou seções adjacentes conhecidas (fast path fallback)
+        // Isso evita chamar getBoundingClientRect() em centenas de nós fora da viewport.
+        const isMenuTransition = (key === 'ArrowLeft' && node.section === 'menu') || (currentSection === 'menu' && key === 'ArrowRight');
+        const isHeroTransition = (key === 'ArrowUp' && node.section === 'hero') || (currentSection === 'hero' && key === 'ArrowDown');
+        
+        if (node.section !== currentSection && !isMenuTransition && !isHeroTransition) {
+          continue;
+        }
 
         const nodeRef = resolveNodeRef(node);
         if (!nodeRef) continue;

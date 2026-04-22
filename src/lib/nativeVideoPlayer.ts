@@ -16,6 +16,7 @@ export interface NativeVideoSubtitle {
 
 export interface NativeVideoPlayerOptions {
   url: string;
+  headers?: Record<string, string>;
   subtitles?: NativeVideoSubtitle[];
   preferredLocale?: string;
   subtitleOptions?: {
@@ -48,6 +49,15 @@ export interface NativeVideoPlayerEvent {
 
 export interface NativeVideoPlayerExitEvent extends NativeVideoPlayerEvent {
   dismiss: boolean;
+}
+
+export interface NativeVideoPlayerErrorEvent extends NativeVideoPlayerEvent {
+  errorCode?: string;
+  errorCodeName?: string;
+  message?: string;
+  cause?: string;
+  details?: string;
+  httpStatus?: string;
 }
 
 export interface NativeVideoPlayerTrackInfo {
@@ -84,6 +94,10 @@ export interface NativeVideoPlayerPlugin {
   addListener(
     eventName: 'playerExit',
     listenerFunc: (event: NativeVideoPlayerExitEvent) => void,
+  ): Promise<PluginListenerHandle>;
+  addListener(
+    eventName: 'playerError',
+    listenerFunc: (event: NativeVideoPlayerErrorEvent) => void,
   ): Promise<PluginListenerHandle>;
   addListener(
     eventName: 'playerTap',

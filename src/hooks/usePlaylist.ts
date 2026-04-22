@@ -57,8 +57,8 @@ interface WorkerCatalogChunkMessage {
   isFinal?: boolean;
 }
 
-const PLAYLIST_FETCH_TIMEOUT_MS = 180000; // 3 Minutos maximos para download
-const PLAYLIST_FETCH_TOTAL_BUDGET_MS = 400000;
+const PLAYLIST_FETCH_TIMEOUT_MS = 180000; // 3 minutos por tentativa (Firestick/TVs lentas)
+const PLAYLIST_FETCH_TOTAL_BUDGET_MS = 420000;
 const MAX_PLAYLIST_SYNC_BYTES = 150 * 1024 * 1024; // 150MB
 const PLAYLIST_FLOW_WATCHDOG_TIMEOUT_MS = 600000; // 10 minutos - emuladores de TV são muito lentos
 const MAX_CHANNELS_PER_PLAYLIST = 350000; // Limite maximo aumentado para 350k canais
@@ -195,11 +195,26 @@ function buildPlaylistUrlCandidates(playlistUrl: string): string[] {
     const asMpegts = new URL(parsed.toString()); asMpegts.searchParams.set('output', 'mpegts');
     const asHls = new URL(parsed.toString()); asHls.searchParams.set('output', 'hls');
 
-    if (output === 'mpegts') return Array.from(new Set([playlistUrl, asTs.toString(), asHls.toString()]));
-    if (output === 'hls') return Array.from(new Set([playlistUrl, asTs.toString(), asMpegts.toString()]));
-    if (output === 'ts') return Array.from(new Set([playlistUrl, asMpegts.toString(), asHls.toString()]));
+    const baseCandidates = [playlistUrl];
+    if (playlistUrl.startsWith('https://')) {
+      baseCandidates.push(playlistUrl.replace('https://', 'http://'));
+    }
 
-    return [playlistUrl];
+    const finalCandidates: string[] = [];
+    baseCandidates.forEach(url => {
+      const u = new URL(url);
+      if (output === 'mpegts') {
+        finalCandidates.push(url, u.toString().replace('output=mpegts', 'output=ts'), u.toString().replace('output=mpegts', 'output=hls'));
+      } else if (output === 'hls') {
+        finalCandidates.push(url, u.toString().replace('output=hls', 'output=ts'), u.toString().replace('output=hls', 'output=mpegts'));
+      } else if (output === 'ts') {
+        finalCandidates.push(url, u.toString().replace('output=ts', 'output=mpegts'), u.toString().replace('output=ts', 'output=hls'));
+      } else {
+        finalCandidates.push(url);
+      }
+    });
+
+    return Array.from(new Set(finalCandidates));
   } catch {
     return [playlistUrl];
   }
@@ -924,13 +939,13 @@ export const usePlaylist = () => {
           let streamSource: Awaited<ReturnType<typeof prepareRemoteTextStreamSource>> | null = null;
 
           try {
-            updateDiag(`[HTTP] Preparando stream da playlist... (Passo ${index + 1}/${playlistCandidates.length})`);
+            updateDiag(`[HTTP] Baixando playlist (${index + 1}/${playlistCandidates.length})... Por favor, aguarde.`, 55);
             streamSource = await prepareRemoteTextStreamSource(candidateUrl, {
               timeoutMs: candidateTimeoutMs,
               preflightHead: false,
               maxContentLengthBytes: MAX_PLAYLIST_SYNC_BYTES,
               retryWithoutNativeHeaders: true,
-            });
+            }, (msg) => updateDiag(msg, 55));
 
             // Flag para saber se já liberamos a tela com preview
             let previewAlreadyShown = hasData;
@@ -966,7 +981,9 @@ export const usePlaylist = () => {
 
             parsedPlaylist = await parsePlaylistInWorker(
               streamSource.streamUrl,
-              updateDiag,
+              (msg, prog) => {
+                updateDiag(msg, prog);
+              },
               activeWorkerRef,
               handlePreviewReady,
             );

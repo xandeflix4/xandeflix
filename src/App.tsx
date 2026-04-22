@@ -11,6 +11,7 @@ import { detectTvEnvironment } from './lib/deviceProfile';
 import { supabase } from './lib/supabase';
 import { useStore } from './store/useStore';
 import { getLastCrash, clearLastCrash } from './lib/crashReporter';
+import { useTvNavigation } from './hooks/useTvNavigation';
 
 const LEGACY_AUTH_STORAGE_KEYS = [
   'xandeflix_auth_token',
@@ -46,6 +47,26 @@ export default function App() {
   const [hasCrashLog, setHasCrashLog] = useState(false);
   const [crashDetails, setCrashDetails] = useState<string | null>(null);
   const [showExitConfirmation, setShowExitConfirmation] = useState(false);
+  const activeFilter = useStore((state) => state.activeFilter);
+  const selectedCategoryName = useStore((state) => state.selectedCategoryName);
+  const selectedMedia = useStore((state) => state.selectedMedia);
+  const setActiveFilter = useStore((state) => state.setActiveFilter);
+  const setSelectedCategoryName = useStore((state) => state.setSelectedCategoryName);
+  const setSelectedMedia = useStore((state) => state.setSelectedMedia);
+
+  const { registerNode, setFocusedId } = useTvNavigation({
+    isActive: showExitConfirmation,
+    onBack: () => setShowExitConfirmation(false),
+  });
+
+  useEffect(() => {
+    if (showExitConfirmation) {
+      // Pequeno delay para garantir que os nodes foram registrados no DOM
+      setTimeout(() => {
+        setFocusedId('exit-cancel');
+      }, 50);
+    }
+  }, [showExitConfirmation, setFocusedId]);
 
   useEffect(() => {
     const crash = getLastCrash();
@@ -94,7 +115,40 @@ export default function App() {
           return;
         }
 
-        // Se estiver na tela principal e não houver nada aberto, mostrar confirmação de saída
+        // Lê o estado ATUAL diretamente do store (evita stale closure do useEffect [])
+        const currentState = useStore.getState();
+        const currentFilter = currentState.activeFilter;
+        const currentCategory = currentState.selectedCategoryName;
+        const currentMedia = currentState.selectedMedia;
+        const currentPlayer = currentState.playerMode;
+
+        // Se o player estiver aberto, fecha o player primeiro
+        if (currentPlayer === 'fullscreen' || currentPlayer === 'minimized') {
+          currentState.setPlayerMode('closed');
+          currentState.setActiveVideoUrl(null);
+          currentState.setPlayingMedia(null);
+          return;
+        }
+
+        // Se um media está selecionado (modal de detalhes), fecha o modal
+        if (currentMedia !== null) {
+          currentState.setSelectedMedia(null);
+          return;
+        }
+
+        // Se uma categoria está expandida, volta para a lista de categorias
+        if (currentCategory !== null) {
+          currentState.setSelectedCategoryName(null);
+          return;
+        }
+
+        // Se estiver em um filtro diferente de home (live, movie, series, search, etc.), volta para home
+        if (currentFilter !== 'home') {
+          currentState.setActiveFilter('home');
+          return;
+        }
+
+        // Se já estiver na tela principal sem nada aberto, mostrar confirmação de saída
         setShowExitConfirmation(true);
       });
 
@@ -321,73 +375,108 @@ export default function App() {
           left: 0,
           right: 0,
           bottom: 0,
-          backgroundColor: 'rgba(0,0,0,0.85)',
+          backgroundColor: 'rgba(0,0,0,0.96)',
           justifyContent: 'center',
           alignItems: 'center',
           zIndex: 9999,
         }}>
           <View style={{
-            width: 500,
-            backgroundColor: '#1a1a1a',
-            borderRadius: 20,
-            padding: 40,
+            width: 480,
+            backgroundColor: '#181818',
+            borderRadius: 24,
+            padding: 32,
             borderWidth: 1,
-            borderColor: 'rgba(255,255,255,0.1)',
+            borderColor: 'rgba(255,255,255,0.12)',
+            alignItems: 'center',
+            flexGrow: 0,
+            flexShrink: 0,
             shadowColor: '#000',
-            shadowOffset: { width: 0, height: 10 },
-            shadowOpacity: 0.5,
-            shadowRadius: 20,
+            shadowOffset: { width: 0, height: 20 },
+            shadowOpacity: 0.8,
+            shadowRadius: 40,
+            elevation: 30,
           }}>
+            <View style={{
+              width: 50,
+              height: 4,
+              backgroundColor: '#E50914',
+              borderRadius: 2,
+              marginBottom: 20,
+            }} />
+            
             <Text style={{
               color: 'white',
-              fontSize: 28,
+              fontSize: 24,
               fontWeight: '900',
               textAlign: 'center',
-              marginBottom: 16,
+              marginBottom: 12,
               fontFamily: 'Outfit',
             }}>Sair do Xandeflix?</Text>
             
             <Text style={{
-              color: 'rgba(255,255,255,0.6)',
-              fontSize: 18,
+              color: 'rgba(255,255,255,0.7)',
+              fontSize: 15,
               textAlign: 'center',
-              marginBottom: 40,
-              lineHeight: 26,
+              marginBottom: 32,
+              lineHeight: 22,
               fontFamily: 'Outfit',
+              maxWidth: '90%',
             }}>
-              Sua programação atual será pausada. Tem certeza que deseja fechar o aplicativo?
+              Sua programação atual será pausada. Tem Certeza que deseja fechar o aplicativo?
             </Text>
 
-            <View style={{ flexDirection: 'row', gap: 16 }}>
+            <View style={{ 
+              flexDirection: 'row', 
+              gap: 16, 
+              width: '100%',
+              justifyContent: 'center'
+            }}>
               <TouchableHighlight
+                ref={(ref) => registerNode('exit-cancel', ref as any, 'exit-modal', {
+                  onEnter: () => setShowExitConfirmation(false),
+                })}
                 onPress={() => setShowExitConfirmation(false)}
-                underlayColor="rgba(255,255,255,0.1)"
+                underlayColor="rgba(255,255,255,0.15)"
                 style={{
-                  flex: 1,
-                  backgroundColor: 'rgba(255,255,255,0.05)',
+                  width: 220,
+                  backgroundColor: 'rgba(255,255,255,0.08)',
                   borderRadius: 12,
-                  paddingVertical: 18,
+                  paddingVertical: 16,
                   alignItems: 'center',
+                  borderWidth: 1,
+                  borderColor: 'rgba(255,255,255,0.05)',
                 }}
               >
-                <Text style={{ color: 'white', fontSize: 18, fontWeight: '800', fontFamily: 'Outfit' }}>CONTINUAR ASSISTINDO</Text>
+                <Text style={{ color: 'white', fontSize: 15, fontWeight: '900', fontFamily: 'Outfit' }}>VOLTAR</Text>
               </TouchableHighlight>
 
               <TouchableHighlight
+                ref={(ref) => registerNode('exit-confirm', ref as any, 'exit-modal', {
+                  onEnter: () => CapacitorApp.exitApp(),
+                })}
                 onPress={() => CapacitorApp.exitApp()}
-                underlayColor="#dc2626"
+                underlayColor="#b91c1c"
                 style={{
-                  flex: 1,
+                  width: 220,
                   backgroundColor: '#E50914',
                   borderRadius: 12,
-                  paddingVertical: 18,
+                  paddingVertical: 16,
                   alignItems: 'center',
                 }}
               >
-                <Text style={{ color: 'white', fontSize: 18, fontWeight: '800', fontFamily: 'Outfit' }}>SAIR AGORA</Text>
+                <Text style={{ color: 'white', fontSize: 15, fontWeight: '900', fontFamily: 'Outfit' }}>SAIR AGORA</Text>
               </TouchableHighlight>
             </View>
           </View>
+
+          {/* Adicionando estilo CSS inline para corrigir o contorno nos botões do modal especificamente */}
+          <style dangerouslySetInnerHTML={{ __html: `
+            [data-nav-id="exit-cancel"]:focus, [data-nav-id="exit-confirm"]:focus {
+              outline: none !important;
+              box-shadow: 0 0 0 4px #E50914, 0 0 20px rgba(229, 9, 20, 0.5) !important;
+              transform: scale(1.05) !important;
+            }
+          `}} />
         </View>
       )}
     </>

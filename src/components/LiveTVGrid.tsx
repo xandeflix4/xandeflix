@@ -2,7 +2,6 @@ import React, { useState, useMemo, useEffect, useRef, useCallback } from 'react'
 import { Capacitor } from '@capacitor/core';
 import { View, Text, StyleSheet, ScrollView, TouchableHighlight, Image, Dimensions, FlatList, ListRenderItem } from 'react-native';
 import { Radio, ChevronRight, Play, Maximize2, Search, Heart, Activity, RotateCcw } from 'lucide-react';
-import { motion, AnimatePresence } from 'motion/react';
 import { Category, Media } from '../types';
 import { VideoPlayer } from './VideoPlayer';
 import { NativeVideoPlayer } from '../lib/nativeVideoPlayer';
@@ -40,6 +39,27 @@ interface LiveTVGridProps {
   isGlobalPlayerActive?: boolean;
   section?: string;
 }
+
+const ChannelProgramDisplay = React.memo(({ 
+  programs, 
+  now 
+}: { 
+  programs: any[], 
+  now: number 
+}) => {
+  const currentProgram = useMemo(
+    () => programs.find((program) => now >= program.start && now < program.stop) || null,
+    [now, programs]
+  );
+
+  if (!currentProgram) return null;
+
+  return (
+    <Text style={styles.channelProgram} numberOfLines={1}>
+      {currentProgram.title}
+    </Text>
+  );
+});
 
 const { height: SCREEN_HEIGHT } = Dimensions.get('window');
 type LiveTvFocusColumn = 'groups' | 'channels' | 'preview';
@@ -111,48 +131,51 @@ export const LiveTVGrid: React.FC<LiveTVGridProps> = ({ categories, onPlayFull, 
       .replace(/\s+/g, ' ');
     return raw;
   }, []);
-  const epgEntries = useMemo(() => Object.entries(epgData || {}), [epgData]);
+
+  // OTIMIZAÇÃO FASE 3: Dicionário EPG pré-processado para busca O(1)
+  const epgLookupMap = useMemo(() => {
+    if (!epgData) return new Map<string, any[]>();
+    const map = new Map<string, any[]>();
+    
+    Object.entries(epgData).forEach(([key, programs]) => {
+      if (!programs || programs.length === 0) return;
+      
+      // 1. Chave original (ID ou Nome vindo do XML)
+      const directKey = key.trim().toLowerCase();
+      if (!map.has(directKey)) map.set(directKey, programs);
+      
+      // 2. Chave normalizada (Regex para remover "Canal", "HD", etc)
+      const normalized = normalizeChannelKey(key);
+      if (normalized && !map.has(normalized)) map.set(normalized, programs);
+    });
+    
+    return map;
+  }, [epgData, normalizeChannelKey]);
+
   const resolveProgramsForMedia = useCallback((media: Media) => {
-    if (!epgData) return [];
+    if (!epgData || epgLookupMap.size === 0) return [];
 
-    const directById = media.tvgId ? epgData[media.tvgId] : null;
-    if (directById && directById.length > 0) return directById;
-
-    const directByName = media.tvgName ? epgData[media.tvgName] : null;
-    if (directByName && directByName.length > 0) return directByName;
-
-    const wantedId = String(media.tvgId || '').trim().toLowerCase();
-    const wantedName = String(media.tvgName || '').trim().toLowerCase();
-    const wantedTitle = normalizeChannelKey(media.title);
-
-    for (const [key, programs] of epgEntries) {
-      if (!programs || programs.length === 0) continue;
-      const normalizedKeyRaw = key.trim().toLowerCase();
-      if (
-        (wantedId && normalizedKeyRaw === wantedId) ||
-        (wantedName && normalizedKeyRaw === wantedName)
-      ) {
-        return programs;
-      }
+    // Busca direta por tvgId
+    if (media.tvgId) {
+      const byId = epgLookupMap.get(media.tvgId.toLowerCase());
+      if (byId) return byId;
     }
 
-    if (!wantedTitle) return [];
+    // Busca direta por tvgName
+    if (media.tvgName) {
+      const byName = epgLookupMap.get(media.tvgName.toLowerCase());
+      if (byName) return byName;
+    }
 
-    for (const [key, programs] of epgEntries) {
-      if (!programs || programs.length === 0) continue;
-      const normalizedKey = normalizeChannelKey(key);
-      if (!normalizedKey) continue;
-      if (
-        normalizedKey === wantedTitle ||
-        (wantedTitle.length >= 4 && normalizedKey.includes(wantedTitle)) ||
-        (normalizedKey.length >= 4 && wantedTitle.includes(normalizedKey))
-      ) {
-        return programs;
-      }
+    // Busca por título normalizado (Fast O(1) lookup)
+    const normalizedTitle = normalizeChannelKey(media.title);
+    if (normalizedTitle) {
+      const byTitle = epgLookupMap.get(normalizedTitle);
+      if (byTitle) return byTitle;
     }
 
     return [];
-  }, [epgData, epgEntries, normalizeChannelKey]);
+  }, [epgData, epgLookupMap, normalizeChannelKey]);
   const previewPrograms = useMemo(() => {
     if (!previewMedia) return [];
     return resolveProgramsForMedia(previewMedia);
@@ -467,7 +490,10 @@ export const LiveTVGrid: React.FC<LiveTVGridProps> = ({ categories, onPlayFull, 
       try {
         const itemNode = list.children[focusedChannelIndex] as HTMLElement;
         if (itemNode) {
-            itemNode.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            itemNode.scrollIntoView({ 
+              behavior: layout.isTvProfile ? 'auto' : 'smooth', 
+              block: 'center' 
+            });
         }
       } catch (error) {
         void error;
@@ -484,7 +510,10 @@ export const LiveTVGrid: React.FC<LiveTVGridProps> = ({ categories, onPlayFull, 
     try {
         const itemNode = list.children[focusedGroupIndex] as HTMLElement;
         if (itemNode) {
-            itemNode.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            itemNode.scrollIntoView({ 
+              behavior: layout.isTvProfile ? 'auto' : 'smooth', 
+              block: 'center' 
+            });
         }
     } catch (error) {
       void error;
@@ -716,9 +745,21 @@ export const LiveTVGrid: React.FC<LiveTVGridProps> = ({ categories, onPlayFull, 
           }}
         >
           {filteredItems.map((media, index) => {
+            // OTIMIZAÇÃO FASE 4: Virtualização por distância de foco
+            // Renderiza o card completo apenas para itens próximos ao cursor (+/- 15 itens)
+            const isNearFocus = Math.abs(index - focusedChannelIndex) <= 15;
+            
+            if (!isNearFocus) {
+              return (
+                <div 
+                  key={media.id} 
+                  style={{ height: 110, width: '100%', backgroundColor: 'transparent' }} 
+                />
+              );
+            }
+
             const isFavorite = favorites.includes(media.videoUrl || `media:${media.id}`) || favorites.includes(media.id);
             const channelPrograms = resolveProgramsForMedia(media);
-            const currentProgram = channelPrograms.find((program) => now >= program.start && now < program.stop);
 
             return (
               <TouchableHighlight
@@ -760,11 +801,7 @@ export const LiveTVGrid: React.FC<LiveTVGridProps> = ({ categories, onPlayFull, 
                     <Text style={[styles.channelTitle, selectedMediaId === media.id && styles.channelTitleActive]} numberOfLines={1}>
                       {media.title}
                     </Text>
-                    {currentProgram && (
-                      <Text style={styles.channelProgram} numberOfLines={1}>
-                        {currentProgram.title}
-                      </Text>
-                    )}
+                    <ChannelProgramDisplay programs={channelPrograms} now={now} />
                   </View>
                 </View>
               </TouchableHighlight>
@@ -781,16 +818,12 @@ export const LiveTVGrid: React.FC<LiveTVGridProps> = ({ categories, onPlayFull, 
 
       {/* Preview Player Section */}
       <View style={styles.playerSection}>
-        <AnimatePresence mode="wait">
-          {previewMedia && !isGlobalPlayerActive ? (
-            <motion.div
-              key={previewMedia.id}
-              initial={{ opacity: 0, y: 20 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, scale: 0.95 }}
-              style={{ width: '100%', height: '100%', display: 'flex', flexDirection: 'column' }}
-            >
-              <View style={styles.previewContainer}>
+        {previewMedia && !isGlobalPlayerActive ? (
+          <div
+            key={previewMedia.id}
+            className="w-full h-full flex flex-col"
+          >
+            <View style={styles.previewContainer}>
                 <TouchableHighlight 
                   onPress={() => {
                     void openFullScreen(previewMedia);
@@ -875,16 +908,15 @@ export const LiveTVGrid: React.FC<LiveTVGridProps> = ({ categories, onPlayFull, 
                   )}
                 </View>
               </View>
-            </motion.div>
-          ) : (
-            <View style={styles.playerPlaceholder}>
-              <View style={styles.placeholderIconContainer}>
-                <Radio size={64} color="rgba(255,255,255,0.05)" />
-              </View>
-              <Text style={styles.placeholderText}>Selecione um canal para visualizar</Text>
+          </div>
+        ) : (
+          <View style={styles.playerPlaceholder}>
+            <View style={styles.placeholderIconContainer}>
+              <Radio size={64} color="rgba(255,255,255,0.05)" />
             </View>
-          )}
-        </AnimatePresence>
+            <Text style={styles.placeholderText}>Selecione um canal para visualizar</Text>
+          </View>
+        )}
       {showDiagnostic && (
         <NetworkDiagnostic 
           onClose={() => setShowDiagnostic(false)} 
@@ -1164,7 +1196,7 @@ const styles = StyleSheet.create({
     height: '58%',
     minHeight: 260,
     maxHeight: SCREEN_HEIGHT * 0.64,
-    backgroundColor: '#000',
+    zIndex: 1,
   },
   playerWrapperFocused: {
     borderWidth: 3,
@@ -1208,8 +1240,7 @@ const styles = StyleSheet.create({
     marginHorizontal: 20,
     paddingVertical: 16,
     paddingHorizontal: 18,
-    backgroundColor: 'rgba(0,0,0,0.6)',
-    backdropFilter: 'blur(10px)',
+    backgroundColor: 'rgba(0, 0, 0, 0.85)',
     borderRadius: 16,
     flexDirection: 'row',
     alignItems: 'center',
@@ -1223,8 +1254,7 @@ const styles = StyleSheet.create({
     marginBottom: 12,
     paddingVertical: 14,
     paddingHorizontal: 16,
-    backgroundColor: 'rgba(0,0,0,0.62)',
-    backdropFilter: 'blur(8px)',
+    backgroundColor: 'rgba(0, 0, 0, 0.75)',
     borderRadius: 14,
     borderWidth: 1,
     borderColor: 'rgba(255,255,255,0.08)',

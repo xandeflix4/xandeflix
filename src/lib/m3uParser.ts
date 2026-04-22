@@ -40,6 +40,62 @@ export interface M3UParseResult {
   epgUrl: string | null;
 }
 
+function normalizeHeaderHintName(rawName: string): string {
+  const key = String(rawName || '')
+    .trim()
+    .replace(/^['"]|['"]$/g, '')
+    .replace(/_/g, '-')
+    .toLowerCase();
+
+  if (!key) return '';
+  if (key === 'user-agent' || key === 'http-user-agent') return 'User-Agent';
+  if (key === 'referer' || key === 'referrer' || key === 'http-referer' || key === 'http-referrer') return 'Referer';
+  if (key === 'origin' || key === 'http-origin') return 'Origin';
+  if (key === 'cookie' || key === 'http-cookie') return 'Cookie';
+  if (key === 'authorization' || key === 'http-authorization') return 'Authorization';
+
+  return key
+    .split('-')
+    .map((segment) => (segment ? `${segment[0].toUpperCase()}${segment.slice(1)}` : segment))
+    .join('-');
+}
+
+function parseHeaderHintLine(line: string): { name: string; value: string } | null {
+  const prefixIndex = line.indexOf(':');
+  if (prefixIndex < 0) return null;
+
+  const payload = line.slice(prefixIndex + 1).trim();
+  if (!payload) return null;
+
+  const equalsIndex = payload.indexOf('=');
+  if (equalsIndex <= 0) return null;
+
+  const rawName = payload.slice(0, equalsIndex).trim();
+  const rawValue = payload.slice(equalsIndex + 1).trim().replace(/^['"]|['"]$/g, '');
+  if (!rawValue) return null;
+
+  const name = normalizeHeaderHintName(rawName);
+  if (!name) return null;
+
+  return { name, value: rawValue };
+}
+
+function appendHeaderHintsToUrl(rawUrl: string, headers: Record<string, string>): string {
+  const entries = Object.entries(headers);
+  if (entries.length === 0) return rawUrl;
+
+  const serialized = entries
+    .map(([name, value]) => `${encodeURIComponent(name)}=${encodeURIComponent(value)}`)
+    .join('&');
+  if (!serialized) return rawUrl;
+
+  if (rawUrl.includes('|')) {
+    return `${rawUrl}&${serialized}`;
+  }
+
+  return `${rawUrl}|${serialized}`;
+}
+
 /**
  * Função simplificada para uso direto no Store
  */
@@ -52,6 +108,7 @@ export function parseM3U(content: string): M3UParseResult {
   const items: PlaylistItem[] = [];
   let epgUrl: string | null = null;
   let currentItem: Partial<PlaylistItem> = {};
+  let currentHeaderHints: Record<string, string> = {};
 
   // Extrair EPG URL do cabeçalho #EXTM3U
   const firstLine = lines.find(l => l.startsWith('#EXTM3U'));
@@ -81,18 +138,28 @@ export function parseM3U(content: string): M3UParseResult {
         tvgId: idMatch ? idMatch[1] : undefined,
         tvgName: nameMatch ? nameMatch[1] : undefined,
       };
+      currentHeaderHints = {};
+    } else if (line.toUpperCase().startsWith('#EXTVLCOPT:') || line.toUpperCase().startsWith('#KODIPROP:')) {
+      if (currentItem.title) {
+        const parsedHeader = parseHeaderHintLine(line);
+        if (parsedHeader) {
+          currentHeaderHints[parsedHeader.name] = parsedHeader.value;
+        }
+      }
     } else if (line.startsWith('http')) {
       if (currentItem.title) {
+        const finalUrl = appendHeaderHintsToUrl(line, currentHeaderHints);
         items.push({
           id: currentItem.id || `stream-${items.length}`,
           title: currentItem.title,
           group: currentItem.group || 'CANAIS',
           logo: currentItem.logo || '',
-          url: line,
+          url: finalUrl,
           tvgId: currentItem.tvgId,
           tvgName: currentItem.tvgName,
         });
         currentItem = {};
+        currentHeaderHints = {};
       }
     }
   }

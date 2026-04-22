@@ -144,13 +144,10 @@ const MediaCard = React.memo(({
         position: 'relative',
         flex: '0 0 auto',
         cursor: 'pointer',
-        transform: isFocused ? 'translateY(-6px) scale(1.04)' : 'translateY(0) scale(1)',
-        transition: 'all 150ms cubic-bezier(0.2, 0, 0.2, 1)',
+        transform: isFocused ? 'translate3d(0, -6px, 0) scale(1.04)' : 'translate3d(0, 0, 0) scale(1)',
+        transition: 'transform 150ms cubic-bezier(0.2, 0, 0.2, 1)',
         willChange: 'transform',
         zIndex: isFocused ? 10 : 1,
-        boxShadow: isFocused
-          ? '0 12px 24px rgba(0,0,0,0.45), 0 0 10px rgba(229,9,20,0.25)'
-          : '0 4px 12px rgba(0,0,0,0.3)',
       }}
     >
       {/* Background Fallback (Always there during loading or error) */}
@@ -260,6 +257,27 @@ export const CategoryRow: React.FC<CategoryRowProps> = ({
 }) => {
   const layout = useResponsiveLayout();
   const { registerNode } = useTvNavigation({ isActive: false, subscribeFocused: false });
+  const [isVisible, setIsVisible] = React.useState(false);
+  const [renderedCount, setRenderedCount] = React.useState(layout.isTvProfile ? 8 : 12);
+  const rowRef = React.useRef<HTMLDivElement>(null);
+
+  React.useEffect(() => {
+    const observer = new IntersectionObserver(
+      ([entry]) => {
+        setIsVisible(entry.isIntersecting);
+      },
+      { rootMargin: '600px 0px' }
+    );
+    if (rowRef.current) observer.observe(rowRef.current);
+    return () => observer.disconnect();
+  }, []);
+
+  const onFocusWrapper = React.useCallback((media: Media, id: string, index: number) => {
+    if (index >= renderedCount - 4) {
+      setRenderedCount(prev => Math.min(resolvedItems.length, prev + 10));
+    }
+    onMediaFocus?.(media, id);
+  }, [onMediaFocus, renderedCount, (category?.items || items || []).length]);
 
   const resolvedTitle = category?.title || title || 'Categoria';
   const resolvedItems = (category?.items || items || []).filter(Boolean) as RowItem[];
@@ -292,102 +310,111 @@ export const CategoryRow: React.FC<CategoryRowProps> = ({
   const titleSize = layout.isTvProfile ? 20 : layout.isCompact ? 24 : 28;
 
   const seeAllNavId = `see-all-${rowIndex}`;
+  const rowHeight = cardHeight + (layout.isTvProfile ? 100 : 140);
 
   return (
     <div
+      ref={rowRef}
       style={{
         width: '100%',
+        minHeight: isVisible ? 'auto' : rowHeight,
         paddingTop: tightTopSpacing ? 0 : (layout.isTvProfile ? 8 : 16),
         paddingBottom: layout.isTvProfile ? 12 : 20,
       }}
     >
-      <div
-        style={{
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'space-between',
-          paddingLeft: rowPaddingX,
-          paddingRight: rowPaddingX,
-          marginBottom: 10,
-          gap: 12,
-        }}
-      >
-        <h2
-          style={{
-            margin: 0,
-            color: '#fff',
-            fontSize: titleSize,
-            fontWeight: 900,
-            letterSpacing: 0.3,
-            lineHeight: 1.15,
-          }}
-        >
-          {resolvedTitle}
-        </h2>
-
-        {onSeeAll && resolvedMediaItems.length > 0 ? (
-          <button
-            ref={(el) =>
-              registerNode(seeAllNavId, el, 'body', {
-                onEnter: () => onSeeAll(resolvedCategory),
-              })
-            }
-            data-nav-id={seeAllNavId}
-            onClick={() => onSeeAll(resolvedCategory)}
+      {!isVisible ? (
+        <div style={{ height: rowHeight }} />
+      ) : (
+        <>
+          <div
             style={{
               display: 'flex',
               alignItems: 'center',
-              gap: 6,
-              borderRadius: 8,
-              border: '1px solid rgba(255,255,255,0.18)',
-              backgroundColor: 'rgba(255,255,255,0.06)',
-              color: 'rgba(255,255,255,0.88)',
-              fontSize: 12,
-              fontWeight: 700,
-              letterSpacing: 0.5,
-              textTransform: 'uppercase',
-              padding: '8px 10px',
-              cursor: 'pointer',
+              justifyContent: 'space-between',
+              paddingLeft: rowPaddingX,
+              paddingRight: rowPaddingX,
+              marginBottom: 10,
+              gap: 12,
             }}
           >
-            Ver tudo
-            <ChevronRight size={14} />
-          </button>
-        ) : (
-          <span style={{ color: 'rgba(255,255,255,0.45)', fontSize: 11, fontWeight: 700, letterSpacing: 1 }}>
-            {resolvedItems.length} ITENS
-          </span>
-        )}
-      </div>
+            <h2
+              style={{
+                margin: 0,
+                color: '#fff',
+                fontSize: titleSize,
+                fontWeight: 900,
+                letterSpacing: 0.3,
+                lineHeight: 1.15,
+              }}
+            >
+              {resolvedTitle}
+            </h2>
 
-      <div
-        className="scrollbar-hide"
-        style={{
-          display: 'flex',
-          gap: rowGap,
-          overflowX: 'auto',
-          overflowY: 'hidden',
-          scrollSnapType: 'x mandatory',
-          paddingLeft: rowPaddingX,
-          paddingRight: rowPaddingX,
-          paddingBottom: tightTopSpacing ? 28 : 45,
-          paddingTop: tightTopSpacing ? 12 : 30,
-        }}
-      >
-        {resolvedItems.map((item, index) => (
-          <MediaCard
-            key={`${item.id}-${index}`}
-            item={item}
-            navId={`item-${rowIndex}-${index}`}
-            cardWidth={cardWidth}
-            cardHeight={cardHeight}
-            imageUrl={resolveImageUrl(item, preloadedTMDBByKey)}
-            onPress={onMediaPress}
-            onFocus={onMediaFocus}
-          />
-        ))}
-        <div style={{ width: 6, flex: '0 0 auto' }} />
-      </div>
+            {onSeeAll && resolvedMediaItems.length > 0 ? (
+              <button
+                ref={(el) =>
+                  registerNode(seeAllNavId, el, 'body', {
+                    onEnter: () => onSeeAll(resolvedCategory),
+                  })
+                }
+                data-nav-id={seeAllNavId}
+                onClick={() => onSeeAll(resolvedCategory)}
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 6,
+                  borderRadius: 8,
+                  border: '1px solid rgba(255,255,255,0.18)',
+                  backgroundColor: 'rgba(255,255,255,0.06)',
+                  color: 'rgba(255,255,255,0.88)',
+                  fontSize: 12,
+                  fontWeight: 700,
+                  letterSpacing: 0.5,
+                  textTransform: 'uppercase',
+                  padding: '8px 10px',
+                  cursor: 'pointer',
+                }}
+              >
+                Ver tudo
+                <ChevronRight size={14} />
+              </button>
+            ) : (
+              <span style={{ color: 'rgba(255,255,255,0.45)', fontSize: 11, fontWeight: 700, letterSpacing: 1 }}>
+                {resolvedItems.length} ITENS
+              </span>
+            )}
+          </div>
+
+          <div
+            className="scrollbar-hide"
+            style={{
+              display: 'flex',
+              gap: rowGap,
+              overflowX: 'auto',
+              overflowY: 'hidden',
+              scrollSnapType: 'x mandatory',
+              paddingLeft: rowPaddingX,
+              paddingRight: rowPaddingX,
+              paddingBottom: tightTopSpacing ? 28 : 45,
+              paddingTop: tightTopSpacing ? 12 : 30,
+            }}
+          >
+            {resolvedItems.slice(0, renderedCount).map((item, index) => (
+              <MediaCard
+                key={`${item.id}-${index}`}
+                item={item}
+                navId={`item-${rowIndex}-${index}`}
+                cardWidth={cardWidth}
+                cardHeight={cardHeight}
+                imageUrl={resolveImageUrl(item, preloadedTMDBByKey)}
+                onPress={onMediaPress}
+                onFocus={(m, id) => onFocusWrapper(m, id, index)}
+              />
+            ))}
+            <div style={{ width: 6, flex: '0 0 auto' }} />
+          </div>
+        </>
+      )}
     </div>
   );
 };

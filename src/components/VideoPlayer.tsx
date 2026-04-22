@@ -5,7 +5,6 @@ import type { PluginListenerHandle } from '@capacitor/core';
 import { ScreenOrientation } from '@capacitor/screen-orientation';
 import { StatusBar } from '@capacitor/status-bar';
 import { LoaderCircle, X, Play, Pause, Volume2, VolumeX, FastForward, Rewind, Activity, SlidersHorizontal, ChevronDown } from 'lucide-react';
-import { motion, AnimatePresence } from 'motion/react';
 import Hls from 'hls.js';
 import mpegts from 'mpegts.js';
 import type { Category, Media } from '../types';
@@ -14,6 +13,7 @@ import { NetworkDiagnostic } from './NetworkDiagnostic';
 import {
   NativeVideoPlayer,
   type NativeVideoPlayerEvent,
+  type NativeVideoPlayerErrorEvent,
   type NativeVideoPlayerExitEvent,
   type NativeVideoPlayerResult,
 } from '../lib/nativeVideoPlayer';
@@ -48,6 +48,81 @@ export interface VideoPlayerHandle {
 }
 
 type NativePlayerState = 'opening' | 'ready' | 'error';
+type PlaybackDiagnostic = {
+  stage: 'preview' | 'native';
+  reason: string;
+  code?: string;
+  detail?: string;
+  url?: string;
+  timestamp: number;
+  httpStatus?: string;
+};
+type BufferIndicatorState = {
+  visible: boolean;
+  label: string;
+  progress: number;
+  phase: number;
+  startedAt: number;
+  attempt: number;
+  total: number;
+};
+
+function isLikelyConnectionFailure(input: {
+  code?: string;
+  reason?: string;
+  detail?: string;
+  httpStatus?: string;
+}): boolean {
+  const code = String(input.code || '').toUpperCase();
+  const reason = String(input.reason || '').toLowerCase();
+  const detail = String(input.detail || '').toLowerCase();
+  const httpStatus = String(input.httpStatus || '').trim();
+
+  const networkCodeHints = [
+    'NETWORK',
+    'TIMEOUT',
+    'STALL',
+    'CONNECTION',
+    'DNS',
+    'OFFLINE',
+    'UNREACHABLE',
+    'SOCKET',
+    'ABORT',
+  ];
+  if (networkCodeHints.some((hint) => code.includes(hint))) {
+    return true;
+  }
+
+  if (/^HTTP[_-]?(408|429|5\d\d)$/.test(code)) {
+    return true;
+  }
+
+  const statusNumber = Number.parseInt(httpStatus, 10);
+  if (Number.isFinite(statusNumber)) {
+    if (statusNumber === 408 || statusNumber === 429 || statusNumber >= 500) {
+      return true;
+    }
+  }
+
+  const networkTextHints = [
+    'timeout',
+    'timed out',
+    'network',
+    'conexao',
+    'conexão',
+    'internet',
+    'dns',
+    'offline',
+    'socket',
+    'stall',
+    'no response',
+    'host unreachable',
+    'connection',
+    'cannot reach',
+  ];
+  const mergedText = `${reason} ${detail}`;
+  return networkTextHints.some((hint) => mergedText.includes(hint));
+}
 type StreamSourceResolution = {
   originalUrl: string;
   playbackUrl: string;
@@ -61,6 +136,7 @@ const SWIPE_UP_MIN_DISTANCE_PX = 70;
 const SWIPE_MAX_HORIZONTAL_DRIFT_PX = 160;
 const SWIPE_MAX_DURATION_MS = 900;
 const REMOTE_OK_KEYCODES = new Set([13, 23, 66]);
+const DEFAULT_NATIVE_USER_AGENT = 'VLC/3.0.21 LibVLC/3.0.21';
 
 function extractStreamHost(targetUrl: string): string {
   try {
@@ -98,6 +174,49 @@ function normalizeErrorMessage(error: unknown, fallback: string): string {
   return fallback;
 }
 
+function maskSensitiveUrl(rawUrl: string): string {
+  const trimmed = String(rawUrl || '').trim();
+  if (!trimmed) return '';
+
+  const pipeIndex = trimmed.indexOf('|');
+  const baseUrl = pipeIndex >= 0 ? trimmed.slice(0, pipeIndex) : trimmed;
+
+  try {
+    const parsed = new URL(baseUrl);
+
+    if (parsed.username) {
+      parsed.username = '***';
+    }
+    if (parsed.password) {
+      parsed.password = '***';
+    }
+
+    const sensitiveParams = [
+      'password',
+      'pass',
+      'token',
+      'auth',
+      'authorization',
+      'apikey',
+      'api_key',
+      'signature',
+      'sig',
+      'key',
+    ];
+
+    sensitiveParams.forEach((param) => {
+      if (parsed.searchParams.has(param)) {
+        parsed.searchParams.set(param, '***');
+      }
+    });
+
+    const normalized = parsed.toString();
+    return normalized.length > 220 ? `${normalized.slice(0, 217)}...` : normalized;
+  } catch {
+    return baseUrl.length > 220 ? `${baseUrl.slice(0, 217)}...` : baseUrl;
+  }
+}
+
 function resolvePlaybackMediaType(typeValue: string): 'movie' | 'series' {
   return typeValue === 'series' || typeValue === 'episode' ? 'series' : 'movie';
 }
@@ -120,7 +239,6 @@ function buildLivePreviewUrlCandidates(streamUrl: string, isLiveStream: boolean)
       }
     };
 
-    const lower = trimmed.toLowerCase();
     const pathLower = parsed.pathname.toLowerCase();
     const hasTsOutput =
       parsed.searchParams.get('output')?.toLowerCase() === 'ts'
@@ -202,10 +320,10 @@ function normalizeHeaderName(rawName: string): string {
 
   if (!key) return '';
   if (key === 'user-agent' || key === 'http-user-agent') return 'User-Agent';
-  if (key === 'referer' || key === 'referrer') return 'Referer';
-  if (key === 'origin') return 'Origin';
-  if (key === 'cookie') return 'Cookie';
-  if (key === 'authorization') return 'Authorization';
+  if (key === 'referer' || key === 'referrer' || key === 'http-referer' || key === 'http-referrer') return 'Referer';
+  if (key === 'origin' || key === 'http-origin') return 'Origin';
+  if (key === 'cookie' || key === 'http-cookie') return 'Cookie';
+  if (key === 'authorization' || key === 'http-authorization') return 'Authorization';
 
   return key
     .split('-')
@@ -396,21 +514,32 @@ const TimeDisplay = React.memo(({ videoRef }: { videoRef: React.RefObject<HTMLVi
   return <span ref={timeTextRef} className="text-[11px] font-bold tabular-nums tracking-wider text-white/90 drop-shadow-md" />;
 });
 
-export function loadMediaStream(targetUrl: string, expectedType: 'hls' | 'dash' | 'mp4'): string {
+export function loadMediaStream(targetUrl: string, expectedType: 'hls' | 'dash' | 'mp4', isNative = false): string {
   const resolved = resolveStreamSource(targetUrl);
-  const normalizedTargetUrl = resolved.playbackUrl || String(targetUrl || '').trim();
+  let normalizedTargetUrl = resolved.playbackUrl || String(targetUrl || '').trim();
+  
   try {
     const parsed = new URL(normalizedTargetUrl);
-    if (expectedType === 'hls' && !parsed.searchParams.has('output')) {
-       // Safely coerce output stream to HLS without modifying provider secrets
-       if (parsed.pathname.match(/\.(ts|mpegts)$/)) {
+    if (expectedType === 'hls') {
+       const output = (parsed.searchParams.get('output') || '').toLowerCase();
+       // Em TVs Philips, forçar HLS aumenta a taxa de abertura de canais Xtream.
+       if (!output || output === 'ts' || output === 'mpegts') {
          parsed.searchParams.set('output', 'hls');
        }
+
+       // Algumas listas usam .ts/.mpegts com query hls; normalizamos para .m3u8 quando possível.
+       if (parsed.pathname.match(/\.(ts|mpegts)$/i)) {
+         parsed.pathname = parsed.pathname.replace(/\.(ts|mpegts)$/i, '.m3u8');
+       }
     }
-    return parsed.toString();
+    normalizedTargetUrl = parsed.toString();
   } catch {
-    return normalizedTargetUrl;
+    // URL inválida
   }
+
+  // Para player nativo usamos URL limpa; headers seguem em objeto separado para o plugin Android.
+  void isNative;
+  return normalizedTargetUrl;
 }
 
 export const VideoPlayer = React.forwardRef<VideoPlayerHandle, VideoPlayerProps>(
@@ -443,6 +572,28 @@ export const VideoPlayer = React.forwardRef<VideoPlayerHandle, VideoPlayerProps>
     const streamHeaders = streamSource.headers;
     const streamHeaderEntries = useMemo(() => Object.entries(streamHeaders), [streamHeaders]);
     const hasStreamHeaders = streamHeaderEntries.length > 0;
+    const nativePlayerHeaders = useMemo(() => {
+      const normalizedHeaders: Record<string, string> = {};
+      streamHeaderEntries.forEach(([name, value]) => {
+        if (!name || !value) return;
+        normalizedHeaders[name] = value;
+      });
+
+      const hasUserAgent = Object.keys(normalizedHeaders).some((name) => {
+        const lowered = name.toLowerCase();
+        return lowered === 'user-agent' || lowered === 'http-user-agent';
+      });
+      if (!hasUserAgent) {
+        normalizedHeaders['User-Agent'] = DEFAULT_NATIVE_USER_AGENT;
+      }
+
+      const hasAccept = Object.keys(normalizedHeaders).some((name) => name.toLowerCase() === 'accept');
+      if (!hasAccept) {
+        normalizedHeaders.Accept = '*/*';
+      }
+
+      return normalizedHeaders;
+    }, [streamHeaderEntries]);
     const epgData = useStore((state) => state.epgData);
     const playlistCategories = useStore((state) => state.playlistCategories);
     const [now, setNow] = useState(() => Date.now());
@@ -534,9 +685,15 @@ export const VideoPlayer = React.forwardRef<VideoPlayerHandle, VideoPlayerProps>
     }, [currentProgram, now]);
 
     const [forceNativeFallback, setForceNativeFallback] = useState(false);
-    const canUseNativeFallback = isNativePlatform && !isPreview && !isLiveStream;
-    // Prioriza UI web customizada, mas pode alternar para o player nativo automaticamente em falhas.
-    const shouldUseNativePlayer = canUseNativeFallback && forceNativeFallback;
+    
+    // TVs Philips e Android TVs no geral precisam do Player Nativo (ExoPlayer) para rodar Live TV.
+    // O player web (MSE) costuma dar TIMEOUT ou erro de codec nessas TVs.
+    const canUseNativeFallback = isNativePlatform && !isPreview;
+    
+    // Força o player nativo em Android para canais ao vivo, exceto se for explicitamente um tablet pequeno.
+    // Em TVs, window.innerWidth é grande, então vamos focar na plataforma.
+    const isAndroid = Capacitor.getPlatform() === 'android';
+    const shouldUseNativePlayer = canUseNativeFallback && (forceNativeFallback || (isAndroid && isLiveStream));
     const savePlaybackProgress = useStore((state) => state.savePlaybackProgress);
     const [isChannelBrowserOpen, setIsChannelBrowserOpen] = useState(false);
     const [isRelatedVisible, setIsRelatedVisible] = useState(false);
@@ -639,6 +796,125 @@ export const VideoPlayer = React.forwardRef<VideoPlayerHandle, VideoPlayerProps>
     }, [browserChannels.length, canShowChannelBrowser, channelGroupId, isChannelBrowserOpen, media?.id, url]);
 
     const [showDiagnostic, setShowDiagnostic] = useState(false);
+    const [playbackDiagnostic, setPlaybackDiagnostic] = useState<PlaybackDiagnostic | null>(null);
+    const [previewTerminalFailure, setPreviewTerminalFailure] = useState(false);
+    const [bufferIndicator, setBufferIndicator] = useState<BufferIndicatorState>({
+      visible: false,
+      label: '',
+      progress: 0,
+      phase: 0,
+      startedAt: 0,
+      attempt: 0,
+      total: 0,
+    });
+    const bufferHideTimerRef = useRef<number | null>(null);
+    const hideBufferIndicator = useCallback(() => {
+      if (bufferHideTimerRef.current) {
+        window.clearTimeout(bufferHideTimerRef.current);
+        bufferHideTimerRef.current = null;
+      }
+      setBufferIndicator((prev) => ({
+        ...prev,
+        visible: false,
+        label: '',
+        progress: 0,
+        phase: 0,
+        startedAt: 0,
+        attempt: 0,
+        total: 0,
+      }));
+    }, []);
+    const touchBufferIndicator = useCallback(
+      (
+        label: string,
+        options?: {
+          step?: number;
+          cap?: number;
+          attempt?: number;
+          total?: number;
+          forceResetTimer?: boolean;
+        },
+      ) => {
+        const step = options?.step ?? 2;
+        const cap = options?.cap ?? 95;
+        const attempt = options?.attempt;
+        const total = options?.total;
+        const forceResetTimer = options?.forceResetTimer ?? false;
+        const now = Date.now();
+
+        setBufferIndicator((prev) => {
+          const baseProgress =
+            !prev.visible || forceResetTimer
+              ? Math.max(4, Math.min(18, step * 2))
+              : Math.min(cap, prev.progress + step);
+
+          return {
+            visible: true,
+            label: label || prev.label || 'Carregando stream',
+            progress: baseProgress,
+            phase: prev.visible ? prev.phase : 0,
+            startedAt: !prev.visible || forceResetTimer ? now : prev.startedAt,
+            attempt: typeof attempt === 'number' ? attempt : prev.attempt,
+            total: typeof total === 'number' ? total : prev.total,
+          };
+        });
+      },
+      [],
+    );
+    const completeBufferIndicator = useCallback(() => {
+      if (bufferHideTimerRef.current) {
+        window.clearTimeout(bufferHideTimerRef.current);
+        bufferHideTimerRef.current = null;
+      }
+      setBufferIndicator((prev) => ({
+        ...prev,
+        visible: true,
+        progress: 100,
+        phase: prev.phase,
+      }));
+      bufferHideTimerRef.current = window.setTimeout(() => {
+        hideBufferIndicator();
+      }, 420);
+    }, [hideBufferIndicator]);
+
+    useEffect(() => {
+      if (!bufferIndicator.visible) {
+        return;
+      }
+
+      const intervalId = window.setInterval(() => {
+        setBufferIndicator((prev) => {
+          if (!prev.visible) return prev;
+
+          const driftStep =
+            prev.progress < 35 ? 4.6
+              : prev.progress < 68 ? 2.2
+              : prev.progress < 90 ? 0.9
+              : 0.2;
+          const nextProgress = prev.progress >= 99 ? prev.progress : Math.min(95, prev.progress + driftStep);
+
+          return {
+            ...prev,
+            phase: (prev.phase + 1) % 4,
+            progress: nextProgress,
+          };
+        });
+      }, 340);
+
+      return () => {
+        clearInterval(intervalId);
+      };
+    }, [bufferIndicator.visible]);
+
+    useEffect(() => {
+      return () => {
+        if (bufferHideTimerRef.current) {
+          window.clearTimeout(bufferHideTimerRef.current);
+          bufferHideTimerRef.current = null;
+        }
+      };
+    }, []);
+
     const [playerState, setPlayerState] = useState<NativePlayerState>(
       shouldUseNativePlayer ? 'opening' : 'error',
     );
@@ -646,11 +922,23 @@ export const VideoPlayer = React.forwardRef<VideoPlayerHandle, VideoPlayerProps>
       shouldUseNativePlayer ? null : 'O player nativo esta disponivel apenas no app Android/Capacitor.',
     );
     const [inlineError, setInlineError] = useState<string | null>(null);
+    const applyPlaybackDiagnostic = useCallback(
+      (diagnostic: Omit<PlaybackDiagnostic, 'timestamp'>) => {
+        setPlaybackDiagnostic({
+          ...diagnostic,
+          timestamp: Date.now(),
+        });
+      },
+      [],
+    );
 
     useEffect(() => {
       setForceNativeFallback(false);
       setInlineError(null);
-    }, [url, isPreview]);
+      setPlaybackDiagnostic(null);
+      setPreviewTerminalFailure(false);
+      hideBufferIndicator();
+    }, [hideBufferIndicator, url, isPreview]);
 
     const listenerHandlesRef = useRef<PluginListenerHandle[]>([]);
     const progressIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -900,12 +1188,44 @@ export const VideoPlayer = React.forwardRef<VideoPlayerHandle, VideoPlayerProps>
     const handlePlayerEvent = useCallback(
       (event: NativeVideoPlayerEvent) => {
         setPlayerState('ready');
+        setError(null);
+        setInlineError(null);
+        setPlaybackDiagnostic(null);
+        completeBufferIndicator();
 
         if (!isLiveStream) {
           persistProgress(event.currentTime);
         }
       },
-      [isLiveStream, persistProgress],
+      [completeBufferIndicator, isLiveStream, persistProgress],
+    );
+
+    const handleNativePlayerError = useCallback(
+      (event: NativeVideoPlayerErrorEvent) => {
+        const codeLabel =
+          String(event.errorCodeName || event.errorCode || '').trim() || 'ERRO_DESCONHECIDO';
+        const reason =
+          String(event.message || event.cause || event.details || 'Falha ao reproduzir no player nativo.').trim();
+        const httpStatus = String(event.httpStatus || '').trim();
+        const detail = String(event.details || event.cause || '').trim();
+
+        const humanMessage = httpStatus ? `${reason} (HTTP ${httpStatus})` : reason;
+        setPlayerState('error');
+        setError(humanMessage);
+        setInlineError(httpStatus ? `Falha nativa (${codeLabel} / HTTP ${httpStatus})` : `Falha nativa (${codeLabel})`);
+        hideBufferIndicator();
+        applyPlaybackDiagnostic({
+          stage: 'native',
+          reason,
+          code: codeLabel,
+          detail,
+          httpStatus: httpStatus || undefined,
+          url: maskSensitiveUrl(playbackUrl || url),
+        });
+
+        console.error('[NativePlayer] Erro detalhado recebido do ExoPlayer:', event);
+      },
+      [applyPlaybackDiagnostic, hideBufferIndicator, playbackUrl, url],
     );
 
     const handlePlayerExit = useCallback(
@@ -1360,6 +1680,7 @@ export const VideoPlayer = React.forwardRef<VideoPlayerHandle, VideoPlayerProps>
           await NativeVideoPlayer.addListener('playerPlay', handlePlayerEvent),
           await NativeVideoPlayer.addListener('playerPause', handlePlayerEvent),
           await NativeVideoPlayer.addListener('playerEnded', handlePlayerEvent),
+          await NativeVideoPlayer.addListener('playerError', handleNativePlayerError),
           await NativeVideoPlayer.addListener('playerExit', (event) => {
             void handlePlayerExit(event);
           }),
@@ -1374,16 +1695,30 @@ export const VideoPlayer = React.forwardRef<VideoPlayerHandle, VideoPlayerProps>
           console.warn('[VideoPlayer] Falha ao garantir stopAllPlayers antes de init:', error);
         }
 
-        const secureStreamUrl = loadMediaStream(playbackUrl || url, media?.type === 'series' ? 'mp4' : 'hls');
+        const isLive = isLiveStream || mediaType === 'live';
+        const secureStreamUrl = isLive
+          ? normalizePlayableUrl(playbackUrl || url)
+          : loadMediaStream(playbackUrl || url, media?.type === 'series' ? 'mp4' : 'hls', true);
+
+        console.log(`[NativePlayer] Iniciando stream nativo: ${secureStreamUrl}`);
+        touchBufferIndicator('Conectando player nativo', {
+          step: 8,
+          cap: 90,
+          attempt: 1,
+          total: 1,
+          forceResetTimer: true,
+        });
+        setInlineError(`Iniciando Player Nativo...\nURL: ${secureStreamUrl.substring(0, 50)}...`);
 
         const result = await NativeVideoPlayer.initPlayer({
           url: secureStreamUrl,
+          headers: nativePlayerHeaders,
           title: media?.title || 'Xandeflix',
-          smallTitle: media?.category || '',
+          smallTitle: media?.category || (isLive ? 'Ao Vivo' : ''),
           artwork: media?.thumbnail || media?.backdrop || '',
-          chromecast: false,
+          chromecast: true,
           displayMode: 'landscape',
-          startAtSec: !isLiveStream && sessionResumePosition > 5 ? sessionResumePosition : 0,
+          startAtSec: !isLive && sessionResumePosition > 5 ? sessionResumePosition : 0,
         });
 
         if (handledExitRef.current) {
@@ -1416,11 +1751,19 @@ export const VideoPlayer = React.forwardRef<VideoPlayerHandle, VideoPlayerProps>
         removeListeners();
         clearProgressPolling();
         await restoreSystemUi();
-        setError(normalizeErrorMessage(playerError, 'Falha ao iniciar player nativo.'));
+        hideBufferIndicator();
+        const reason = normalizeErrorMessage(playerError, 'Falha ao iniciar player nativo.');
+        setError(reason);
+        applyPlaybackDiagnostic({
+          stage: 'native',
+          reason,
+          detail: 'Falha durante initPlayer.',
+          url: maskSensitiveUrl(playbackUrl || url),
+        });
         setPlayerState('error');
         flushTelemetry('fatal_error');
       }
-    }, [clearProgressPolling, flushTelemetry, handlePlayerEvent, handlePlayerExit, isLiveStream, media?.backdrop, media?.category, media?.thumbnail, media?.title, media?.type, playbackUrl, prepareSystemUi, removeListeners, restoreSystemUi, syncProgressFromNativePlayer, url]);
+    }, [applyPlaybackDiagnostic, clearProgressPolling, flushTelemetry, handleNativePlayerError, handlePlayerEvent, handlePlayerExit, hideBufferIndicator, isLiveStream, media?.backdrop, media?.category, media?.thumbnail, media?.title, media?.type, nativePlayerHeaders, playbackUrl, prepareSystemUi, removeListeners, restoreSystemUi, syncProgressFromNativePlayer, touchBufferIndicator, url]);
 
     useEffect(() => {
       let appStateListener: Promise<PluginListenerHandle> | null = null;
@@ -1463,8 +1806,10 @@ export const VideoPlayer = React.forwardRef<VideoPlayerHandle, VideoPlayerProps>
     const previewVideoRef = useRef<HTMLVideoElement>(null);
     const latestPreviewUrlRef = useRef(url);
     const suppressNativePreviewExitOnUnmountRef = useRef(suppressNativePreviewExitOnUnmount);
+    const onPreviewRequestFullscreenRef = useRef(onPreviewRequestFullscreen);
     latestPreviewUrlRef.current = url;
     suppressNativePreviewExitOnUnmountRef.current = suppressNativePreviewExitOnUnmount;
+    onPreviewRequestFullscreenRef.current = onPreviewRequestFullscreen;
 
     useEffect(() => {
       // O plugin wako-capacitor-video-player não suporta "embedded: true" de verdade no Android.
@@ -1490,7 +1835,7 @@ export const VideoPlayer = React.forwardRef<VideoPlayerHandle, VideoPlayerProps>
       const video = previewVideoRef.current;
       if (!video) return;
 
-      const secureWebUrl = loadMediaStream(playbackUrl || url, 'hls');
+      const secureWebUrl = normalizePlayableUrl(playbackUrl || url);
       const candidates = buildLivePreviewUrlCandidates(secureWebUrl, isLiveStream);
       if (candidates.length === 0) return;
 
@@ -1510,15 +1855,77 @@ export const VideoPlayer = React.forwardRef<VideoPlayerHandle, VideoPlayerProps>
       let lastLiveProgressAt = Date.now();
       let lastObservedLiveTime = 0;
       let liveRecoveryAttempts = 0;
+      let hlsMediaRecoveryAttempts = 0;
+      let nativePromotionRequested = false;
+      let hardPreviewFailureReported = false;
+      const allowAutomaticPreviewPromotion = false;
+      const registerPreviewDiagnostic = (
+        reason: string,
+        targetUrl: string,
+        options?: {
+          code?: string;
+          detail?: string;
+          httpStatus?: string;
+        },
+      ) => {
+        applyPlaybackDiagnostic({
+          stage: 'preview',
+          reason,
+          code: options?.code,
+          detail: options?.detail,
+          httpStatus: options?.httpStatus,
+          url: maskSensitiveUrl(targetUrl),
+        });
+      };
 
       const triggerNativeFallback = (reason: string): boolean => {
-        if (disposed || !canUseNativeFallback || forceNativeFallback) {
+        if (disposed) {
           return false;
         }
-        console.warn(`[VideoPlayer] Acionando fallback para player nativo: ${reason}`);
-        setInlineError('Abrindo player nativo...');
-        setForceNativeFallback(true);
-        return true;
+
+        if (canUseNativeFallback && !forceNativeFallback) {
+          console.warn(`[VideoPlayer] Acionando fallback para player nativo: ${reason}`);
+          touchBufferIndicator('Fallback para player nativo', {
+            step: 6,
+            cap: 92,
+          });
+          registerPreviewDiagnostic(reason, latestPreviewUrlRef.current || playbackUrl || url, {
+            code: 'NATIVE_FALLBACK',
+            detail: 'Preview falhou; fallback para ExoPlayer nativo.',
+          });
+          setInlineError('Abrindo player nativo...');
+          setForceNativeFallback(true);
+          return true;
+        }
+
+        if (
+          isPreview &&
+          isNativePlatform &&
+          typeof onPreviewRequestFullscreenRef.current === 'function' &&
+          !nativePromotionRequested
+        ) {
+          nativePromotionRequested = true;
+          if (allowAutomaticPreviewPromotion) {
+            console.warn(`[VideoPlayer] Preview falhou. Promovendo para fullscreen nativo: ${reason}`);
+            touchBufferIndicator('Abrindo fullscreen nativo', {
+              step: 6,
+              cap: 92,
+            });
+            registerPreviewDiagnostic(reason, latestPreviewUrlRef.current || playbackUrl || url, {
+              code: 'PROMOTE_FULLSCREEN_NATIVE',
+              detail: 'Preview falhou; solicitada promocao para fullscreen nativo.',
+            });
+            setInlineError('Abrindo player nativo...');
+            window.setTimeout(() => {
+              if (!disposed) {
+                onPreviewRequestFullscreenRef.current?.();
+              }
+            }, 120);
+            return true;
+          }
+        }
+
+        return false;
       };
 
       const clearStartupTimeout = () => {
@@ -1540,6 +1947,81 @@ export const VideoPlayer = React.forwardRef<VideoPlayerHandle, VideoPlayerProps>
         if (failureNotified || !isPreview) return;
         failureNotified = true;
         previewFailureHandlerRef.current?.(failedUrl);
+      };
+
+      const resolveCurrentCandidateUrl = () =>
+        candidates[candidateIndex] || latestPreviewUrlRef.current || playbackUrl || url;
+
+      const failPreviewAndStop = (
+        failureReason: string,
+        failureCode: string,
+        failureDetail: string,
+        failureUrl?: string,
+      ) => {
+        if (disposed || hardPreviewFailureReported) {
+          return;
+        }
+
+        hardPreviewFailureReported = true;
+        setPreviewTerminalFailure(true);
+        teardownCurrentSource();
+        clearStartupTimeout();
+        clearStallWatchdog();
+        hideBufferIndicator();
+        const targetUrl = failureUrl || resolveCurrentCandidateUrl();
+        setInlineError('Falha ao abrir o canal');
+        registerPreviewDiagnostic(failureReason, targetUrl, {
+          code: failureCode,
+          detail: failureDetail,
+        });
+        notifyPreviewFailure(targetUrl);
+      };
+
+      const advanceCandidateOrFail = (
+        failureReason: string,
+        failureCode: string,
+        failureDetail: string,
+        failureUrl?: string,
+      ) => {
+        if (disposed || hardPreviewFailureReported) {
+          return;
+        }
+
+        const currentUrl = failureUrl || resolveCurrentCandidateUrl();
+        const isConnectionFailure = isLikelyConnectionFailure({
+          code: failureCode,
+          reason: failureReason,
+          detail: failureDetail,
+        });
+        const nextIndex = candidateIndex + 1;
+
+        if (!isConnectionFailure) {
+          failPreviewAndStop(
+            failureReason,
+            failureCode,
+            `${failureDetail} -> erro nao relacionado a conexao, retries interrompidos na tentativa ${candidateIndex + 1}/${candidates.length}.`,
+            currentUrl,
+          );
+          return;
+        }
+
+        if (nextIndex < candidates.length) {
+          candidateIndex = nextIndex;
+          liveRecoveryAttempts = 0;
+          hlsMediaRecoveryAttempts = 0;
+          registerPreviewDiagnostic(failureReason, currentUrl, {
+            code: failureCode,
+            detail: `${failureDetail} -> tentando candidato ${nextIndex + 1}/${candidates.length}.`,
+          });
+          playCurrentSource();
+          return;
+        }
+
+        if (triggerNativeFallback(`${failureReason}: ${currentUrl}`)) {
+          return;
+        }
+
+        failPreviewAndStop(failureReason, failureCode, failureDetail, currentUrl);
       };
 
       const destroyHlsInstance = () => {
@@ -1662,10 +2144,14 @@ export const VideoPlayer = React.forwardRef<VideoPlayerHandle, VideoPlayerProps>
             return;
           }
 
-          if (liveRecoveryAttempts >= 3) {
-            console.error('[Live-Stall] Tentativas maximas de recuperacao atingidas para este canal.');
-            setInlineError('Sinal instavel: aguardando reconexao...');
-            lastLiveProgressAt = Date.now();
+          if (liveRecoveryAttempts >= 2) {
+            console.error('[Live-Stall] Sem progresso. Avancando para o proximo candidato.');
+            advanceCandidateOrFail(
+              'Stream congelada por excesso de stall',
+              'STALL_TIMEOUT',
+              'Fluxo sem progresso apos tentativas de reconexao.',
+              resolveCurrentCandidateUrl(),
+            );
             return;
           }
 
@@ -1677,26 +2163,30 @@ export const VideoPlayer = React.forwardRef<VideoPlayerHandle, VideoPlayerProps>
       };
 
       const playCurrentSource = () => {
-        if (disposed) return;
+        if (disposed || hardPreviewFailureReported) return;
+        setPreviewTerminalFailure(false);
         setInlineError(null);
 
         teardownCurrentSource();
         const currentUrl = candidates[candidateIndex];
+        touchBufferIndicator(`Carregando buffer (${candidateIndex + 1}/${candidates.length})`, {
+          step: candidateIndex === 0 ? 7 : 4,
+          cap: 94,
+          attempt: candidateIndex + 1,
+          total: candidates.length,
+          forceResetTimer: candidateIndex === 0,
+        });
         console.log(`[VideoPlayer-Preview] Tentando carregar candidato [${candidateIndex}]: ${currentUrl}`);
         const startupTimeoutMs = !isLiveStream ? 8000 : (isPreview ? 15000 : 20000);
         startupTimeoutId = setTimeout(() => {
           if (disposed) return;
-          if (candidateIndex + 1 < candidates.length) {
-            candidateIndex += 1;
-            playCurrentSource();
-          } else {
-            if (triggerNativeFallback(`timeout ao iniciar stream: ${currentUrl}`)) {
-              return;
-            }
-            console.error('[Preview] Timeout para iniciar stream:', currentUrl);
-            setInlineError('Timeout de Conexão');
-            notifyPreviewFailure(currentUrl);
-          }
+          console.error('[Preview] Timeout para iniciar stream:', currentUrl);
+          advanceCandidateOrFail(
+            'Timeout ao iniciar stream',
+            'PREVIEW_TIMEOUT',
+            `Nenhum dado reproduzivel em ${startupTimeoutMs}ms.`,
+            currentUrl,
+          );
         }, startupTimeoutMs);
 
         const canUseNativeHlsTag = video.canPlayType('application/vnd.apple.mpegurl') !== '';
@@ -1746,7 +2236,12 @@ export const VideoPlayer = React.forwardRef<VideoPlayerHandle, VideoPlayerProps>
           hls.attachMedia(video);
 
           hlsManifestParsedHandler = () => {
+            if (disposed || hardPreviewFailureReported) return;
             clearStartupTimeout();
+            setPreviewTerminalFailure(false);
+            setPlaybackDiagnostic(null);
+            setInlineError(null);
+            completeBufferIndicator();
             void video.play().catch((playError) => {
               console.error('[Preview] Erro ao iniciar play:', playError);
             });
@@ -1760,31 +2255,35 @@ export const VideoPlayer = React.forwardRef<VideoPlayerHandle, VideoPlayerProps>
             switch (data.type) {
               case Hls.ErrorTypes.NETWORK_ERROR:
                 console.warn('[HLS] Falha de rede irrecuperável, tentando proxima fonte...', data);
-                if (candidateIndex + 1 < candidates.length) {
-                  candidateIndex += 1;
-                  playCurrentSource();
-                } else {
-                  hls.startLoad();
-                }
+                advanceCandidateOrFail(
+                  'Falha de rede no HLS',
+                  'HLS_NETWORK_ERROR',
+                  String(data.details || data.reason || 'Erro de rede fatal no HLS.'),
+                  currentUrl,
+                );
                 break;
               case Hls.ErrorTypes.MEDIA_ERROR:
                 console.warn('[HLS] Erro de mídia fatal detectado, tentando recuperar buffers...', data);
-                hls.recoverMediaError();
+                if (hlsMediaRecoveryAttempts < 1) {
+                  hlsMediaRecoveryAttempts += 1;
+                  hls.recoverMediaError();
+                } else {
+                  advanceCandidateOrFail(
+                    'Erro de mídia no HLS',
+                    'HLS_MEDIA_ERROR',
+                    String(data.details || data.reason || 'Falha de mídia sem recuperação.'),
+                    currentUrl,
+                  );
+                }
                 break;
               default:
                 console.error('[HLS] Erro fatal desconhecido, falhando para o próximo candidato.', data);
-                if (candidateIndex + 1 < candidates.length) {
-                  candidateIndex += 1;
-                  playCurrentSource();
-                } else {
-                  if (triggerNativeFallback(`erro fatal HLS sem fallback: ${currentUrl}`)) {
-                    return;
-                  }
-                  clearStartupTimeout();
-                  console.error('[HLS] Nenhum fallback disponível para:', currentUrl, data);
-                  setInlineError(`Erro no HLS (${data.type})`);
-                  notifyPreviewFailure(currentUrl);
-                }
+                advanceCandidateOrFail(
+                  'Erro fatal no pipeline HLS',
+                  String(data.type || 'HLS_FATAL'),
+                  String(data.details || data.reason || ''),
+                  currentUrl,
+                );
                 break;
             }
           };
@@ -1825,26 +2324,27 @@ export const VideoPlayer = React.forwardRef<VideoPlayerHandle, VideoPlayerProps>
 
             player.on(mpegts.Events.ERROR, (errorType: string, errorDetail: string, errorInfo: any) => {
               console.error(`[mpegts.js] Erro: type=${errorType}, detail=${errorDetail}`, errorInfo);
-              if (candidateIndex + 1 < candidates.length) {
-                candidateIndex += 1;
-                playCurrentSource();
-              } else {
-                if (triggerNativeFallback(`erro fatal MPEGTS sem fallback: ${currentUrl}`)) {
-                  return;
-                }
-                clearStartupTimeout();
-                setInlineError('Sinal Incompatível com Preview');
-                notifyPreviewFailure(currentUrl);
-              }
+              advanceCandidateOrFail(
+                'Erro fatal no pipeline MPEGTS',
+                String(errorType || 'MPEGTS_FATAL'),
+                String(errorDetail || ''),
+                currentUrl,
+              );
             });
 
             // Quando o MediaSource receber dados, tentar play
             loadedMetadataHandler = () => {
+              if (disposed || hardPreviewFailureReported) return;
               clearStartupTimeout();
               void video.play().catch((e) => console.warn('[mpegts] play() rejeitado:', e));
             };
             playingHandler = () => {
+              if (disposed || hardPreviewFailureReported) return;
               clearStartupTimeout();
+              setPreviewTerminalFailure(false);
+              setPlaybackDiagnostic(null);
+              setInlineError(null);
+              completeBufferIndicator();
               startLiveStallWatchdog();
             };
             timeUpdateHandler = () => {
@@ -1872,6 +2372,7 @@ export const VideoPlayer = React.forwardRef<VideoPlayerHandle, VideoPlayerProps>
         video.src = currentUrl;
 
         const tryStartPlayback = (eventName: string) => {
+          if (disposed || hardPreviewFailureReported) return;
           clearStartupTimeout();
           void video.play().catch((playError) => {
             console.error(`[Preview] Erro ao iniciar play (${eventName}):`, playError);
@@ -1889,30 +2390,23 @@ export const VideoPlayer = React.forwardRef<VideoPlayerHandle, VideoPlayerProps>
           tryStartPlayback('canplay');
         };
         playingHandler = () => {
+          if (disposed || hardPreviewFailureReported) return;
           clearStartupTimeout();
+          setPreviewTerminalFailure(false);
+          setPlaybackDiagnostic(null);
+          setInlineError(null);
+          completeBufferIndicator();
           startLiveStallWatchdog();
         };
         nativeErrorHandler = () => {
           const err = video.error;
           console.error(`[Preview] MediaError nativo: code=${err?.code}, msg=${err?.message} url=${currentUrl}`);
-          if (candidateIndex + 1 < candidates.length) {
-            candidateIndex += 1;
-            playCurrentSource();
-          } else {
-            if (triggerNativeFallback(`media error sem fallback: ${currentUrl}`)) {
-              return;
-            }
-            clearStartupTimeout();
-            console.error('[Preview] Erro nativo de video sem fallback:', currentUrl);
-            
-            let errorMsg = `Sinal Incompatível (Err: ${err?.code || 'Desconhecido'})`;
-            if (err?.code === 4) {
-              errorMsg = "Sinal Incompatível com Preview";
-            }
-            
-            setInlineError(errorMsg);
-            notifyPreviewFailure(currentUrl);
-          }
+          advanceCandidateOrFail(
+            'MediaError no elemento de vídeo',
+            err?.code ? `MEDIA_ERR_${err.code}` : 'MEDIA_ERR_UNKNOWN',
+            String(err?.message || ''),
+            currentUrl,
+          );
         };
         timeUpdateHandler = () => {
           const currentTime = video.currentTime || 0;
@@ -1942,6 +2436,7 @@ export const VideoPlayer = React.forwardRef<VideoPlayerHandle, VideoPlayerProps>
 
       return () => {
         disposed = true;
+        hideBufferIndicator();
         if (!isLiveStream && !isPreview) {
           syncProgressToSupabase(lastKnownTimeRef.current, { force: true });
         }
@@ -1966,17 +2461,37 @@ export const VideoPlayer = React.forwardRef<VideoPlayerHandle, VideoPlayerProps>
       streamHeaderEntries,
       syncProgressToSupabase,
       url,
+      isNativePlatform,
+      applyPlaybackDiagnostic,
+      completeBufferIndicator,
+      hideBufferIndicator,
+      touchBufferIndicator,
     ]);
 
 
 
     const fallbackPoster = media?.backdrop || media?.thumbnail || "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7";
+    const shouldShowPreviewFailureOverlay = isPreview && previewTerminalFailure;
+    const bufferMiniDiagReason = playbackDiagnostic?.reason
+      ? (playbackDiagnostic.reason.length > 86 ? `${playbackDiagnostic.reason.slice(0, 83)}...` : playbackDiagnostic.reason)
+      : '';
+    const shouldShowBufferIndicator =
+      bufferIndicator.visible &&
+      !previewTerminalFailure &&
+      !inlineError &&
+      !(shouldUseNativePlayer && playerState === 'error');
+    const bufferElapsedSeconds = bufferIndicator.startedAt
+      ? Math.max(0, Math.floor((Date.now() - bufferIndicator.startedAt) / 1000))
+      : 0;
+    const bufferAnimatedDots = '.'.repeat((bufferIndicator.phase % 3) + 1);
 
     return (
     <>
       <div 
         ref={previewHostRef}
-        className={`relative h-full w-full overflow-hidden bg-black ${isPreview ? 'rounded-2xl shadow-2xl' : ''}`}
+        className={`relative h-full w-full bg-black ${
+          isPreview && !isNativePlatform ? 'overflow-hidden rounded-2xl shadow-2xl' : ''
+        }`}
         onMouseMove={showControls}
         onPointerDown={(event) => {
           showControls();
@@ -2039,13 +2554,9 @@ export const VideoPlayer = React.forwardRef<VideoPlayerHandle, VideoPlayerProps>
         {shouldUseNativePlayer ? (
           <>
             {playerState !== 'ready' && (
-              <img
-                src={fallbackPoster}
-                alt={media?.title || 'Preview'}
-                className="h-full w-full object-cover opacity-65"
-              />
+              <div className="absolute inset-0 bg-[radial-gradient(circle_at_top,rgba(239,68,68,0.18),rgba(0,0,0,0.96)_58%)]" />
             )}
-            {playerState !== 'ready' && (
+            {playerState !== 'ready' && !shouldShowBufferIndicator && (
               <div className="absolute inset-0 flex items-center justify-center bg-black/35 px-3 text-center text-[11px] font-semibold tracking-wide text-white/90">
                 {error ? `Previa indisponivel: ${error}` : 'Carregando previa...'}
               </div>
@@ -2054,13 +2565,16 @@ export const VideoPlayer = React.forwardRef<VideoPlayerHandle, VideoPlayerProps>
         ) : (
           <video
             ref={previewVideoRef}
-            className={`h-full w-full transition-all duration-300 ${
+            className={`h-full w-full ${
+              isPreview ? 'transform-gpu' : 'transition-transform duration-300'
+            } ${
               videoScale === 'fit' ? 'object-contain' : videoScale === 'fill' ? 'object-fill' : 'object-cover'
             }`}
+            style={{ transform: 'translateZ(0)' }}
             autoPlay
             muted={false}
             playsInline
-            poster={fallbackPoster}
+            poster={isPreview ? undefined : fallbackPoster}
             onPlay={() => setIsPlaying(true)}
             onPause={() => setIsPlaying(false)}
             onTimeUpdate={() => {
@@ -2082,24 +2596,125 @@ export const VideoPlayer = React.forwardRef<VideoPlayerHandle, VideoPlayerProps>
             }}
           />
         )}
+        {shouldShowBufferIndicator && (
+          <div className="absolute inset-0 z-[11] flex items-center justify-center bg-black/82 px-4 text-center">
+            <div className="relative w-full max-w-[390px] rounded-2xl border border-white/10 bg-zinc-950/90 p-4 shadow-2xl">
+              <div className="text-[10px] font-black uppercase tracking-[0.18em] text-red-300 font-['Outfit']">
+                Buffer Dinâmico
+              </div>
+              <div className="mt-2 text-[12px] font-semibold text-white/90 break-words">
+                {bufferIndicator.label || 'Conectando stream'}{bufferAnimatedDots}
+              </div>
+              <div className="mt-3 h-2 overflow-hidden rounded-full bg-white/10">
+                <div
+                  className="h-full rounded-full bg-gradient-to-r from-red-600 via-red-500 to-amber-400 transition-all duration-300"
+                  style={{ width: `${Math.max(2, Math.min(100, bufferIndicator.progress))}%` }}
+                />
+              </div>
+              <div className="mt-2 flex items-center justify-between text-[10px] text-white/65">
+                <span>{Math.round(Math.max(0, Math.min(100, bufferIndicator.progress)))}%</span>
+                <span>{bufferElapsedSeconds}s</span>
+              </div>
+              {bufferIndicator.total > 0 && (
+                <div className="mt-1 text-[9px] uppercase tracking-widest text-white/45">
+                  Tentativa {Math.max(1, bufferIndicator.attempt)}/{bufferIndicator.total}
+                </div>
+              )}
+              {playbackDiagnostic && (
+                <div className="absolute bottom-3 right-3 max-w-[188px] rounded-lg border border-red-500/35 bg-black/75 p-2 text-left shadow-lg">
+                  <div className="text-[8px] font-black uppercase tracking-[0.16em] text-red-300">Diag</div>
+                  {playbackDiagnostic.code && (
+                    <div className="mt-0.5 text-[8px] font-semibold text-white/85 break-all">
+                      {playbackDiagnostic.code}
+                    </div>
+                  )}
+                  <div className="mt-0.5 text-[8px] text-white/65 break-words">
+                    {bufferMiniDiagReason}
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
 
-        {inlineError && isPreview && (
-           <div className="absolute inset-0 z-10 flex flex-col items-center justify-center bg-black/80 px-4 text-center">
+        {shouldShowPreviewFailureOverlay && (
+           <div className="absolute inset-0 z-[20] flex flex-col items-center justify-center bg-black/80 px-4 text-center">
              <div className="text-[11px] font-black uppercase tracking-[0.2em] text-red-500 mb-1 font-['Outfit']">Sem Sinal</div>
-             <div className="text-[10px] font-bold text-white/70 uppercase tracking-widest font-['Outfit']">{inlineError}</div>
+             <div className="text-[10px] font-bold text-white/70 uppercase tracking-widest font-['Outfit']">
+               {inlineError || 'Falha no carregamento do canal'}
+             </div>
+             {playbackDiagnostic && (
+               <div className="mt-3 w-full max-w-[340px] rounded-xl border border-red-500/35 bg-black/70 p-3 text-left">
+                 <div className="text-[9px] font-black uppercase tracking-[0.2em] text-red-300 font-['Outfit']">Diagnóstico</div>
+                 <div className="mt-1 text-[10px] font-semibold text-white/90 break-words">
+                   {playbackDiagnostic.reason}
+                 </div>
+                 {playbackDiagnostic.code && (
+                   <div className="mt-1 text-[9px] text-white/70 break-words">
+                     Código: {playbackDiagnostic.code}
+                   </div>
+                 )}
+                 {playbackDiagnostic.httpStatus && (
+                   <div className="mt-1 text-[9px] text-white/70 break-words">
+                     HTTP: {playbackDiagnostic.httpStatus}
+                   </div>
+                 )}
+                 {playbackDiagnostic.url && (
+                   <div className="mt-1 text-[9px] text-white/60 break-all">
+                     URL: {playbackDiagnostic.url}
+                   </div>
+                 )}
+                 {playbackDiagnostic.detail && (
+                   <div className="mt-1 text-[9px] text-white/60 break-words">
+                     Detalhe: {playbackDiagnostic.detail}
+                   </div>
+                 )}
+               </div>
+             )}
              <div className="text-[9px] text-white/40 mt-3 uppercase max-w-[200px] font-['Outfit']">O player nativo pode suportar este canal. Clique em tela cheia.</div>
            </div>
         )}
         {inlineError && !isPreview && !shouldUseNativePlayer && (
-          <div className="absolute top-6 left-1/2 -translate-x-1/2 z-[90] rounded-xl border border-red-500/30 bg-black/70 px-4 py-2 text-[11px] font-black uppercase tracking-wider text-red-200 backdrop-blur-xl font-['Outfit']">
+          <div className="absolute top-6 left-1/2 -translate-x-1/2 z-[90] rounded-xl border border-red-500/30 bg-zinc-900/95 px-4 py-2 text-[11px] font-black uppercase tracking-wider text-red-200 font-['Outfit']">
             {inlineError}
+          </div>
+        )}
+        {playbackDiagnostic && !isPreview && (inlineError || error || playerState === 'error') && (
+          <div className="absolute bottom-6 left-6 right-6 z-[95] rounded-2xl border border-red-500/35 bg-zinc-950/95 p-4 text-left shadow-2xl md:max-w-[720px] md:right-auto">
+            <div className="text-[10px] font-black uppercase tracking-[0.2em] text-red-300 font-['Outfit']">Diagnóstico do Player</div>
+            <div className="mt-2 text-[12px] font-semibold text-white break-words">
+              {playbackDiagnostic.reason}
+            </div>
+            {playbackDiagnostic.code && (
+              <div className="mt-1 text-[11px] text-white/80 break-words">
+                Código: {playbackDiagnostic.code}
+              </div>
+            )}
+            {playbackDiagnostic.httpStatus && (
+              <div className="mt-1 text-[11px] text-white/80 break-words">
+                HTTP: {playbackDiagnostic.httpStatus}
+              </div>
+            )}
+            {playbackDiagnostic.url && (
+              <div className="mt-1 text-[10px] text-white/60 break-all">
+                URL: {playbackDiagnostic.url}
+              </div>
+            )}
+            {playbackDiagnostic.detail && (
+              <div className="mt-1 text-[10px] text-white/60 break-words">
+                Detalhe: {playbackDiagnostic.detail}
+              </div>
+            )}
+            <div className="mt-2 text-[9px] uppercase tracking-widest text-white/40">
+              Atualizado: {new Date(playbackDiagnostic.timestamp).toLocaleTimeString()}
+            </div>
           </div>
         )}
         
         {/* Auto Next Countdown Overlay */}
         {autoNextCountdown !== null && nextEpisode && (
           <div className="absolute bottom-40 right-12 z-[60] flex flex-col items-end gap-4 animate-in fade-in slide-in-from-right-10 duration-500">
-            <div className="bg-black/80 backdrop-blur-2xl border border-white/10 p-6 rounded-2xl shadow-[0_0_50px_rgba(0,0,0,0.8)] flex flex-col gap-4 max-w-[340px] ring-1 ring-white/5">
+            <div className="bg-zinc-900/98 border border-white/10 p-6 rounded-2xl shadow-[0_0_50px_rgba(0,0,0,0.8)] flex flex-col gap-4 max-w-[340px] ring-1 ring-white/5">
               <div className="flex items-center justify-between gap-4">
                 <div className="flex items-center gap-2">
                   <div className="w-2 h-2 rounded-full bg-red-600 animate-pulse" />
@@ -2128,13 +2743,13 @@ export const VideoPlayer = React.forwardRef<VideoPlayerHandle, VideoPlayerProps>
               <div className="flex gap-3 mt-1">
                 <button 
                   onClick={() => { cancelAutoNext(); onPlayNextEpisode?.(); }}
-                  className="flex-1 bg-white text-black font-black py-3 rounded-xl text-[11px] uppercase tracking-[0.1em] hover:bg-red-600 hover:text-white transition-all shadow-xl active:scale-95 font-['Outfit']"
+                  className="flex-1 bg-white text-black font-black py-3 rounded-xl text-[11px] uppercase tracking-[0.1em] hover:bg-red-600 hover:text-white transition-colors shadow-xl active:scale-95 font-['Outfit']"
                 >
                   Assistir Agora
                 </button>
                 <button 
                   onClick={cancelAutoNext}
-                  className="px-5 bg-white/10 text-white font-black py-3 rounded-xl text-[11px] uppercase tracking-[0.1em] hover:bg-white/20 transition-all border border-white/5 active:scale-95 font-['Outfit']"
+                  className="px-5 bg-white/10 text-white font-black py-3 rounded-xl text-[11px] uppercase tracking-[0.1em] hover:bg-white/20 transition-colors border border-white/5 active:scale-95 font-['Outfit']"
                 >
                   Cancelar
                 </button>
@@ -2163,7 +2778,7 @@ export const VideoPlayer = React.forwardRef<VideoPlayerHandle, VideoPlayerProps>
                           event.stopPropagation();
                           setIsChannelBrowserOpen((prev) => !prev);
                         }}
-                        className="rounded-xl border border-red-500/30 bg-black/65 px-4 py-2 text-[11px] font-black uppercase tracking-wider text-red-200 backdrop-blur-xl font-['Outfit']"
+                        className="rounded-xl border border-red-500/30 bg-zinc-900/95 px-4 py-2 text-[11px] font-black uppercase tracking-wider text-red-200 font-['Outfit']"
                       >
                         {isChannelBrowserOpen ? 'Ocultar Canais' : 'Canais'}
                       </button>
@@ -2188,14 +2803,14 @@ export const VideoPlayer = React.forwardRef<VideoPlayerHandle, VideoPlayerProps>
                <div className="flex items-center gap-4">
                   <button 
                     onClick={(e) => { e.stopPropagation(); setIsSettingsOpen(!isSettingsOpen); }}
-                    className="p-3 rounded-full bg-white/5 hover:bg-white/10 transition-all border border-white/10 backdrop-blur-md"
+                    className="p-3 rounded-full bg-zinc-900/90 hover:bg-white/10 transition-transform border border-white/10"
                     aria-label="Configurações de vídeo"
                   >
                     <SlidersHorizontal size={24} className="text-white" />
                   </button>
                   <button 
                     onClick={(e) => { e.stopPropagation(); onClose(); }}
-                    className="p-3 rounded-full bg-white/5 hover:bg-white/10 transition-all border border-white/10 backdrop-blur-md"
+                    className="p-3 rounded-full bg-zinc-900/90 hover:bg-white/10 transition-transform border border-white/10"
                     aria-label="Fechar player"
                   >
                     <X size={28} className="text-white" />
@@ -2208,7 +2823,7 @@ export const VideoPlayer = React.forwardRef<VideoPlayerHandle, VideoPlayerProps>
               {!isLiveStream && (
                 <button
                   onClick={(e) => { e.stopPropagation(); seek(-10); }}
-                  className="p-6 rounded-full bg-black/20 backdrop-blur-md border border-white/5 transition-all pointer-events-auto hover:scale-110 active:scale-95"
+                  className="p-6 rounded-full bg-zinc-900/80 border border-white/5 transition-transform pointer-events-auto hover:scale-110 active:scale-95"
                 >
                   <Rewind size={42} className="text-white/80" />
                   <span className="absolute -bottom-8 left-1/2 -translate-x-1/2 text-[10px] font-black text-white/40 uppercase font-['Outfit']">10s</span>
@@ -2218,8 +2833,8 @@ export const VideoPlayer = React.forwardRef<VideoPlayerHandle, VideoPlayerProps>
               <button
                 onClick={(e) => { e.stopPropagation(); togglePlayPause(); }}
                 className={`
-                  p-12 rounded-full bg-white/10 backdrop-blur-2xl border border-white/20
-                  transition-all duration-500 pointer-events-auto hover:scale-110 active:scale-90
+                  p-12 rounded-full bg-zinc-900/95 border border-white/20
+                  transition-transform duration-500 pointer-events-auto hover:scale-110 active:scale-90
                   shadow-[0_0_60px_rgba(0,0,0,0.5)]
                 `}
               >
@@ -2233,7 +2848,7 @@ export const VideoPlayer = React.forwardRef<VideoPlayerHandle, VideoPlayerProps>
               {!isLiveStream && (
                 <button
                   onClick={(e) => { e.stopPropagation(); seek(10); }}
-                  className="p-6 rounded-full bg-black/20 backdrop-blur-md border border-white/5 transition-all pointer-events-auto hover:scale-110 active:scale-95"
+                  className="p-6 rounded-full bg-zinc-900/80 border border-white/5 transition-transform pointer-events-auto hover:scale-110 active:scale-95"
                 >
                   <FastForward size={42} className="text-white/80" />
                   <span className="absolute -bottom-8 left-1/2 -translate-x-1/2 text-[10px] font-black text-white/40 uppercase font-['Outfit']">10s</span>
@@ -2259,7 +2874,7 @@ export const VideoPlayer = React.forwardRef<VideoPlayerHandle, VideoPlayerProps>
                  <div className="flex items-center gap-8">
                     <button 
                       onClick={(e) => { e.stopPropagation(); toggleMute(); }}
-                      className="p-2 text-white/70 hover:text-white transition-all hover:scale-110"
+                      className="p-2 text-white/70 hover:text-white transition-colors hover:scale-110"
                     >
                       {isMuted ? <VolumeX size={32} /> : <Volume2 size={32} />}
                     </button>
@@ -2270,7 +2885,7 @@ export const VideoPlayer = React.forwardRef<VideoPlayerHandle, VideoPlayerProps>
                           e.stopPropagation();
                           openRelatedDrawer();
                         }}
-                        className="flex items-center gap-2 text-white/60 hover:text-white transition-all font-['Outfit'] font-black uppercase tracking-widest text-sm"
+                        className="flex items-center gap-2 text-white/60 hover:text-white transition-colors font-['Outfit'] font-black uppercase tracking-widest text-sm"
                       >
                          <ChevronDown size={20} className="rotate-180" />
                          Similares
@@ -2282,7 +2897,7 @@ export const VideoPlayer = React.forwardRef<VideoPlayerHandle, VideoPlayerProps>
                     {nextEpisode && (
                       <button 
                         onClick={(e) => { e.stopPropagation(); onPlayNextEpisode?.(); }}
-                        className="flex items-center gap-3 bg-white text-black px-8 py-3 rounded-xl transition-all shadow-xl active:scale-95 font-['Outfit']"
+                        className="flex items-center gap-3 bg-white text-black px-8 py-3 rounded-xl transition-transform shadow-xl active:scale-95 font-['Outfit']"
                       >
                         <FastForward size={22} fill="black" />
                         <span className="text-sm font-black uppercase tracking-wider">Próximo Episódio</span>
@@ -2295,56 +2910,46 @@ export const VideoPlayer = React.forwardRef<VideoPlayerHandle, VideoPlayerProps>
         )}
 
         {/* Settings Overlay */}
-        <AnimatePresence>
-          {isSettingsOpen && (
-            <motion.div 
-              initial={{ opacity: 0, scale: 0.95 }}
-              animate={{ opacity: 1, scale: 1 }}
-              exit={{ opacity: 0, scale: 0.95 }}
-              className="absolute top-24 right-8 z-[70] bg-black/90 backdrop-blur-3xl border border-white/10 p-6 rounded-3xl w-72 shadow-2xl"
-              onClick={(e) => e.stopPropagation()}
-            >
-               <h4 className="text-white font-black uppercase tracking-[0.2em] text-[10px] mb-6 border-b border-white/10 pb-4">Configurações de Vídeo</h4>
-               
-               <div className="flex flex-col gap-4">
-                  <div className="flex flex-col gap-2">
-                     <span className="text-white/40 text-[10px] font-black uppercase tracking-widest">Enquadramento</span>
-                     <div className="grid grid-cols-3 gap-2">
-                        {(['fit', 'fill', 'zoom'] as const).map(scale => (
-                          <button
-                            key={scale}
-                            onClick={() => setVideoScale(scale)}
-                            className={`py-2 rounded-lg text-[10px] font-black uppercase transition-all ${videoScale === scale ? 'bg-red-600 text-white' : 'bg-white/5 text-white/40 border border-white/5'}`}
-                          >
-                            {scale === 'fit' ? 'Ajustar' : scale === 'fill' ? 'Preencher' : 'Zoom'}
-                          </button>
-                        ))}
-                     </div>
-                  </div>
+        {isSettingsOpen && (
+          <div 
+            className="absolute top-24 right-8 z-[70] bg-zinc-900/98 border border-white/10 p-6 rounded-3xl w-72 shadow-2xl animate-spring-zoom"
+            onClick={(e) => e.stopPropagation()}
+          >
+             <h4 className="text-white font-black uppercase tracking-[0.2em] text-[10px] mb-6 border-b border-white/10 pb-4">Configurações de Vídeo</h4>
+             
+             <div className="flex flex-col gap-4">
+                <div className="flex flex-col gap-2">
+                   <span className="text-white/40 text-[10px] font-black uppercase tracking-widest">Enquadramento</span>
+                   <div className="grid grid-cols-3 gap-2">
+                      {(['fit', 'fill', 'zoom'] as const).map(scale => (
+                        <button
+                          key={scale}
+                          onClick={() => setVideoScale(scale)}
+                          className={`py-2 rounded-lg text-[10px] font-black uppercase transition-colors ${videoScale === scale ? 'bg-red-600 text-white' : 'bg-white/5 text-white/40 border border-white/5'}`}
+                        >
+                          {scale === 'fit' ? 'Ajustar' : scale === 'fill' ? 'Preencher' : 'Zoom'}
+                        </button>
+                      ))}
+                   </div>
+                </div>
 
-                  <button 
-                    onClick={() => setShowDiagnostic(true)}
-                    className="mt-4 flex items-center justify-between w-full p-3 bg-white/5 rounded-xl border border-white/5 hover:bg-white/10 transition-all"
-                  >
-                    <span className="text-white text-xs font-bold font-['Outfit']">Diagnóstico de Rede</span>
-                    <Activity size={16} className="text-white/40" />
-                  </button>
-               </div>
-            </motion.div>
-          )}
-        </AnimatePresence>
+                <button 
+                  onClick={() => setShowDiagnostic(true)}
+                  className="mt-4 flex items-center justify-between w-full p-3 bg-white/5 rounded-xl border border-white/5 hover:bg-white/10 transition-colors"
+                >
+                  <span className="text-white text-xs font-bold font-['Outfit']">Diagnóstico de Rede</span>
+                  <Activity size={16} className="text-white/40" />
+                </button>
+             </div>
+          </div>
+        )}
 
         {/* Related Titles Drawer */}
-        <AnimatePresence>
-          {isRelatedVisible && (
-            <motion.div
-              initial={{ y: '100%' }}
-              animate={{ y: 0 }}
-              exit={{ y: '100%' }}
-              transition={{ type: 'spring', damping: 25, stiffness: 200 }}
-              className="absolute inset-x-0 bottom-0 z-[80] h-[45vh] bg-black/95 backdrop-blur-3xl border-t border-white/10 p-8"
-              onClick={(e) => e.stopPropagation()}
-            >
+        {isRelatedVisible && (
+          <div
+            className="absolute inset-x-0 bottom-0 z-[80] h-[45vh] bg-zinc-900/98 border-t border-white/10 p-8 animate-spring-up"
+            onClick={(e) => e.stopPropagation()}
+          >
                <div className="flex items-center justify-between mb-8">
                   <div className="flex flex-col">
                     <h3 className="text-2xl font-black text-white font-['Outfit'] uppercase tracking-tight">Títulos Semelhantes</h3>
@@ -2352,7 +2957,7 @@ export const VideoPlayer = React.forwardRef<VideoPlayerHandle, VideoPlayerProps>
                   </div>
                   <button 
                     onClick={() => setIsRelatedVisible(false)}
-                    className="p-3 rounded-full bg-white/5 hover:bg-white/10 transition-all border border-white/10"
+                    className="p-3 rounded-full bg-white/5 hover:bg-white/10 transition-colors border border-white/10"
                   >
                     <X size={24} className="text-white" />
                   </button>
@@ -2388,15 +2993,14 @@ export const VideoPlayer = React.forwardRef<VideoPlayerHandle, VideoPlayerProps>
                     </div>
                   )}
                </div>
-            </motion.div>
-          )}
-        </AnimatePresence>
+          </div>
+        )}
 
         {/* Channel Browser Sidebar (Live TV) */}
         {canShowChannelBrowser && isChannelBrowserOpen && (
           <>
             <div
-              className="absolute left-0 top-0 z-[100] h-full w-[520px] max-w-[76vw] overflow-hidden border-r border-white/10 bg-black/85 backdrop-blur-3xl animate-in slide-in-from-left duration-300"
+              className="absolute left-0 top-0 z-[100] h-full w-[520px] max-w-[76vw] overflow-hidden border-r border-white/10 bg-zinc-900/98 animate-in slide-in-from-left duration-300"
               onClick={(event) => event.stopPropagation()}
             >
               <div className="flex items-center justify-between border-b border-white/10 bg-black/50 px-6 py-6">
@@ -2422,7 +3026,7 @@ export const VideoPlayer = React.forwardRef<VideoPlayerHandle, VideoPlayerProps>
                           setChannelGroupId(category.id);
                           setChannelSearchQuery('');
                         }}
-                        className="mb-2 w-full rounded-xl px-4 py-3 text-left text-[11px] font-black uppercase tracking-wide transition-all font-['Outfit']"
+                        className="mb-2 w-full rounded-xl px-4 py-3 text-left text-[11px] font-black uppercase tracking-wide transition-colors font-['Outfit']"
                         style={{
                           color: selected ? '#fff' : 'rgba(255,255,255,0.5)',
                           background: selected ? 'rgba(229,9,20,0.3)' : 'transparent',
@@ -2441,7 +3045,7 @@ export const VideoPlayer = React.forwardRef<VideoPlayerHandle, VideoPlayerProps>
                       value={channelSearchQuery}
                       onChange={(event) => setChannelSearchQuery(event.target.value)}
                       placeholder="Buscar canal..."
-                      className="w-full rounded-xl border border-white/10 bg-white/5 px-4 py-4 text-sm font-black text-white outline-none focus:border-red-500/50 transition-all font-['Outfit']"
+                      className="w-full rounded-xl border border-white/10 bg-white/5 px-4 py-4 text-sm font-black text-white outline-none focus:border-red-500/50 transition-colors font-['Outfit']"
                     />
                   </div>
                   <div ref={channelListContainerRef} className="min-h-0 flex-1 overflow-y-auto pr-1 scrollbar-hide">
@@ -2456,7 +3060,7 @@ export const VideoPlayer = React.forwardRef<VideoPlayerHandle, VideoPlayerProps>
                             onZap?.(channel);
                             setIsChannelBrowserOpen(false);
                           }}
-                          className="mb-3 w-full rounded-2xl px-4 py-4 text-left transition-all hover:scale-[1.02] active:scale-98"
+                          className="mb-3 w-full rounded-2xl px-4 py-4 text-left transition-transform hover:scale-[1.02] active:scale-98"
                           style={{
                             background: selected ? 'linear-gradient(45deg, rgba(229,9,20,0.2), rgba(229,9,20,0.05))' : 'rgba(255,255,255,0.03)',
                             border: selected ? '1px solid rgba(229,9,20,0.4)' : '1px solid rgba(255,255,255,0.08)',

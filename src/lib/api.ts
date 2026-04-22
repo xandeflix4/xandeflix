@@ -1,5 +1,5 @@
 import { Capacitor, CapacitorHttp } from '@capacitor/core';
-import { Filesystem, Directory } from '@capacitor/filesystem';
+import { Filesystem, Directory, Encoding } from '@capacitor/filesystem';
 
 const DEFAULT_REMOTE_TIMEOUT_MS = 120000;
 
@@ -113,6 +113,7 @@ export interface RemoteTextOptions {
 export async function prepareRemoteTextStreamSource(
   targetUrl: string,
   options?: RemoteTextOptions,
+  onProgress?: (message: string) => void,
 ): Promise<RemoteTextStreamSource> {
   const timeoutMs = options?.timeoutMs ?? DEFAULT_REMOTE_TIMEOUT_MS;
   const customHeaders = headersToRecord(options?.headers);
@@ -171,43 +172,134 @@ export async function prepareRemoteTextStreamSource(
     const currentTimeoutMs = Math.max(timeoutMs - elapsedTotalMs, 60000);
 
     try {
-      console.log(`[Fetch] Tentativa ${i + 1}/${attempts.length}: '${attempt.name}' para stream local...`);
+      const msg = `[HTTP] Tentativa ${i + 1}/${attempts.length} (${attempt.name})...`;
+      console.log(`[Fetch] ${msg}`);
+      onProgress?.(msg);
+      
+      console.log(`[Fetch] Iniciando download nativo: ${targetUrl.substring(0, 50)}...`);
       await withRequestTimeout(
         Filesystem.downloadFile({
           url: targetUrl,
           headers: attempt.headers,
           path: tempPath,
-          directory: Directory.Cache,
+          directory: Directory.Data,
           connectTimeout: currentTimeoutMs,
           readTimeout: currentTimeoutMs,
         }),
         currentTimeoutMs,
       );
 
+      console.log(`[Fetch] Download concluído com sucesso.`);
+
       const uriResult = await Filesystem.getUri({
         path: tempPath,
-        directory: Directory.Cache,
+        directory: Directory.Data,
       });
 
       return {
         streamUrl: Capacitor.convertFileSrc(uriResult.uri),
         cleanup: async () => {
           try {
-            await Filesystem.deleteFile({ path: tempPath, directory: Directory.Cache });
+            await Filesystem.deleteFile({ path: tempPath, directory: Directory.Data });
           } catch {
             // ignore cleanup failures
           }
         },
       };
     } catch (error) {
+      const details = error instanceof Error ? error.message : 'erro desconhecido';
+      const errorMsg = `[HTTP] Falha ${i + 1}/3: ${details}`;
+      console.warn(`[Fetch] ${errorMsg}`);
+      onProgress?.(errorMsg);
       lastError = error;
-      if (!shouldRetryWithAlternateHeaders) {
-        break;
-      }
-      if (i === attempts.length - 1) {
-        break;
-      }
     }
+  }
+
+  // FALLBACK NATIVO 2: Se o Filesystem falhou (I/O ou Rede), tentamos CapacitorHttp (Native Bridge)
+  // Isso usa o cliente OkHttp nativo do Android, que é mais resiliente que o WebView.
+  try {
+    const msgCapHttp = `[HTTP] Tentando motor nativo alternativo...`;
+    onProgress?.(msgCapHttp);
+
+    const capResponse = await withRequestTimeout(
+      CapacitorHttp.get({
+        url: targetUrl,
+        headers: { ...WEB_IPTV_HEADERS, ...customHeaders },
+        connectTimeout: 45000,
+        readTimeout: 45000,
+      }),
+      45000,
+    );
+
+    if (capResponse.status === 200 && capResponse.data) {
+      // Se chegamos aqui, o download funcionou mas o arquivo está na memória (string)
+      // Vamos salvar no disco para o worker ler (o CapacitorHttp lida melhor com strings grandes que o WebView)
+      const tempPathCap = `cap_playlist_${Date.now()}.m3u`;
+      await Filesystem.writeFile({
+        path: tempPathCap,
+        data: capResponse.data,
+        directory: Directory.Data,
+        encoding: Encoding.UTF8,
+      });
+
+      const uriResult = await Filesystem.getUri({
+        path: tempPathCap,
+        directory: Directory.Data,
+      });
+
+      return {
+        streamUrl: Capacitor.convertFileSrc(uriResult.uri),
+        cleanup: async () => {
+          try {
+            await Filesystem.deleteFile({ path: tempPathCap, directory: Directory.Data });
+          } catch { /* ignore */ }
+        },
+      };
+    }
+  } catch (error) {
+    console.warn('[Fetch] CapacitorHttp também falhou:', error);
+  }
+
+  // FALLBACK FINAL: XMLHttpRequest (XHR) - A tecnologia mais compatível para aparelhos antigos/TVs.
+  // O fetch moderno pode travar em alguns WebViews de Firesticks.
+  try {
+    const msgXhr = `[HTTP] Usando motor de compatibilidade (XHR)...`;
+    onProgress?.(msgXhr);
+
+    return await new Promise<RemoteTextStreamSource>((resolve, reject) => {
+      const xhr = new XMLHttpRequest();
+      xhr.open('GET', targetUrl, true);
+      xhr.responseType = 'blob';
+      xhr.timeout = timeoutMs;
+
+      // Aplicar headers manualmente
+      Object.entries({ ...WEB_IPTV_HEADERS, ...customHeaders }).forEach(([k, v]) => {
+        xhr.setRequestHeader(k, v);
+      });
+
+      xhr.onload = () => {
+        if (xhr.status === 200) {
+          const blob = xhr.response;
+          const blobUrl = URL.createObjectURL(blob);
+          resolve({
+            streamUrl: blobUrl,
+            cleanup: async () => {
+              URL.revokeObjectURL(blobUrl);
+            },
+          });
+        } else {
+          reject(new Error(`XHR falhou com status ${xhr.status}`));
+        }
+      };
+
+      xhr.onerror = () => reject(new Error('Erro de rede no motor XHR.'));
+      xhr.ontimeout = () => reject(new Error(`Tempo limite excedido no motor XHR (${timeoutMs}ms).`));
+      xhr.send();
+    });
+  } catch (error) {
+    const details = error instanceof Error ? error.message : 'erro desconhecido';
+    console.error('[Fetch] XHR Fallback também falhou:', details);
+    onProgress?.(`[HTTP] Erro no motor XHR: ${details}`);
   }
 
   throw lastError instanceof Error ? lastError : new Error('Falha ao preparar stream remoto para parser.');
@@ -257,7 +349,7 @@ export async function fetchRemoteText(
           url: targetUrl,
           headers,
           path: 'temp_playlist.m3u',
-          directory: Directory.Cache,
+          directory: Directory.Data,
           connectTimeout: attemptTimeoutMs,
           readTimeout: attemptTimeoutMs,
         }),
@@ -269,7 +361,7 @@ export async function fetchRemoteText(
         // Find the native path on Android and convert to a Capacitor Webview URI.
         const uriResult = await Filesystem.getUri({
           path: 'temp_playlist.m3u',
-          directory: Directory.Cache
+          directory: Directory.Data
         });
 
         // The webview wrapper URL looks like "capacitor://localhost/_capacitor_file_/..."

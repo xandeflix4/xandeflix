@@ -37,6 +37,7 @@ type WorkerRuntime = {
   batchSize: number;
   totalLoaded: number;
   currentItemAttributes: Partial<Media> | null;
+  pendingHeaderHints: Record<string, string>;
   lineNumber: number;
   epgUrl: string | null;
   firstNonEmptySeen: boolean;
@@ -89,6 +90,62 @@ function extractEpgUrl(line: string): string | null {
   if (!line.toUpperCase().startsWith('#EXTM3U')) return null;
   const match = line.match(/\burl-tvg=(?:"([^"]+)"|'([^']+)'|([^\s]+))/i);
   return (match?.[1] || match?.[2] || match?.[3] || '').trim() || null;
+}
+
+function normalizeHeaderHintName(rawName: string): string {
+  const key = String(rawName || '')
+    .trim()
+    .replace(/^['"]|['"]$/g, '')
+    .replace(/_/g, '-')
+    .toLowerCase();
+
+  if (!key) return '';
+  if (key === 'user-agent' || key === 'http-user-agent') return 'User-Agent';
+  if (key === 'referer' || key === 'referrer' || key === 'http-referer' || key === 'http-referrer') return 'Referer';
+  if (key === 'origin' || key === 'http-origin') return 'Origin';
+  if (key === 'cookie' || key === 'http-cookie') return 'Cookie';
+  if (key === 'authorization' || key === 'http-authorization') return 'Authorization';
+
+  return key
+    .split('-')
+    .map((segment) => (segment ? `${segment[0].toUpperCase()}${segment.slice(1)}` : segment))
+    .join('-');
+}
+
+function parseHeaderHintLine(line: string): { name: string; value: string } | null {
+  const prefixIndex = line.indexOf(':');
+  if (prefixIndex < 0) return null;
+
+  const payload = line.slice(prefixIndex + 1).trim();
+  if (!payload) return null;
+
+  const equalsIndex = payload.indexOf('=');
+  if (equalsIndex <= 0) return null;
+
+  const rawName = payload.slice(0, equalsIndex).trim();
+  const rawValue = payload.slice(equalsIndex + 1).trim().replace(/^['"]|['"]$/g, '');
+  if (!rawValue) return null;
+
+  const name = normalizeHeaderHintName(rawName);
+  if (!name) return null;
+
+  return { name, value: rawValue };
+}
+
+function appendHeaderHintsToUrl(rawUrl: string, headers: Record<string, string>): string {
+  const entries = Object.entries(headers);
+  if (entries.length === 0) return rawUrl;
+
+  const serialized = entries
+    .map(([name, value]) => `${encodeURIComponent(name)}=${encodeURIComponent(value)}`)
+    .join('&');
+  if (!serialized) return rawUrl;
+
+  if (rawUrl.includes('|')) {
+    return `${rawUrl}&${serialized}`;
+  }
+
+  return `${rawUrl}|${serialized}`;
 }
 
 function normalizeStreamType(streamUrl: string, fallbackType: MediaType): MediaType {
@@ -254,12 +311,23 @@ function processLine(runtime: WorkerRuntime, rawLine: string): boolean {
   if (line.toUpperCase().startsWith('#EXTINF')) {
     const { attributes, name } = extractExtinfPayload(line);
     runtime.currentItemAttributes = M3UParser.parseAttributes(attributes, name, runtime.lineNumber);
+    runtime.pendingHeaderHints = {};
+    return true;
+  }
+
+  if ((line.toUpperCase().startsWith('#EXTVLCOPT:') || line.toUpperCase().startsWith('#KODIPROP:')) && runtime.currentItemAttributes) {
+    const parsedHeader = parseHeaderHintLine(line);
+    if (parsedHeader) {
+      runtime.pendingHeaderHints[parsedHeader.name] = parsedHeader.value;
+    }
     return true;
   }
 
   if (line.startsWith('http') && runtime.currentItemAttributes) {
-    encodeChannelTuple(runtime, runtime.currentItemAttributes, line);
+    const finalStreamUrl = appendHeaderHintsToUrl(line, runtime.pendingHeaderHints);
+    encodeChannelTuple(runtime, runtime.currentItemAttributes, finalStreamUrl);
     runtime.currentItemAttributes = null;
+    runtime.pendingHeaderHints = {};
   }
   
   return true;
@@ -381,6 +449,7 @@ function createRuntime(batchSize: number): WorkerRuntime {
     batchSize,
     totalLoaded: 0,
     currentItemAttributes: null,
+    pendingHeaderHints: {},
     lineNumber: 0,
     epgUrl: null,
     firstNonEmptySeen: false,
