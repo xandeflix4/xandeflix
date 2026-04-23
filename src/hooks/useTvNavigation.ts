@@ -159,14 +159,18 @@ const emitFocusedId = (id: string | null) => {
 };
 
 const getFirstNavigableNode = (): NavNode | null => {
-  for (const node of navNodes.values()) {
+  const allNodes = Array.from(navNodes.values());
+  const validNodes = allNodes.filter((node) => {
     const ref = resolveNodeRef(node);
-    if (ref && !ref.closest('[aria-hidden="true"]')) {
-      return node;
-    }
-  }
+    return ref && !ref.closest('[aria-hidden="true"]');
+  });
 
-  return null;
+  // Prefer main content over sidebar menus and modals
+  const preferredNode = validNodes.find(
+    (node) => !node.id.startsWith('menu-') && !node.id.startsWith('exit-') && !node.id.startsWith('details-')
+  );
+
+  return preferredNode || validNodes[0] || null;
 };
 
 const focusNode = (
@@ -665,6 +669,7 @@ export const useTvNavigation = (options?: { onBack?: () => void; isActive?: bool
       let minDistance = Infinity;
 
       const currentSection = currentNode.section;
+      const isCurrentModalSection = String(currentSection || '').startsWith('modal');
       for (const node of navNodes.values()) {
         if (node.id === currentFocusedId) continue;
 
@@ -672,8 +677,11 @@ export const useTvNavigation = (options?: { onBack?: () => void; isActive?: bool
         // Isso evita chamar getBoundingClientRect() em centenas de nós fora da viewport.
         const isMenuTransition = (key === 'ArrowLeft' && node.section === 'menu') || (currentSection === 'menu' && key === 'ArrowRight');
         const isHeroTransition = (key === 'ArrowUp' && node.section === 'hero') || (currentSection === 'hero' && key === 'ArrowDown');
+        const isModalTransition =
+          isCurrentModalSection
+          && String(node.section || '').startsWith('modal');
         
-        if (node.section !== currentSection && !isMenuTransition && !isHeroTransition) {
+        if (node.section !== currentSection && !isMenuTransition && !isHeroTransition && !isModalTransition) {
           continue;
         }
 

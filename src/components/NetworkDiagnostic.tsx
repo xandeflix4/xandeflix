@@ -1,7 +1,6 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { View, Text, TouchableHighlight, StyleSheet, ScrollView, ActivityIndicator } from 'react-native';
 import { Wifi, WifiOff, Globe, Signal, AlertTriangle, CheckCircle2, XCircle, Search, RefreshCw, X } from 'lucide-react';
-import { useStore } from '../store/useStore';
 
 interface DiagnosticResult {
   title: string;
@@ -15,7 +14,34 @@ export const NetworkDiagnostic: React.FC<{ onClose: () => void, testUrl?: string
   const [results, setResults] = useState<DiagnosticResult[]>([]);
   const [isRunning, setIsRunning] = useState(false);
   const [logs, setLogs] = useState<string[]>([]);
-  const isTvMode = useStore((state) => state.isTvMode);
+  const [viewportWidth, setViewportWidth] = useState(() =>
+    typeof window !== 'undefined' ? window.innerWidth : 1920,
+  );
+  const isCompactViewport = viewportWidth < 1280;
+  const isStackedViewport = viewportWidth < 980;
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const updateViewport = () => setViewportWidth(window.innerWidth);
+    updateViewport();
+    window.addEventListener('resize', updateViewport);
+    return () => window.removeEventListener('resize', updateViewport);
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      const keyCode = (event as KeyboardEvent & { keyCode?: number; which?: number }).keyCode
+        ?? (event as KeyboardEvent & { which?: number }).which
+        ?? 0;
+      const isBack = event.key === 'Escape' || event.key === 'Back' || keyCode === 4;
+      if (!isBack) return;
+      event.preventDefault();
+      onClose();
+    };
+    window.addEventListener('keydown', onKeyDown, true);
+    return () => window.removeEventListener('keydown', onKeyDown, true);
+  }, [onClose]);
 
   const addLog = (msg: string) => {
     setLogs(prev => [`[${new Date().toLocaleTimeString()}] ${msg}`, ...prev]);
@@ -117,11 +143,47 @@ export const NetworkDiagnostic: React.FC<{ onClose: () => void, testUrl?: string
   }, [runDiagnostics]);
 
   return (
-    <View style={styles.overlay}>
-      <View style={styles.modal}>
-        <View style={styles.header}>
+    <View
+      style={[
+        styles.overlay,
+        isStackedViewport ? { padding: 16 } : isCompactViewport ? { padding: 24 } : null,
+      ]}
+    >
+      <View
+        style={[
+          styles.modal,
+          isCompactViewport
+            ? {
+                maxWidth: isStackedViewport ? undefined : 760,
+                height: isStackedViewport ? '92%' : '84%',
+              }
+            : null,
+        ]}
+      >
+        <View
+          style={[
+            styles.header,
+            isCompactViewport
+              ? {
+                  padding: isStackedViewport ? 20 : 28,
+                  paddingBottom: 14,
+                  flexWrap: 'wrap' as any,
+                  rowGap: 12,
+                }
+              : null,
+          ]}
+        >
           <View>
-            <Text style={styles.title}>Diagnóstico de Rede e Sinal</Text>
+            <Text
+              style={[
+                styles.title,
+                isCompactViewport
+                  ? { fontSize: isStackedViewport ? 18 : 22, letterSpacing: -0.3 }
+                  : null,
+              ]}
+            >
+              Diagnóstico de Rede e Sinal
+            </Text>
             <Text style={styles.subtitle}>Verificando integridade da conexão do Xandeflix</Text>
           </View>
           <TouchableHighlight 
@@ -136,17 +198,36 @@ export const NetworkDiagnostic: React.FC<{ onClose: () => void, testUrl?: string
           </TouchableHighlight>
         </View>
 
-        <View style={styles.content}>
-          <View style={styles.statusList}>
+        <View
+          style={[
+            styles.content,
+            isStackedViewport
+              ? { flexDirection: 'column' as any, padding: 20, paddingTop: 14, gap: 16 }
+              : isCompactViewport
+              ? { padding: 24, paddingTop: 14, gap: 20 }
+              : null,
+          ]}
+        >
+          <ScrollView
+            style={styles.statusList}
+            contentContainerStyle={{ paddingBottom: 8 }}
+            showsVerticalScrollIndicator={false}
+          >
             <Text style={styles.sectionTitle}>Status do Sistema</Text>
             {results.map((res, i) => (
-              <View key={i} style={styles.resultItem}>
+              <View
+                key={i}
+                style={[
+                  styles.resultItem,
+                  isCompactViewport ? { padding: 14, marginBottom: 10, borderRadius: 14 } : null,
+                ]}
+              >
                 <View style={[styles.iconContainer, (styles as any)[`icon_${res.status}`]]}>
                   <res.icon size={20} color={res.status === 'success' ? '#4ade80' : res.status === 'error' ? '#f87171' : '#fbbf24'} />
                 </View>
                 <View style={styles.resultText}>
-                  <Text style={styles.resultTitle}>{res.title}</Text>
-                  <Text style={styles.resultMessage}>{res.message}</Text>
+                  <Text style={[styles.resultTitle, isCompactViewport ? { fontSize: 13 } : null]}>{res.title}</Text>
+                  <Text style={[styles.resultMessage, isCompactViewport ? { fontSize: 11 } : null]}>{res.message}</Text>
                 </View>
                 {res.status === 'success' ? <CheckCircle2 size={18} color="#4ade80" /> : <XCircle size={18} color="#f87171" />}
               </View>
@@ -170,9 +251,15 @@ export const NetworkDiagnostic: React.FC<{ onClose: () => void, testUrl?: string
                 <Text style={styles.retryButtonText}>Repetir Testes</Text>
               </View>
             </TouchableHighlight>
-          </View>
+          </ScrollView>
 
-          <View style={styles.logContainer}>
+          <View
+            style={[
+              styles.logContainer,
+              isStackedViewport ? { minHeight: 190, maxHeight: 240, padding: 16 } : null,
+              !isStackedViewport && isCompactViewport ? { padding: 18 } : null,
+            ]}
+          >
             <Text style={styles.sectionTitle}>Logs em Tempo Real</Text>
             <ScrollView style={styles.logScroll}>
               {logs.map((log, i) => (
@@ -183,7 +270,7 @@ export const NetworkDiagnostic: React.FC<{ onClose: () => void, testUrl?: string
           </View>
         </View>
 
-        <View style={styles.footer}>
+        <View style={[styles.footer, isCompactViewport ? { padding: 20, paddingTop: 0 } : null]}>
           <View style={styles.infoBox}>
             <AlertTriangle size={16} color="#fbbf24" />
             <Text style={styles.infoText}>

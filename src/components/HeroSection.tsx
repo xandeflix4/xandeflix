@@ -222,6 +222,7 @@ export const HeroSection: React.FC<HeroSectionProps> = React.memo(({
   const trailerUrl = shouldPlayTrailer
     ? `https://www.youtube.com/embed/${embeddableTrailerKey}?autoplay=1&mute=0&controls=0&modestbranding=1&loop=1&playlist=${embeddableTrailerKey}&playsinline=1&rel=0&iv_load_policy=3&fs=0&enablejsapi=1${trailerOrigin}`
     : '';
+  const trailerReady = shouldPlayTrailer && trailerStatus === 'ready';
 
   const viewportWidth = Math.max(layout.contentMaxWidth || layout.width, layout.width);
   const baseHeroHeight = Math.round(
@@ -235,7 +236,7 @@ export const HeroSection: React.FC<HeroSectionProps> = React.memo(({
   const contentWidth = isTvProfile ? '32%' : Math.min(760, viewportWidth * 0.68);
 
   const sideMenuOffset = shouldRenderSideMenu ? layout.sideRailCollapsedWidth : 0;
-  const horizontalPadding = isTvProfile ? (isCompactHero ? 34 : 52) : (26 + sideMenuOffset);
+  const horizontalPadding = isTvProfile ? (isCompactHero ? 34 : 52) : 26;
   const bottomPadding = isTvProfile ? (isCompactHero ? 18 : 24) : 24;
   const titleSize = isTvProfile
     ? (isCompactHero ? 16 : Math.max(18, Math.min(22, Math.round(viewportWidth * 0.014))))
@@ -296,7 +297,8 @@ export const HeroSection: React.FC<HeroSectionProps> = React.memo(({
       onTouchStart={handleTouchStart as any}
       onTouchEnd={handleTouchEnd as any}
       style={{
-        width: '100%',
+        width: (sideMenuOffset > 0 ? `calc(100% - ${sideMenuOffset}px)` : '100%') as any,
+        marginLeft: sideMenuOffset,
         height: heroHeight,
         minHeight: heroHeight,
         position: 'relative',
@@ -325,9 +327,9 @@ export const HeroSection: React.FC<HeroSectionProps> = React.memo(({
                   width: '100%',
                   height: '100%',
                   objectFit: 'cover',
-                  objectPosition: 'center 24%',
-                  opacity: shouldPlayTrailer && trailerStatus === 'ready' ? 0 : 0.96, // Fim do ghosting
-                  transition: 'opacity 600ms ease',
+                  objectPosition: 'center top',
+                  opacity: trailerReady ? 0.08 : 1,
+                  transition: 'opacity 760ms ease',
                 }}
               />
             ) : (
@@ -341,42 +343,48 @@ export const HeroSection: React.FC<HeroSectionProps> = React.memo(({
             )}
  
             {shouldPlayTrailer && trailerStatus !== 'failed' && (
-              <div 
+              <div
                 style={{
                   position: 'absolute',
                   top: 0,
+                  bottom: 0,
+                  left: 0,
                   right: 0,
-                  width: layout.isMobile ? '100%' : '65%', // Levemente maior para compensar o feathering longo
-                  height: '100%',
+                  width: '100%',
                   zIndex: 5,
                   overflow: 'hidden',
-                  // Mascara complexa para suavizar Esquerda, Topo e Fundo simultaneamente
-                  maskImage: layout.isMobile 
-                    ? 'none' 
-                    : 'linear-gradient(to right, transparent 0%, rgba(0,0,0,0.05) 5%, rgba(0,0,0,0.4) 20%, rgba(0,0,0,0.85) 45%, black 70%), linear-gradient(to bottom, transparent 0%, black 15%, black 85%, transparent 100%)',
-                  WebkitMaskImage: layout.isMobile 
-                    ? 'none' 
-                    : 'linear-gradient(to right, transparent 0%, rgba(0,0,0,0.05) 5%, rgba(0,0,0,0.4) 20%, rgba(0,0,0,0.85) 45%, black 70%), linear-gradient(to bottom, transparent 0%, black 15%, black 85%, transparent 100%)',
-                  maskComposite: 'intersect',
-                  WebkitMaskComposite: 'source-in',
+                  isolation: 'isolate',
                 }}
               >
                 <iframe
                   ref={trailerIframeRef}
                   src={trailerUrl}
+                  allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
+                  allowFullScreen={false}
                   style={{
                     width: '100%',
                     height: '100%',
                     border: 'none',
                     pointerEvents: 'none',
-                    opacity: trailerStatus === 'ready' ? 1 : 0,
-                    transition: 'opacity 650ms ease',
-                    transform: layout.isTvProfile ? 'scale(1.2)' : 'scale(1.15)',
-                    transformOrigin: 'right center',
+                    opacity: trailerReady ? 1 : 0,
+                    transition: 'opacity 760ms ease',
+                    transform: layout.isTvProfile ? 'scale(1.08)' : 'scale(1.04)',
+                    transformOrigin: 'left center',
                   }}
                   onLoad={() => setTrailerStatus('ready')}
                   onError={() => setTrailerStatus('failed')}
                   title={`Trailer de ${displayData.title}`}
+                />
+                <div
+                  aria-hidden
+                  style={{
+                    position: 'absolute',
+                    inset: 0,
+                    pointerEvents: 'none',
+                    opacity: trailerReady ? 1 : 0,
+                    transition: 'opacity 760ms ease',
+                    background: 'linear-gradient(to right, rgba(5,5,5,0.96) 0%, rgba(5,5,5,0.72) 16%, rgba(5,5,5,0.22) 36%, transparent 52%)',
+                  }}
                 />
               </div>
             )}
@@ -385,20 +393,20 @@ export const HeroSection: React.FC<HeroSectionProps> = React.memo(({
       </div>
  
       <div className="absolute inset-0 z-10 pointer-events-none">
-        {/* Gradiente Vertical (Bottom-up): Apenas na faixa inferior para legibilidade dos textos */}
+        {/* Gradiente Vertical (Bottom-up) */}
         <div style={{
           position: 'absolute',
           inset: 0,
           background: 'linear-gradient(to top, #050505 0%, rgba(5,5,5,0.95) 8%, rgba(5,5,5,0.6) 22%, rgba(5,5,5,0.08) 42%, transparent 100%)'
         }} />
-        {/* Gradiente Horizontal (Left-to-right): Contido à faixa de texto esquerda */}
+        {/* Gradiente Horizontal (Left-to-right) intenso para garantir fundo escuro para o texto */}
         <div style={{
           position: 'absolute',
           left: 0,
           top: 0,
           bottom: 0,
-          width: '50%',
-          background: 'linear-gradient(to right, rgba(5,5,5,0.92) 0%, rgba(5,5,5,0.7) 30%, rgba(5,5,5,0.2) 70%, transparent 100%)'
+          width: '65%',
+          background: 'linear-gradient(to right, #050505 0%, rgba(5,5,5,0.98) 25%, rgba(5,5,5,0.6) 55%, transparent 100%)'
         }} />
       </div>
 

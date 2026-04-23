@@ -10,6 +10,7 @@ import { useTvNavigation } from '../hooks/useTvNavigation';
 import { NetworkDiagnostic } from './NetworkDiagnostic';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import { DISK_CATEGORY_PAGE_SIZE, useDiskCategory } from '../hooks/useDiskCategory';
+import { getChannelCountByCategory } from '../lib/db';
 
 interface LiveItemThumbnailProps {
   uri: string;
@@ -38,6 +39,7 @@ interface LiveTVGridProps {
   externalMedia?: Media | null;
   isGlobalPlayerActive?: boolean;
   section?: string;
+  isCatalogSyncing?: boolean;
 }
 
 const ChannelProgramDisplay = React.memo(({ 
@@ -70,7 +72,15 @@ type LivePreviewPoolEntry = {
 
 // Virtualizer substituído em favor de FlatList NATIVA do React para consertar pulo-duplo direcional em Engine legada.
 
-export const LiveTVGrid: React.FC<LiveTVGridProps> = ({ categories, onPlayFull, layout, externalMedia, isGlobalPlayerActive, section = 'live' }) => {
+export const LiveTVGrid: React.FC<LiveTVGridProps> = ({
+  categories,
+  onPlayFull,
+  layout,
+  externalMedia,
+  isGlobalPlayerActive,
+  section = 'live',
+  isCatalogSyncing = false,
+}) => {
   const favorites = useStore((state) => state.favorites);
   const epgData = useStore((state) => state.epgData);
   const setSelectedCategoryName = useStore((state) => state.setSelectedCategoryName);
@@ -112,10 +122,15 @@ export const LiveTVGrid: React.FC<LiveTVGridProps> = ({ categories, onPlayFull, 
   const [focusedGroupIndex, setFocusedGroupIndex] = useState(0);
   const [focusedChannelIndex, setFocusedChannelIndex] = useState(0);
   const [showDiagnostic, setShowDiagnostic] = useState(false);
+  const [diskReloadToken, setDiskReloadToken] = useState(0);
+  const [categoryCounts, setCategoryCounts] = useState<Record<string, number>>({});
   const previewFailureCountRef = useRef(0);
   const previewTriedKeysRef = useRef<Set<string>>(new Set());
+  const previewArmRef = useRef<{ mediaId: string | null; armedAt: number }>({ mediaId: null, armedAt: 0 });
+  const previewActivationGuardRef = useRef<{ mediaId: string | null; at: number }>({ mediaId: null, at: 0 });
+  const hasAppliedInitialFocusRef = useRef(false);
+  const wasCatalogSyncingRef = useRef<boolean>(Boolean(isCatalogSyncing));
   const groupsListRef = useRef<HTMLDivElement | null>(null);
-  const channelsListRef = useRef<HTMLDivElement | null>(null);
   const selectedCategory = useMemo(
     () => liveCategories.find((c) => c.id === selectedCatId) || null,
     [liveCategories, selectedCatId],
@@ -199,6 +214,7 @@ export const LiveTVGrid: React.FC<LiveTVGridProps> = ({ categories, onPlayFull, 
     selectedCategory?.title || null,
     page,
     DISK_CATEGORY_PAGE_SIZE,
+    diskReloadToken,
   );
 
   const loadMoreChannels = useCallback(() => {
@@ -256,6 +272,21 @@ export const LiveTVGrid: React.FC<LiveTVGridProps> = ({ categories, onPlayFull, 
   }, [selectedCategory, setSelectedCategoryName, setVisibleItems]);
 
   useEffect(() => {
+    const isCurrentlySyncing = Boolean(isCatalogSyncing);
+    const wasSyncing = wasCatalogSyncingRef.current;
+    if (wasSyncing && !isCurrentlySyncing) {
+      // Quando a sincronizacao termina, forca recarga da lista para sair do preview parcial.
+      setDiskReloadToken((prev) => prev + 1);
+    }
+    wasCatalogSyncingRef.current = isCurrentlySyncing;
+  }, [isCatalogSyncing]);
+
+  useEffect(() => {
+    if (diskReloadToken <= 0) return;
+    setCategoryItems([]);
+  }, [diskReloadToken]);
+
+  useEffect(() => {
     setCategoryItems((previous) => {
       const base = page === 0 ? [] : previous;
       const seen = new Set(base.map((item) => `${item.id}::${item.videoUrl}`));
@@ -275,6 +306,42 @@ export const LiveTVGrid: React.FC<LiveTVGridProps> = ({ categories, onPlayFull, 
   useEffect(() => {
     setVisibleItems(categoryItems.slice(0, 80));
   }, [categoryItems, setVisibleItems]);
+
+  useEffect(() => {
+    let disposed = false;
+    if (liveCategories.length === 0) {
+      setCategoryCounts({});
+      return;
+    }
+
+    const loadCategoryCounts = async () => {
+      const entries = await Promise.all(
+        liveCategories.map(async (category) => {
+          try {
+            const fromCatalog = await getChannelCountByCategory(category.title);
+            const safeCount = Number.isFinite(fromCatalog) && fromCatalog > 0
+              ? fromCatalog
+              : category.items.length;
+            return [category.id, safeCount] as const;
+          } catch {
+            return [category.id, category.items.length] as const;
+          }
+        }),
+      );
+
+      if (disposed) return;
+      const nextMap: Record<string, number> = {};
+      entries.forEach(([id, count]) => {
+        nextMap[id] = count;
+      });
+      setCategoryCounts(nextMap);
+    };
+
+    void loadCategoryCounts();
+    return () => {
+      disposed = true;
+    };
+  }, [diskReloadToken, liveCategories]);
 
   const globalPreviewPool = useMemo<LivePreviewPoolEntry[]>(() => {
     const seen = new Set<string>();
@@ -526,6 +593,7 @@ export const LiveTVGrid: React.FC<LiveTVGridProps> = ({ categories, onPlayFull, 
       return;
     }
 
+    previewArmRef.current = { mediaId: null, armedAt: 0 };
     openingFullscreenRef.current = true;
     setIsPromotingToFullscreen(true);
     activePreviewChannelIdRef.current = media.id;
@@ -561,38 +629,58 @@ export const LiveTVGrid: React.FC<LiveTVGridProps> = ({ categories, onPlayFull, 
   }, [isGlobalPlayerActive]);
 
   const handleMediaClick = useCallback((media: Media) => {
+    const duplicateActivationWindowMs = 650;
+    const minDelayForFullscreenMs = 900;
     const isSameChannel = activePreviewChannelIdRef.current === media.id;
-    const wasAutoStarted = autoPreviewActiveRef.current;
+    const isSamePreviewMedia = previewMedia?.id === media.id;
+    const now = Date.now();
+    const isDuplicatedPhysicalActivation =
+      previewActivationGuardRef.current.mediaId === media.id
+      && now - previewActivationGuardRef.current.at < duplicateActivationWindowMs;
 
-    // Se o canal atual foi auto-iniciado, o primeiro clique do usuario deve apenas
-    // "confirmar" a selecao (manter na preview), nao abrir fullscreen
-    if (isSameChannel && !wasAutoStarted) {
-      // Second click on manually selected channel: Full screen
-      void openFullScreen(media);
-    } else {
-      // First click (or click on auto-previewed channel): Preview
-      openingFullscreenRef.current = false;
-      setIsPromotingToFullscreen(false);
-      setFocusColumn('channels');
-      activePreviewChannelIdRef.current = media.id;
-      autoPreviewActiveRef.current = false; // Usuario assumiu o controle
-      previewFailureCountRef.current = 0;
-      previewTriedKeysRef.current = new Set([`${media.id}::${media.videoUrl}`]);
-      setSelectedMediaId(media.id);
-      setPreviewMedia(media);
-
-      // PERSISTIR último canal selecionado
-      setLastLiveChannel({
-        categoryId: selectedCatId || '',
-        mediaId: media.id,
-        mediaTitle: media.title,
-        section,
-        timestamp: Date.now(),
-      });
+    if (isDuplicatedPhysicalActivation) {
+      return;
     }
-  }, [openFullScreen, setLastLiveChannel, selectedCatId, section]);
 
-  const { registerNode, setFocusedId, focusedId } = useTvNavigation({ isActive: true, subscribeFocused: true });
+    previewActivationGuardRef.current = { mediaId: media.id, at: now };
+    const isArmedForThisChannel = previewArmRef.current.mediaId === media.id;
+    const armElapsedMs = now - previewArmRef.current.armedAt;
+    const isSecondIntentionalActivation =
+      isSameChannel
+      && isSamePreviewMedia
+      && isArmedForThisChannel
+      && armElapsedMs > minDelayForFullscreenMs;
+
+    // Sempre respeitar "preview primeiro". Fullscreen apenas no segundo acionamento
+    // intencional do MESMO canal (evita salto causado por duplo disparo do mesmo Enter/click).
+    if (isSecondIntentionalActivation) {
+      previewArmRef.current = { mediaId: null, armedAt: 0 };
+      void openFullScreen(media);
+      return;
+    }
+
+    openingFullscreenRef.current = false;
+    setIsPromotingToFullscreen(false);
+    setFocusColumn('channels');
+    activePreviewChannelIdRef.current = media.id;
+    autoPreviewActiveRef.current = false; // Usuario assumiu o controle
+    previewFailureCountRef.current = 0;
+    previewTriedKeysRef.current = new Set([`${media.id}::${media.videoUrl}`]);
+    setSelectedMediaId(media.id);
+    setPreviewMedia(media);
+    previewArmRef.current = { mediaId: media.id, armedAt: now };
+
+    // PERSISTIR último canal selecionado
+    setLastLiveChannel({
+      categoryId: selectedCatId || '',
+      mediaId: media.id,
+      mediaTitle: media.title,
+      section,
+      timestamp: Date.now(),
+    });
+  }, [openFullScreen, previewMedia?.id, setLastLiveChannel, selectedCatId, section]);
+
+  const { registerNode, setFocusedId, focusedId } = useTvNavigation({ isActive: !showDiagnostic, subscribeFocused: true });
 
   // Register Groups and Channels
   useEffect(() => {
@@ -645,6 +733,47 @@ export const LiveTVGrid: React.FC<LiveTVGridProps> = ({ categories, onPlayFull, 
     return () => unregisterList.forEach(u => u());
   }, [liveCategories, filteredItems, registerNode, previewMedia, setFocusedId, handleMediaClick, openFullScreen]);
 
+  useEffect(() => {
+    if (liveCategories.length === 0) {
+      return;
+    }
+    if (hasAppliedInitialFocusRef.current) {
+      return;
+    }
+
+    const focusTimer = window.setTimeout(() => {
+      const activeNavId = (document.activeElement as HTMLElement | null)?.dataset?.navId || '';
+      const isAlreadyInsideLiveGrid =
+        activeNavId.startsWith('tv-group-')
+        || activeNavId.startsWith('tv-channel-')
+        || activeNavId === 'tv-preview-player'
+        || activeNavId === 'tv-btn-diagnostic';
+
+      if (isAlreadyInsideLiveGrid) {
+        hasAppliedInitialFocusRef.current = true;
+        return;
+      }
+
+      const fallbackGroupId = liveCategories[0]?.id || null;
+      const targetGroupId = selectedCatId || fallbackGroupId;
+      if (!targetGroupId) {
+        return;
+      }
+
+      const targetIndex = Math.max(
+        0,
+        liveCategories.findIndex((category) => category.id === targetGroupId),
+      );
+
+      setFocusColumn('groups');
+      setFocusedGroupIndex(targetIndex);
+      setFocusedId(`tv-group-${targetGroupId}`);
+      hasAppliedInitialFocusRef.current = true;
+    }, 120);
+
+    return () => window.clearTimeout(focusTimer);
+  }, [liveCategories, selectedCatId, setFocusedId]);
+
   if (liveCategories.length === 0) {
     return (
       <View style={styles.emptyContainer}>
@@ -657,6 +786,7 @@ export const LiveTVGrid: React.FC<LiveTVGridProps> = ({ categories, onPlayFull, 
   const sideMenuOffset = shouldRenderSideMenu ? layout.sideRailCollapsedWidth : 0;
 
   return (
+    <>
     <View style={[styles.container, { paddingLeft: sideMenuOffset }]}>
       {/* Groups Column */}
       <View style={styles.groupsColumn}>
@@ -666,7 +796,7 @@ export const LiveTVGrid: React.FC<LiveTVGridProps> = ({ categories, onPlayFull, 
         </View>
         <div
           ref={groupsListRef as React.RefObject<HTMLDivElement>}
-          style={{ flex: 1, overflowY: 'auto', overflowX: 'hidden', paddingBottom: 72 }}
+          style={{ flex: 1, overflowY: 'auto', overflowX: 'visible', paddingBottom: 72, paddingInline: 6 }}
         >
           {liveCategories.map((cat, index) => (
             <TouchableHighlight
@@ -697,7 +827,7 @@ export const LiveTVGrid: React.FC<LiveTVGridProps> = ({ categories, onPlayFull, 
                   {cat.title}
                 </Text>
                 <Text style={styles.itemCount}>
-                  {selectedCatId === cat.id ? `${filteredItems.length}${hasMorePages ? '+' : ''}` : cat.items.length}
+                  {categoryCounts[cat.id] ?? cat.items.length}
                 </Text>
                 {selectedCatId === cat.id && <ChevronRight size={16} color="#E50914" />}
               </View>
@@ -736,7 +866,7 @@ export const LiveTVGrid: React.FC<LiveTVGridProps> = ({ categories, onPlayFull, 
         </View>
         <div
           ref={flatListChannelsRef as React.RefObject<HTMLDivElement>}
-          style={{ flex: 1, overflowY: 'auto', overflowX: 'hidden', paddingBottom: 40 }}
+          style={{ flex: 1, overflowY: 'auto', overflowX: 'visible', paddingBottom: 40, paddingInline: 6 }}
           onScroll={(e) => {
             const node = e.currentTarget;
             if (node.scrollTop + node.clientHeight >= node.scrollHeight - 260) {
@@ -917,14 +1047,15 @@ export const LiveTVGrid: React.FC<LiveTVGridProps> = ({ categories, onPlayFull, 
             <Text style={styles.placeholderText}>Selecione um canal para visualizar</Text>
           </View>
         )}
-      {showDiagnostic && (
-        <NetworkDiagnostic 
-          onClose={() => setShowDiagnostic(false)} 
-          testUrl={previewMedia?.videoUrl}
-        />
-      )}
       </View>
     </View>
+    {showDiagnostic && (
+      <NetworkDiagnostic 
+        onClose={() => setShowDiagnostic(false)} 
+        testUrl={previewMedia?.videoUrl}
+      />
+    )}
+    </>
   );
 };
 
@@ -934,7 +1065,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     backgroundColor: 'transparent',
     gap: 0,
-    overflow: 'hidden',
+    overflow: 'visible',
     height: '100%',
   },
   groupsColumn: {
@@ -980,10 +1111,11 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
     paddingTop: 6,
     paddingBottom: 10,
-    marginHorizontal: 10,
+    marginHorizontal: 8,
     marginTop: 3,
     marginBottom: 7,
     borderRadius: 12,
+    overflow: 'visible',
   },
   groupItemActive: {
     backgroundColor: 'rgba(229,9,20,0.12)',
@@ -1086,11 +1218,12 @@ const styles = StyleSheet.create({
   channelItem: {
     paddingHorizontal: 20,
     paddingVertical: 20,
-    marginHorizontal: 10,
+    marginHorizontal: 8,
     marginVertical: 15,
     borderRadius: 14,
     borderWidth: 1,
     borderColor: 'transparent',
+    overflow: 'visible',
   },
   channelItemActive: {
     backgroundColor: 'rgba(255,255,255,0.06)',

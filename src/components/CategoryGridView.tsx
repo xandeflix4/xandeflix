@@ -394,7 +394,7 @@ export const CategoryGridView: React.FC<CategoryGridViewProps> = ({ category, on
         left: sideRailOffset,
         right: 0,
         bottom: 0,
-        zIndex: 500,
+        zIndex: 230,
         backgroundColor: '#050505',
         display: 'flex',
         flexDirection: 'column',

@@ -15,6 +15,7 @@ export function useDiskCategory(
   categoryName: string | null | undefined,
   page: number,
   pageSize: number = DISK_CATEGORY_PAGE_SIZE,
+  refreshKey?: string | number | boolean,
 ): UseDiskCategoryResult {
   const [items, setItems] = useState<Media[]>([]);
   const [loading, setLoading] = useState(false);
@@ -62,7 +63,7 @@ export function useDiskCategory(
     return () => {
       cancelled = true;
     };
-  }, [categoryName, page, pageSize]);
+  }, [categoryName, page, pageSize, refreshKey]);
 
   return { items, loading, error, hasMore };
 }

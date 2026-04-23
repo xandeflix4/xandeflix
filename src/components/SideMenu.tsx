@@ -165,6 +165,7 @@ export const SideMenu: React.FC<SideMenuProps> = ({ onSelect, activeId = 'home',
   const panelVerticalPadding = layout.isTvProfile ? 24 : 32;
   const logoBottomMargin = layout.isTvProfile ? 18 : 24;
   const itemPadding = layout.isTvProfile ? 11 : 12;
+  const isMenuActivated = menuHasFocus || isExpanded;
 
   return (
     <>
@@ -278,6 +279,7 @@ export const SideMenu: React.FC<SideMenuProps> = ({ onSelect, activeId = 'home',
             const Icon = item.icon;
             const isFocused = focusedItem === item.id;
             const isActive = activeId === item.id;
+            const isHighlighted = isFocused || (isMenuActivated && isActive);
 
             return (
               <div
@@ -307,8 +309,8 @@ export const SideMenu: React.FC<SideMenuProps> = ({ onSelect, activeId = 'home',
                   <div className="w-8 flex items-center justify-center shrink-0 transition-transform duration-300 group-hover:scale-110">
                     <Icon 
                       size={iconSize} 
-                      color={(isFocused || isActive) ? "#E50914" : "rgba(255,255,255,0.6)"} 
-                      strokeWidth={(isFocused || isActive) ? 2.5 : 1.5}
+                      color={isHighlighted ? "#E50914" : "rgba(255,255,255,0.6)"} 
+                      strokeWidth={isHighlighted ? 2.5 : 1.5}
                     />
                   </div>
                   {isExpanded && (
@@ -316,7 +318,7 @@ export const SideMenu: React.FC<SideMenuProps> = ({ onSelect, activeId = 'home',
                       <div
                         className={cn(
                           "inline-block font-display tracking-tight transition-colors duration-300 whitespace-nowrap",
-                          (isFocused || isActive) ? "text-white font-bold" : "text-gray-400 group-hover:text-white"
+                          isHighlighted ? "text-white font-bold" : "text-gray-400 group-hover:text-white"
                         )}
                         style={{ marginLeft: layout.isTvProfile ? 12 : 16, fontSize: labelFontSize, textAlign: 'left' }}
                       >
@@ -326,7 +328,7 @@ export const SideMenu: React.FC<SideMenuProps> = ({ onSelect, activeId = 'home',
                       <div
                         className={cn(
                           "inline-block font-display tracking-tight transition-colors duration-300 whitespace-nowrap",
-                          (isFocused || isActive) ? "text-white font-bold" : "text-gray-400 group-hover:text-white"
+                          isHighlighted ? "text-white font-bold" : "text-gray-400 group-hover:text-white"
                         )}
                         style={{ marginLeft: layout.isTvProfile ? 12 : 16, fontSize: labelFontSize, textAlign: 'left' }}
                       >

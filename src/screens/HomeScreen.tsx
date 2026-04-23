@@ -547,19 +547,19 @@ const HomeScreen: React.FC<{ onLogout: () => void }> = ({ onLogout }) => {
     //   setIsDetailsVisible(true);
     // }
 
-    if (!initialFocusSetRef.current && isInterfaceReadyForFocus) {
+    if (!initialFocusSetRef.current && isInterfaceReadyForFocus && isHomeNavActive) {
       // Pequeno delay para garantir que o React e a FlatList comitaram os nós no DOM (paint)
       const timeoutId = setTimeout(() => {
         const activeNavId = (document.activeElement as HTMLElement | null)?.dataset?.navId;
         if (!activeNavId) {
-          setFocusedId('menu-home');
+          setFocusedId('hero-play');
         }
       }, 150);
       
       initialFocusSetRef.current = true;
       return () => clearTimeout(timeoutId);
     }
-  }, [isTvMode, isInterfaceReadyForFocus, setFocusedId]);
+  }, [isTvMode, isInterfaceReadyForFocus, isHomeNavActive, setFocusedId]);
 
   const layout = useResponsiveLayout();
   const { isTvProfile } = layout;
@@ -1182,33 +1182,7 @@ const HomeScreen: React.FC<{ onLogout: () => void }> = ({ onLogout }) => {
     scheduleHeroAutoRotateResume,
   ]);
 
-  useEffect(() => {
-    if (!isHomeNavActive || heroSelectionCandidates.length < 2) return;
-
-    const isHeroFocused = typeof focusedId === 'string' && focusedId.startsWith('hero-');
-    if (!isHeroFocused) return;
-
-    const onHeroSideNavigate = (event: KeyboardEvent) => {
-      const keyCode = (event as KeyboardEvent & { keyCode?: number; which?: number }).keyCode
-        ?? (event as KeyboardEvent & { which?: number }).which
-        ?? 0;
-      const key = event.key;
-      const isLeft = key === 'ArrowLeft' || key === 'Left' || keyCode === 21;
-      const isRight = key === 'ArrowRight' || key === 'Right' || keyCode === 22;
-      if (!isLeft && !isRight) return;
-
-      const activeFocused = (document.activeElement as HTMLElement | null)?.dataset?.navId || focusedId;
-      if (!activeFocused || !String(activeFocused).startsWith('hero-')) return;
-
-      event.preventDefault();
-      event.stopPropagation();
-      (event as any).stopImmediatePropagation?.();
-      moveHeroSelection(isLeft ? 'prev' : 'next');
-    };
-
-    window.addEventListener('keydown', onHeroSideNavigate, true);
-    return () => window.removeEventListener('keydown', onHeroSideNavigate, true);
-  }, [focusedId, heroSelectionCandidates.length, isHomeNavActive, moveHeroSelection]);
+  // Removed onHeroSideNavigate to allow normal D-Pad navigation between Hero buttons
 
   const handleHeroPrev = useCallback(() => moveHeroSelection('prev'), [moveHeroSelection]);
   const handleHeroNext = useCallback(() => moveHeroSelection('next'), [moveHeroSelection]);
@@ -1520,20 +1494,26 @@ const HomeScreen: React.FC<{ onLogout: () => void }> = ({ onLogout }) => {
     playlistStatus,
   ]);
 
-  // Foco inicial quando a interface carrega.
-  // Isso evita que a Engine de TV pegue o "SideBar" (primeiro node da DOM)
-  // e inicie abrindo a lateral da TV sem o usuário ter pedido.
+  // Foco inicial quando a interface carrega ou troca de categoria.
+  // Sempre rouba o foco para o conteúdo principal para fechar/desativar a sidebar automaticamente.
   useEffect(() => {
-    if (!loading && isTvMode && isHomeNavActive && activeFilter !== 'live' && activeFilter !== 'sports') {
+    if (!loading && isTvMode && isHomeNavActive) {
       const initTimer = setTimeout(() => {
         try {
-          if (!document.activeElement?.closest('.side-menu-panel')) {
-             setFocusedId('hero-play'); 
+          if (activeFilter === 'live' || activeFilter === 'sports') {
+            // Para live/sports, o foco inicial é gerenciado pelo LiveTVGrid
+            // Forçamos o blur para remover o foco da SideMenu e permitir que a grade assuma.
+            if (document.activeElement instanceof HTMLElement) {
+              document.activeElement.blur();
+            }
+          } else {
+            // VOD: Foca no botão Play do Hero
+            setFocusedId('hero-play');
           }
         } catch (error) {
           void error;
         }
-      }, 500);
+      }, 300);
       return () => clearTimeout(initTimer);
     }
   }, [loading, isTvMode, isHomeNavActive, activeFilter, setFocusedId]);
@@ -1638,7 +1618,8 @@ const HomeScreen: React.FC<{ onLogout: () => void }> = ({ onLogout }) => {
   }
 
   const isAnyOverlayActive = isDetailsVisible || !!gridCategory || isSettingsVisible;
-  const shouldBlockBaseInteractions = !!gridCategory || isSettingsVisible;
+  const shouldBlockBaseInteractions = isDetailsVisible || !!gridCategory || isSettingsVisible;
+  const shouldDisableSideMenu = isDetailsVisible || isSettingsVisible;
   const centeredContentMaxWidth = layout.isTvProfile
     ? null
     : null; // No centering on TV for full-bleed Hero appearance
@@ -1648,21 +1629,25 @@ const HomeScreen: React.FC<{ onLogout: () => void }> = ({ onLogout }) => {
       {!hasBlockingPlaylistError && (
       <View 
         style={{ flex: 1, flexDirection: 'row', width: '100%', height: '100%' }}
-        aria-hidden={shouldBlockBaseInteractions}
-        pointerEvents={shouldBlockBaseInteractions ? 'none' : 'auto'}
       >
         {/* Sidebar Navigation - Fixed Rail */}
         {shouldShowSideMenu && (
-          <SideMenu 
-            onSelect={handleCategorySelect} 
-            activeId={activeFilter} 
-            onLogout={onLogout}
-            onExpandedChange={setIsSideMenuExpanded}
-          />
+          <div
+            aria-hidden={shouldDisableSideMenu}
+            style={{ pointerEvents: shouldDisableSideMenu ? 'none' : 'auto' }}
+          >
+            <SideMenu 
+              onSelect={handleCategorySelect} 
+              activeId={activeFilter} 
+              onLogout={onLogout}
+              onExpandedChange={setIsSideMenuExpanded}
+            />
+          </div>
         )}
 
         {/* Main Content Area */}
         <div
+          aria-hidden={shouldBlockBaseInteractions}
           style={{ 
             flex: 1, 
             minWidth: 0, 
@@ -1671,6 +1656,7 @@ const HomeScreen: React.FC<{ onLogout: () => void }> = ({ onLogout }) => {
             width: '100%',
             height: '100%',
             marginLeft: 0,
+            pointerEvents: shouldBlockBaseInteractions ? 'none' : 'auto',
             transition: 'margin-left 200ms ease-out',
             willChange: 'margin-left'
           }}
@@ -1686,6 +1672,7 @@ const HomeScreen: React.FC<{ onLogout: () => void }> = ({ onLogout }) => {
                 externalMedia={null}
                 isGlobalPlayerActive={!!activeVideoUrl}
                 section={activeFilter}
+                isCatalogSyncing={isWritingDatabase || isBackgroundSyncing}
               />
             </Suspense>
           ) : activeFilter === 'search' ? (

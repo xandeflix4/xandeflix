@@ -410,6 +410,12 @@ export async function getChannelsByCategory(
   return results;
 }
 
+export async function getChannelCountByCategory(category: string): Promise<number> {
+  const groupIndex = resolveGroupIndex(category);
+  if (groupIndex == null) return 0;
+  return catalog.groupCounts.get(groupIndex) || 0;
+}
+
 export async function getCategories(): Promise<string[]> {
   const categories: string[] = [];
   for (const [groupIndex, count] of catalog.groupCounts.entries()) {

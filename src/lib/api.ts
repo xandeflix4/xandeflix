@@ -126,8 +126,6 @@ export async function prepareRemoteTextStreamSource(
   }
 
   const shouldRetryWithAlternateHeaders = options?.retryWithoutNativeHeaders !== false;
-  const tempPath = `temp_playlist_${Date.now()}_${Math.random().toString(36).slice(2)}.m3u`;
-
   if (options?.preflightHead && options.maxContentLengthBytes) {
     try {
       const headResponse = await withRequestTimeout(
@@ -170,6 +168,7 @@ export async function prepareRemoteTextStreamSource(
     const attempt = attempts[i];
     const elapsedTotalMs = Date.now() - fetchSessionStart;
     const currentTimeoutMs = Math.max(timeoutMs - elapsedTotalMs, 60000);
+    const tempPath = `temp_playlist_${Date.now()}_${Math.random().toString(36).slice(2)}.m3u`;
 
     try {
       const msg = `[HTTP] Tentativa ${i + 1}/${attempts.length} (${attempt.name})...`;
@@ -258,6 +257,7 @@ export async function prepareRemoteTextStreamSource(
     }
   } catch (error) {
     console.warn('[Fetch] CapacitorHttp também falhou:', error);
+    lastError = error;
   }
 
   // FALLBACK FINAL: XMLHttpRequest (XHR) - A tecnologia mais compatível para aparelhos antigos/TVs.
@@ -300,6 +300,7 @@ export async function prepareRemoteTextStreamSource(
     const details = error instanceof Error ? error.message : 'erro desconhecido';
     console.error('[Fetch] XHR Fallback também falhou:', details);
     onProgress?.(`[HTTP] Erro no motor XHR: ${details}`);
+    lastError = error;
   }
 
   throw lastError instanceof Error ? lastError : new Error('Falha ao preparar stream remoto para parser.');
@@ -343,12 +344,13 @@ export async function fetchRemoteText(
     }
 
     const performNativeGet = async (headers: Record<string, string>, attemptTimeoutMs: number) => {
+      const tempPath = `temp_playlist_${Date.now()}_${Math.random().toString(36).slice(2)}.m3u`;
       // Step 1: Download huge 80MB text file natively via Java/OkHttp directly to Android Disk (Bypasses OutOfMemory JSON IPC)
       const downloadResult = await withRequestTimeout(
         Filesystem.downloadFile({
           url: targetUrl,
           headers,
-          path: 'temp_playlist.m3u',
+          path: tempPath,
           directory: Directory.Data,
           connectTimeout: attemptTimeoutMs,
           readTimeout: attemptTimeoutMs,
@@ -360,7 +362,7 @@ export async function fetchRemoteText(
       if (typeof downloadResult === 'object' && 'path' in downloadResult) {
         // Find the native path on Android and convert to a Capacitor Webview URI.
         const uriResult = await Filesystem.getUri({
-          path: 'temp_playlist.m3u',
+          path: tempPath,
           directory: Directory.Data
         });
 
@@ -376,7 +378,7 @@ export async function fetchRemoteText(
         const text = decodeWithFallback(buffer, null);
         
         // Clean up the temp file
-        Filesystem.deleteFile({ path: 'temp_playlist.m3u', directory: Directory.Cache }).catch(() => null);
+        Filesystem.deleteFile({ path: tempPath, directory: Directory.Cache }).catch(() => null);
 
         return {
           status: downloadResult.path ? 200 : 500,

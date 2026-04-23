@@ -37,8 +37,13 @@ export const MediaDetailsPage: React.FC<MediaDetailsPageProps> = ({
   const isTvMode = useStore(state => state.isTvMode);
   const isTv = layout.isTvProfile;
   const shouldEnableTvNav = isTvMode && isTv;
-  const { registerNode, setFocusedId } = useTvNavigation({ isActive: shouldEnableTvNav, onBack: onClose, subscribeFocused: false });
+  const { registerNode, setFocusedId, focusedId } = useTvNavigation({
+    isActive: shouldEnableTvNav,
+    onBack: onClose,
+    subscribeFocused: true,
+  });
   const scrollViewRef = useRef<ScrollView>(null);
+  const detailsTopFrameRef = useRef<HTMLDivElement | null>(null);
   const safeLayoutWidth = Number.isFinite(layout.width) && layout.width > 0 ? layout.width : 1280;
   const viewportWidth =
     typeof window !== 'undefined' && Number.isFinite(window.innerWidth) && window.innerWidth > 0
@@ -46,10 +51,31 @@ export const MediaDetailsPage: React.FC<MediaDetailsPageProps> = ({
       : safeLayoutWidth;
   const shouldStackDetails = !isTv && viewportWidth < 980;
   const isCompactDetails = !isTv && viewportWidth < 760;
-  const sideRailOffset = (!layout.isMobile || layout.isTvProfile) ? layout.sideRailCollapsedWidth : 0;
   const contentPadding = isTv ? 40 : isCompactDetails ? 16 : viewportWidth < 1200 ? 24 : 56;
   const backdropHeight = isTv ? '54vh' : isCompactDetails ? '52vh' : layout.isTablet ? '60vh' : '70vh';
   const detailsTopPadding = isTv ? 118 : isCompactDetails ? 84 : 104;
+  const isTopDetailsFocused = useMemo(
+    () =>
+      focusedId === 'details-back'
+      || focusedId === 'details-play'
+      || focusedId === 'details-trailer'
+      || focusedId === 'details-favorite',
+    [focusedId],
+  );
+
+  const ensureTopDetailsVisible = useCallback((smooth = false) => {
+    if (typeof document === 'undefined') return;
+    const modalScroll = document.querySelector('[data-details-scroll="1"]') as HTMLElement | null;
+    if (!modalScroll) return;
+
+    const frameTop = detailsTopFrameRef.current?.offsetTop ?? 0;
+    const targetTop = Math.max(0, frameTop - 18);
+    const behavior = smooth && !isTv ? 'smooth' : 'auto';
+
+    if (Math.abs(modalScroll.scrollTop - targetTop) > 10) {
+      modalScroll.scrollTo({ top: targetTop, behavior });
+    }
+  }, [isTv]);
 
   useEffect(() => {
     setIsTrailerModalOpen(false);
@@ -80,6 +106,11 @@ export const MediaDetailsPage: React.FC<MediaDetailsPageProps> = ({
       clearTimeout(timerB);
     };
   }, [media.id]);
+
+  useEffect(() => {
+    if (!isTopDetailsFocused) return;
+    ensureTopDetailsVisible(true);
+  }, [ensureTopDetailsVisible, isTopDetailsFocused]);
 
   const watchHistory = useStore(state => state.watchHistory);
   const playbackProgress = useStore(state => state.playbackProgress);
@@ -181,11 +212,20 @@ export const MediaDetailsPage: React.FC<MediaDetailsPageProps> = ({
   // Auto-focus the primary action when modal opens
   useEffect(() => {
     if (!shouldEnableTvNav) return;
-    const timer = setTimeout(() => {
-      const targetId = (media.videoUrl || mergedSeriesSeasons.length > 0) ? 'details-play' : 'details-back';
-      setFocusedId(targetId);
-    }, 300);
-    return () => clearTimeout(timer);
+    const targetId = (media.videoUrl || mergedSeriesSeasons.length > 0) ? 'details-play' : 'details-back';
+    const focusPrimaryAction = () => setFocusedId(targetId);
+
+    const rafId = typeof window !== 'undefined'
+      ? window.requestAnimationFrame(focusPrimaryAction)
+      : 0;
+    const fallbackTimer = setTimeout(focusPrimaryAction, 220);
+
+    return () => {
+      if (typeof window !== 'undefined') {
+        window.cancelAnimationFrame(rafId);
+      }
+      clearTimeout(fallbackTimer);
+    };
   }, [media.videoUrl, mergedSeriesSeasons.length, setFocusedId, shouldEnableTvNav]);
 
   const primaryActionMedia = useMemo(() => {
@@ -447,10 +487,10 @@ export const MediaDetailsPage: React.FC<MediaDetailsPageProps> = ({
       style={{
         position: 'fixed',
         top: 0,
-        left: sideRailOffset,
+        left: 0,
         right: 0,
         bottom: 0,
-        zIndex: 220,
+        zIndex: 320,
         backgroundColor: 'rgba(5,5,5,0.98)',
         display: 'flex',
         flexDirection: 'column',
@@ -506,7 +546,7 @@ export const MediaDetailsPage: React.FC<MediaDetailsPageProps> = ({
           tabIndex={0}
           data-nav-id="details-back"
           ref={(el) => { if (el) registerNode('details-back', el, 'modal', {
-            onFocus: () => {},
+            onFocus: () => ensureTopDetailsVisible(true),
             onEnter: onClose,
             disableAutoScroll: true,
             }); } }
@@ -524,7 +564,15 @@ export const MediaDetailsPage: React.FC<MediaDetailsPageProps> = ({
             </View>
           </View>
         </div>
-        <Text style={[styles.topLogo, isCompactDetails && styles.topLogoCompact]}>XANDEFLIX</Text>
+        <Text
+          style={[
+            styles.topLogo,
+            isCompactDetails && styles.topLogoCompact,
+            { textAlign: 'right' as const },
+          ]}
+        >
+          XANDEFLIX
+        </Text>
       </View>
 
       {/* Scrollable content */}
@@ -558,6 +606,28 @@ export const MediaDetailsPage: React.FC<MediaDetailsPageProps> = ({
             },
           ]}
         >
+          <motion.div
+            ref={detailsTopFrameRef}
+            initial={false}
+            animate={{
+              scale: isTopDetailsFocused ? 1.01 : 1,
+              y: isTopDetailsFocused ? -2 : 0,
+            }}
+            transition={{ duration: 0.2, ease: 'easeOut' }}
+            style={{
+              width: '100%',
+              borderRadius: isTv ? 18 : 14,
+              padding: isTv ? '24px 24px 30px 24px' : '16px 20px 30px 20px',
+              background: 'linear-gradient(180deg, rgba(12,12,12,0.7) 0%, rgba(5,5,5,0.3) 100%)',
+              border: isTopDetailsFocused
+                ? '1px solid rgba(255,255,255,0.3)'
+                : '1px solid rgba(255,255,255,0.15)',
+              boxShadow: isTopDetailsFocused
+                ? '0 20px 54px rgba(0,0,0,0.48), inset 0 1px 0 rgba(255,255,255,0.16)'
+                : '0 10px 24px rgba(0,0,0,0.3), inset 0 1px 0 rgba(255,255,255,0.05)',
+              transformOrigin: 'center top',
+            }}
+          >
           <View style={[styles.mainRow, shouldStackDetails && styles.mainRowCompact]}>
             {/* Poster */}
             <motion.div
@@ -652,7 +722,7 @@ export const MediaDetailsPage: React.FC<MediaDetailsPageProps> = ({
                     type="button"
                     data-nav-id="details-play"
                     ref={(el) => { if (el) registerNode('details-play', el, 'modal', {
-                      onFocus: () => {},
+                      onFocus: () => ensureTopDetailsVisible(true),
                       onEnter: () => onPlay(primaryActionMedia),
                       disableAutoScroll: true,
             }); } }
@@ -684,7 +754,7 @@ export const MediaDetailsPage: React.FC<MediaDetailsPageProps> = ({
                     type="button"
                     data-nav-id="details-trailer"
                     ref={(el) => { if (el) registerNode('details-trailer', el, 'modal', {
-                      onFocus: () => {},
+                      onFocus: () => ensureTopDetailsVisible(true),
                       disableAutoScroll: true,
                       onEnter: () => {
                         setTrailerStatus('loading');
@@ -726,7 +796,7 @@ export const MediaDetailsPage: React.FC<MediaDetailsPageProps> = ({
                   type="button"
                   data-nav-id="details-favorite"
                   ref={(el) => { if (el) registerNode('details-favorite', el, 'modal', {
-                    onFocus: () => {},
+                    onFocus: () => ensureTopDetailsVisible(true),
                     onEnter: () => toggleFavorite(favoriteKey),
                     disableAutoScroll: true,
             }); } }
@@ -754,45 +824,46 @@ export const MediaDetailsPage: React.FC<MediaDetailsPageProps> = ({
                 </button>
               </div>
 
-              <div style={{ maxWidth: isTv ? 500 : 700 }}>
-                <div
+              <View style={{ maxWidth: isTv ? 500 : 700, overflow: 'hidden' }}>
+                <Text
                   style={{
                     fontSize: isTv ? 11 : 14,
-                    fontWeight: 800,
+                    fontWeight: '800',
                     color: 'rgba(255,255,255,0.45)',
                     textTransform: 'uppercase',
                     letterSpacing: 2,
                     marginBottom: isTv ? 8 : 12,
-                    fontFamily: 'Outfit, sans-serif',
+                    fontFamily: 'Outfit',
                   }}
                 >
                   Sinopse
-                </div>
+                </Text>
                 {tmdbLoading ? (
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '10px 0', color: 'rgba(255,255,255,0.65)' }}>
+                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 10 }}>
                     <Loader2 color="#E50914" size={isTv ? 16 : 22} />
-                    <span style={{ fontSize: isTv ? 12 : 16 }}>Buscando informações...</span>
-                  </div>
+                    <Text style={{ fontSize: isTv ? 12 : 16, color: 'rgba(255,255,255,0.65)', fontFamily: 'Outfit' }}>Buscando informações...</Text>
+                  </View>
                 ) : (
-                  <p
+                  <Text
                     style={{
                       margin: 0,
                       fontSize: isTv ? 13 : 19,
                       color: 'rgba(255,255,255,0.78)',
-                      lineHeight: isTv ? '20px' : '30px',
-                      fontFamily: 'Outfit, sans-serif',
-                      display: '-webkit-box',
-                      WebkitBoxOrient: 'vertical',
-                      WebkitLineClamp: isTv ? 4 : 'unset',
-                      overflow: 'hidden',
+                      lineHeight: isTv ? 20 : 30,
+                      fontFamily: 'Outfit',
                     }}
                   >
-                    {displayData.description || 'Nenhuma sinopse disponível para este título.'}
-                  </p>
+                    {(() => {
+                      const desc = displayData.description || 'Nenhuma sinopse disponível para este título.';
+                      const maxLen = isTv ? 160 : 250;
+                      return desc.length > maxLen ? desc.substring(0, maxLen).trim() + '...' : desc;
+                    })()}
+                  </Text>
                 )}
-              </div>
+              </View>
             </motion.div>
           </View>
+          </motion.div>
         </View>
 
         {/* Seasons & Episodes */}
@@ -968,6 +1039,8 @@ export const MediaDetailsPage: React.FC<MediaDetailsPageProps> = ({
             <CategoryRow 
               category={relatedCategory}
               rowIndex={999}
+              navSection="modal-related"
+              navIdPrefix="details-related-"
               disableSideMenuOffset
               tightTopSpacing
               onSeeAll={() => {}}
@@ -1065,6 +1138,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
+    gap: 14,
     paddingHorizontal: 40,
     paddingTop: 30,
     paddingBottom: 20,
@@ -1097,8 +1171,9 @@ const styles = StyleSheet.create({
     fontWeight: '900',
     color: '#E50914',
     fontStyle: 'italic',
-    letterSpacing: -2,
+    letterSpacing: -1.2,
     fontFamily: 'Outfit',
+    flexShrink: 1,
   },
   topLogoCompact: {
     fontSize: 24,
@@ -1454,9 +1529,9 @@ const styles = StyleSheet.create({
     marginLeft: 12,
   },
   relatedSection: {
-    marginTop: 28,
-    marginBottom: 20,
-    paddingTop: 10,
+    marginTop: 50,
+    marginBottom: 30,
+    paddingTop: 20,
     borderTopWidth: 1,
     borderTopColor: 'rgba(255,255,255,0.08)',
   } as any,

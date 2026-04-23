@@ -123,6 +123,50 @@ function isLikelyConnectionFailure(input: {
   const mergedText = `${reason} ${detail}`;
   return networkTextHints.some((hint) => mergedText.includes(hint));
 }
+
+function isLikelyRecoverableMediaFailure(input: {
+  code?: string;
+  reason?: string;
+  detail?: string;
+}): boolean {
+  const code = String(input.code || '').toUpperCase();
+  const reason = String(input.reason || '').toLowerCase();
+  const detail = String(input.detail || '').toLowerCase();
+  const mergedText = `${reason} ${detail}`;
+
+  const mediaCodeHints = [
+    'MEDIAERROR',
+    'MSE',
+    'DEMUX',
+    'DECODER',
+    'CODEC',
+    'PARSER',
+    'SOURCEBUFFER',
+    'MPEGTS',
+    'HLS_MEDIA_ERROR',
+    'FRAG_PARSING_ERROR',
+    'BUFFER_APPEND',
+  ];
+  if (mediaCodeHints.some((hint) => code.includes(hint))) {
+    return true;
+  }
+
+  const mediaTextHints = [
+    'mediaerror',
+    'mse',
+    'codec',
+    'decoder',
+    'demux',
+    'parser',
+    'append',
+    'sourcebuffer',
+    'unsupported',
+    'cannot play',
+    'no supported source',
+  ];
+
+  return mediaTextHints.some((hint) => mergedText.includes(hint));
+}
 type StreamSourceResolution = {
   originalUrl: string;
   playbackUrl: string;
@@ -240,6 +284,7 @@ function buildLivePreviewUrlCandidates(streamUrl: string, isLiveStream: boolean)
     };
 
     const pathLower = parsed.pathname.toLowerCase();
+    const isNumericXtreamPath = /\/\d+$/.test(parsed.pathname);
     const hasTsOutput =
       parsed.searchParams.get('output')?.toLowerCase() === 'ts'
       || parsed.searchParams.get('output')?.toLowerCase() === 'mpegts';
@@ -249,6 +294,12 @@ function buildLivePreviewUrlCandidates(streamUrl: string, isLiveStream: boolean)
       pathLower.endsWith('.mpegts');
 
     const originalUrl = parsed.toString();
+    const forcedTs = new URL(originalUrl);
+    forcedTs.searchParams.set('output', 'ts');
+
+    const forcedMpegts = new URL(originalUrl);
+    forcedMpegts.searchParams.set('output', 'mpegts');
+
     const forcedHls = new URL(originalUrl);
     forcedHls.searchParams.set('output', 'hls');
 
@@ -273,11 +324,28 @@ function buildLivePreviewUrlCandidates(streamUrl: string, isLiveStream: boolean)
     
     // 1. URL original pura primeiro (mpegts.js a decodifica via MSE)
     addUnique(ordered, originalUrl);
-    // 2. Variações HLS como fallback (para hls.js)
-    addUnique(ordered, forcedHls.toString());
-    addUnique(ordered, typeM3u8.toString());
-    addUnique(ordered, m3u8WithHls.toString());
-    addUnique(ordered, m3u8Path.toString());
+
+    if (isTsLike) {
+      // TS-like: insistir em TS/MPEGTS e evitar derivações HLS agressivas
+      // (muitos provedores retornam TS puro mesmo com output=hls).
+      addUnique(ordered, forcedTs.toString());
+      addUnique(ordered, forcedMpegts.toString());
+      addUnique(ordered, removeOutput.toString());
+      addUnique(ordered, forcedHls.toString());
+      if (!isNumericXtreamPath) {
+        addUnique(ordered, typeM3u8.toString());
+        addUnique(ordered, m3u8WithHls.toString());
+        addUnique(ordered, m3u8Path.toString());
+      }
+    } else {
+      // Nao-TS: tentar HLS primeiro, mas manter variantes TS como fallback extra.
+      addUnique(ordered, forcedHls.toString());
+      addUnique(ordered, typeM3u8.toString());
+      addUnique(ordered, m3u8WithHls.toString());
+      addUnique(ordered, m3u8Path.toString());
+      addUnique(ordered, forcedTs.toString());
+      addUnique(ordered, forcedMpegts.toString());
+    }
     
     if (!isTsLike) {
       addUnique(ordered, removeOutput.toString());
@@ -300,6 +368,19 @@ function isLikelyHlsUrl(streamUrl: string): boolean {
   } catch {
     const lower = streamUrl.toLowerCase();
     return lower.includes('.m3u8') || lower.includes('output=hls') || lower.includes('output=m3u8');
+  }
+}
+
+function shouldPreferTsPipeline(streamUrl: string): boolean {
+  try {
+    const parsed = new URL(streamUrl);
+    const output = String(parsed.searchParams.get('output') || '').toLowerCase();
+    if (output === 'ts' || output === 'mpegts') return true;
+    return false;
+  } catch {
+    const lower = String(streamUrl || '').toLowerCase();
+    if (lower.includes('output=ts') || lower.includes('output=mpegts')) return true;
+    return false;
   }
 }
 
@@ -694,6 +775,8 @@ export const VideoPlayer = React.forwardRef<VideoPlayerHandle, VideoPlayerProps>
     // Em TVs, window.innerWidth é grande, então vamos focar na plataforma.
     const isAndroid = Capacitor.getPlatform() === 'android';
     const shouldUseNativePlayer = canUseNativeFallback && (forceNativeFallback || (isAndroid && isLiveStream));
+    const shouldUseEmbeddedNativePreview = isAndroid && isNativePlatform && isPreview && isLiveStream;
+    const shouldUseNativeBridgePlayer = shouldUseNativePlayer || shouldUseEmbeddedNativePreview;
     const savePlaybackProgress = useStore((state) => state.savePlaybackProgress);
     const [isChannelBrowserOpen, setIsChannelBrowserOpen] = useState(false);
     const [isRelatedVisible, setIsRelatedVisible] = useState(false);
@@ -916,10 +999,10 @@ export const VideoPlayer = React.forwardRef<VideoPlayerHandle, VideoPlayerProps>
     }, []);
 
     const [playerState, setPlayerState] = useState<NativePlayerState>(
-      shouldUseNativePlayer ? 'opening' : 'error',
+      shouldUseNativeBridgePlayer ? 'opening' : 'error',
     );
     const [error, setError] = useState<string | null>(
-      shouldUseNativePlayer ? null : 'O player nativo esta disponivel apenas no app Android/Capacitor.',
+      shouldUseNativeBridgePlayer ? null : 'O player nativo esta disponivel apenas no app Android/Capacitor.',
     );
     const [inlineError, setInlineError] = useState<string | null>(null);
     const applyPlaybackDiagnostic = useCallback(
@@ -954,6 +1037,7 @@ export const VideoPlayer = React.forwardRef<VideoPlayerHandle, VideoPlayerProps>
     const lastProgressSyncAtRef = useRef(0);
     const lastProgressSyncedTimeRef = useRef(0);
     const sessionResumePositionRef = useRef(0);
+    const previewHostRef = useRef<HTMLDivElement>(null);
 
     useEffect(() => {
       previewFailureHandlerRef.current = onPreviewPlaybackFailed;
@@ -1435,7 +1519,7 @@ export const VideoPlayer = React.forwardRef<VideoPlayerHandle, VideoPlayerProps>
     }, []);
 
     const togglePlayPause = useCallback(async () => {
-      const isNative = shouldUseNativePlayer;
+      const isNative = shouldUseNativeBridgePlayer;
       if (isNative) {
         if (!openedPlayerRef.current) return;
         try {
@@ -1462,7 +1546,7 @@ export const VideoPlayer = React.forwardRef<VideoPlayerHandle, VideoPlayerProps>
         }
       }
       showControls();
-    }, [isPlaying, shouldUseNativePlayer, showControls, syncProgressToSupabase, tryStartWebPlayback]);
+    }, [isPlaying, shouldUseNativeBridgePlayer, showControls, syncProgressToSupabase, tryStartWebPlayback]);
 
     const seek = useCallback((amount: number) => {
       const video = previewVideoRef.current;
@@ -1686,7 +1770,11 @@ export const VideoPlayer = React.forwardRef<VideoPlayerHandle, VideoPlayerProps>
           }),
         ];
 
-        await prepareSystemUi();
+        const isEmbeddedPreviewMode = shouldUseEmbeddedNativePreview;
+
+        if (!isEmbeddedPreviewMode) {
+          await prepareSystemUi();
+        }
 
         // Ensure no other player is lingering before starting
         try {
@@ -1700,26 +1788,72 @@ export const VideoPlayer = React.forwardRef<VideoPlayerHandle, VideoPlayerProps>
           ? normalizePlayableUrl(playbackUrl || url)
           : loadMediaStream(playbackUrl || url, media?.type === 'series' ? 'mp4' : 'hls', true);
 
-        console.log(`[NativePlayer] Iniciando stream nativo: ${secureStreamUrl}`);
-        touchBufferIndicator('Conectando player nativo', {
+        const readEmbeddedBounds = () => {
+          const host = previewHostRef.current;
+          if (!host) return null;
+          const rect = host.getBoundingClientRect();
+          if (!Number.isFinite(rect.width) || !Number.isFinite(rect.height) || rect.width < 2 || rect.height < 2) {
+            return null;
+          }
+          return {
+            x: Math.max(0, Math.round(rect.left)),
+            y: Math.max(0, Math.round(rect.top)),
+            width: Math.max(1, Math.round(rect.width)),
+            height: Math.max(1, Math.round(rect.height)),
+          };
+        };
+
+        let embeddedBounds = readEmbeddedBounds();
+        if (isEmbeddedPreviewMode && !embeddedBounds) {
+          for (let attempt = 0; attempt < 4 && !embeddedBounds; attempt += 1) {
+            await new Promise<void>((resolve) => {
+              window.requestAnimationFrame(() => resolve());
+            });
+            embeddedBounds = readEmbeddedBounds();
+          }
+        }
+
+        if (isEmbeddedPreviewMode && !embeddedBounds) {
+          throw new Error('Falha ao medir a area do preview para iniciar o player nativo embutido.');
+        }
+
+        console.log(`[NativePlayer] Iniciando stream nativo (${isEmbeddedPreviewMode ? 'embedded' : 'fullscreen'}): ${secureStreamUrl}`);
+        touchBufferIndicator(isEmbeddedPreviewMode ? 'Conectando prévia nativa' : 'Conectando player nativo', {
           step: 8,
           cap: 90,
           attempt: 1,
           total: 1,
           forceResetTimer: true,
         });
-        setInlineError(`Iniciando Player Nativo...\nURL: ${secureStreamUrl.substring(0, 50)}...`);
+        setInlineError(
+          isEmbeddedPreviewMode
+            ? 'Iniciando prévia nativa...'
+            : `Iniciando Player Nativo...\nURL: ${secureStreamUrl.substring(0, 50)}...`,
+        );
 
-        const result = await NativeVideoPlayer.initPlayer({
+        const initOptions: Parameters<typeof NativeVideoPlayer.initPlayer>[0] = {
           url: secureStreamUrl,
           headers: nativePlayerHeaders,
           title: media?.title || 'Xandeflix',
           smallTitle: media?.category || (isLive ? 'Ao Vivo' : ''),
           artwork: media?.thumbnail || media?.backdrop || '',
-          chromecast: true,
-          displayMode: 'landscape',
+          chromecast: !isEmbeddedPreviewMode,
+          displayMode: isEmbeddedPreviewMode ? 'all' : 'landscape',
           startAtSec: !isLive && sessionResumePosition > 5 ? sessionResumePosition : 0,
-        });
+        };
+
+        if (isEmbeddedPreviewMode && embeddedBounds) {
+          initOptions.embedded = true;
+          initOptions.hideControls = true;
+          initOptions.x = embeddedBounds.x;
+          initOptions.y = embeddedBounds.y;
+          initOptions.width = embeddedBounds.width;
+          initOptions.height = embeddedBounds.height;
+          initOptions.title = '';
+          initOptions.smallTitle = '';
+        }
+
+        const result = await NativeVideoPlayer.initPlayer(initOptions);
 
         if (handledExitRef.current) {
           // Se o unmount aconteceu enquanto o player estava abrindo
@@ -1750,7 +1884,9 @@ export const VideoPlayer = React.forwardRef<VideoPlayerHandle, VideoPlayerProps>
         console.error('[NativePlayer] Erro fatal ao iniciar:', playerError);
         removeListeners();
         clearProgressPolling();
-        await restoreSystemUi();
+        if (!shouldUseEmbeddedNativePreview) {
+          await restoreSystemUi();
+        }
         hideBufferIndicator();
         const reason = normalizeErrorMessage(playerError, 'Falha ao iniciar player nativo.');
         setError(reason);
@@ -1763,7 +1899,7 @@ export const VideoPlayer = React.forwardRef<VideoPlayerHandle, VideoPlayerProps>
         setPlayerState('error');
         flushTelemetry('fatal_error');
       }
-    }, [applyPlaybackDiagnostic, clearProgressPolling, flushTelemetry, handleNativePlayerError, handlePlayerEvent, handlePlayerExit, hideBufferIndicator, isLiveStream, media?.backdrop, media?.category, media?.thumbnail, media?.title, media?.type, nativePlayerHeaders, playbackUrl, prepareSystemUi, removeListeners, restoreSystemUi, syncProgressFromNativePlayer, touchBufferIndicator, url]);
+    }, [applyPlaybackDiagnostic, clearProgressPolling, flushTelemetry, handleNativePlayerError, handlePlayerEvent, handlePlayerExit, hideBufferIndicator, isLiveStream, media?.backdrop, media?.category, media?.thumbnail, media?.title, media?.type, nativePlayerHeaders, playbackUrl, prepareSystemUi, removeListeners, restoreSystemUi, shouldUseEmbeddedNativePreview, syncProgressFromNativePlayer, touchBufferIndicator, url]);
 
     useEffect(() => {
       let appStateListener: Promise<PluginListenerHandle> | null = null;
@@ -1786,7 +1922,7 @@ export const VideoPlayer = React.forwardRef<VideoPlayerHandle, VideoPlayerProps>
     }, [isPreview, isMinimized, setupNativePlayer]);
 
     useEffect(() => {
-      if (!shouldUseNativePlayer) {
+      if (!shouldUseNativeBridgePlayer) {
         return;
       }
 
@@ -1800,9 +1936,8 @@ export const VideoPlayer = React.forwardRef<VideoPlayerHandle, VideoPlayerProps>
           NativeVideoPlayer.exitPlayer().catch(() => {});
         }
       };
-    }, [shouldUseNativePlayer, url, setupNativePlayer, clearProgressPolling, removeListeners]);
+    }, [shouldUseNativeBridgePlayer, url, setupNativePlayer, clearProgressPolling, removeListeners]);
 
-    const previewHostRef = useRef<HTMLDivElement>(null);
     const previewVideoRef = useRef<HTMLVideoElement>(null);
     const latestPreviewUrlRef = useRef(url);
     const suppressNativePreviewExitOnUnmountRef = useRef(suppressNativePreviewExitOnUnmount);
@@ -1812,25 +1947,9 @@ export const VideoPlayer = React.forwardRef<VideoPlayerHandle, VideoPlayerProps>
     onPreviewRequestFullscreenRef.current = onPreviewRequestFullscreen;
 
     useEffect(() => {
-      // O plugin wako-capacitor-video-player não suporta "embedded: true" de verdade no Android.
-      // Ele abre forçadamente uma Activity em tela cheia. Para previews inline, NÃO podemos usá-lo.
-      return;
-    }, [
-      isNativePlatform,
-      isPreview,
-      media?.backdrop,
-      media?.category,
-      media?.thumbnail,
-      media?.title,
-      onPreviewRequestFullscreen,
-      removeListeners,
-      url,
-    ]);
-
-    useEffect(() => {
-      // Web preview/web player: Usar sempre em navegadores, mas no Android Nativo usar APENAS para os Previews Inline.
-      // O player full screen no Android Nativo continua usando o NativeVideoPlayer.
-      if (shouldUseNativePlayer) return;
+      // Pipeline web: usado em navegadores e como fallback.
+      // Quando o bridge nativo estiver ativo (fullscreen ou preview embutido), este efeito fica inativo.
+      if (shouldUseNativeBridgePlayer) return;
 
       const video = previewVideoRef.current;
       if (!video) return;
@@ -1858,6 +1977,8 @@ export const VideoPlayer = React.forwardRef<VideoPlayerHandle, VideoPlayerProps>
       let hlsMediaRecoveryAttempts = 0;
       let nativePromotionRequested = false;
       let hardPreviewFailureReported = false;
+      // Regra UX: na grade de canais, o preview deve permanecer inline.
+      // Fullscreen só pode ocorrer por ação explícita do usuário (Enter/OK/click).
       const allowAutomaticPreviewPromotion = false;
       const registerPreviewDiagnostic = (
         reason: string,
@@ -1993,9 +2114,23 @@ export const VideoPlayer = React.forwardRef<VideoPlayerHandle, VideoPlayerProps>
           reason: failureReason,
           detail: failureDetail,
         });
+        const isRecoverableMediaFailure = isLikelyRecoverableMediaFailure({
+          code: failureCode,
+          reason: failureReason,
+          detail: failureDetail,
+        });
         const nextIndex = candidateIndex + 1;
+        const attemptsDone = candidateIndex + 1;
+        const tsPipelineLikely = shouldPreferTsPipeline(currentUrl);
+        const shouldPromoteEarlyToNative =
+          allowAutomaticPreviewPromotion
+          && isRecoverableMediaFailure
+          && (tsPipelineLikely || attemptsDone >= 2);
 
-        if (!isConnectionFailure) {
+        if (!isConnectionFailure && !isRecoverableMediaFailure) {
+          if (allowAutomaticPreviewPromotion && triggerNativeFallback(`${failureReason}: ${currentUrl}`)) {
+            return;
+          }
           failPreviewAndStop(
             failureReason,
             failureCode,
@@ -2005,13 +2140,19 @@ export const VideoPlayer = React.forwardRef<VideoPlayerHandle, VideoPlayerProps>
           return;
         }
 
+        if (shouldPromoteEarlyToNative && triggerNativeFallback(`${failureReason}: ${currentUrl}`)) {
+          return;
+        }
+
         if (nextIndex < candidates.length) {
           candidateIndex = nextIndex;
           liveRecoveryAttempts = 0;
           hlsMediaRecoveryAttempts = 0;
           registerPreviewDiagnostic(failureReason, currentUrl, {
             code: failureCode,
-            detail: `${failureDetail} -> tentando candidato ${nextIndex + 1}/${candidates.length}.`,
+            detail: isRecoverableMediaFailure
+              ? `${failureDetail} -> erro de midia recuperavel, tentando candidato ${nextIndex + 1}/${candidates.length}.`
+              : `${failureDetail} -> tentando candidato ${nextIndex + 1}/${candidates.length}.`,
           });
           playCurrentSource();
           return;
@@ -2177,7 +2318,7 @@ export const VideoPlayer = React.forwardRef<VideoPlayerHandle, VideoPlayerProps>
           forceResetTimer: candidateIndex === 0,
         });
         console.log(`[VideoPlayer-Preview] Tentando carregar candidato [${candidateIndex}]: ${currentUrl}`);
-        const startupTimeoutMs = !isLiveStream ? 8000 : (isPreview ? 15000 : 20000);
+        const startupTimeoutMs = !isLiveStream ? 8000 : (isPreview ? 22000 : 24000);
         startupTimeoutId = setTimeout(() => {
           if (disposed) return;
           console.error('[Preview] Timeout para iniciar stream:', currentUrl);
@@ -2190,7 +2331,7 @@ export const VideoPlayer = React.forwardRef<VideoPlayerHandle, VideoPlayerProps>
         }, startupTimeoutMs);
 
         const canUseNativeHlsTag = video.canPlayType('application/vnd.apple.mpegurl') !== '';
-        const shouldUseHls = isLikelyHlsUrl(currentUrl);
+        const shouldUseHls = isLikelyHlsUrl(currentUrl) && !shouldPreferTsPipeline(currentUrl);
         
         const isSportsChannel = isLiveStream && (
           media?.category?.toLowerCase().includes('esporte') ||
@@ -2457,7 +2598,7 @@ export const VideoPlayer = React.forwardRef<VideoPlayerHandle, VideoPlayerProps>
       media?.title,
       persistProgress,
       playbackUrl,
-      shouldUseNativePlayer,
+      shouldUseNativeBridgePlayer,
       streamHeaderEntries,
       syncProgressToSupabase,
       url,
@@ -2479,7 +2620,7 @@ export const VideoPlayer = React.forwardRef<VideoPlayerHandle, VideoPlayerProps>
       bufferIndicator.visible &&
       !previewTerminalFailure &&
       !inlineError &&
-      !(shouldUseNativePlayer && playerState === 'error');
+      !(shouldUseNativeBridgePlayer && playerState === 'error');
     const bufferElapsedSeconds = bufferIndicator.startedAt
       ? Math.max(0, Math.floor((Date.now() - bufferIndicator.startedAt) / 1000))
       : 0;
@@ -2551,7 +2692,7 @@ export const VideoPlayer = React.forwardRef<VideoPlayerHandle, VideoPlayerProps>
           }
         }}
       >
-        {shouldUseNativePlayer ? (
+        {shouldUseNativeBridgePlayer ? (
           <>
             {playerState !== 'ready' && (
               <div className="absolute inset-0 bg-[radial-gradient(circle_at_top,rgba(239,68,68,0.18),rgba(0,0,0,0.96)_58%)]" />
@@ -2674,7 +2815,7 @@ export const VideoPlayer = React.forwardRef<VideoPlayerHandle, VideoPlayerProps>
              <div className="text-[9px] text-white/40 mt-3 uppercase max-w-[200px] font-['Outfit']">O player nativo pode suportar este canal. Clique em tela cheia.</div>
            </div>
         )}
-        {inlineError && !isPreview && !shouldUseNativePlayer && (
+        {inlineError && !isPreview && !shouldUseNativeBridgePlayer && (
           <div className="absolute top-6 left-1/2 -translate-x-1/2 z-[90] rounded-xl border border-red-500/30 bg-zinc-900/95 px-4 py-2 text-[11px] font-black uppercase tracking-wider text-red-200 font-['Outfit']">
             {inlineError}
           </div>

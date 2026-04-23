@@ -13,6 +13,8 @@ interface CategoryRowProps {
   title?: string;
   items?: RowItem[];
   rowIndex: number;
+  navSection?: string;
+  navIdPrefix?: string;
   disableSideMenuOffset?: boolean;
   tightTopSpacing?: boolean;
   preloadedTMDBByKey?: Record<string, TMDBData>;
@@ -25,9 +27,12 @@ interface CategoryRowProps {
 interface MediaCardProps {
   item: RowItem;
   navId: string;
+  navSection: string;
   cardWidth: number;
   cardHeight: number;
   imageUrl: string;
+  focusLift?: number;
+  focusScale?: number;
   onPress?: (media: Media) => void;
   onFocus?: (media: Media, id: string) => void;
 }
@@ -67,9 +72,12 @@ const resolveImageUrl = (item: RowItem, preloadedTMDBByKey?: Record<string, TMDB
 const MediaCard = React.memo(({
   item,
   navId,
+  navSection,
   cardWidth,
   cardHeight,
   imageUrl,
+  focusLift = -6,
+  focusScale = 1.04,
   onPress,
   onFocus,
 }: MediaCardProps) => {
@@ -109,7 +117,7 @@ const MediaCard = React.memo(({
   return (
     <div
       ref={(el) =>
-        registerNode(navId, el, 'body', {
+        registerNode(navId, el, navSection, {
           onEnter: () => {
             if (canOpenMedia) {
               onPress?.(item as Media);
@@ -144,7 +152,9 @@ const MediaCard = React.memo(({
         position: 'relative',
         flex: '0 0 auto',
         cursor: 'pointer',
-        transform: isFocused ? 'translate3d(0, -6px, 0) scale(1.04)' : 'translate3d(0, 0, 0) scale(1)',
+        transform: isFocused
+          ? `translate3d(0, ${focusLift}px, 0) scale(${focusScale})`
+          : 'translate3d(0, 0, 0) scale(1)',
         transition: 'transform 150ms cubic-bezier(0.2, 0, 0.2, 1)',
         willChange: 'transform',
         zIndex: isFocused ? 10 : 1,
@@ -248,6 +258,8 @@ export const CategoryRow: React.FC<CategoryRowProps> = ({
   title,
   items,
   rowIndex,
+  navSection = 'body',
+  navIdPrefix = '',
   disableSideMenuOffset = false,
   tightTopSpacing = false,
   preloadedTMDBByKey,
@@ -302,6 +314,8 @@ export const CategoryRow: React.FC<CategoryRowProps> = ({
   const rowPaddingX = (layout.isTvProfile ? 20 : 28) + sideMenuOffset;
   const rowGap = layout.isTvProfile ? 10 : 14;
   const isLiveRow = resolvedCategory.type === 'live' || resolvedTitle.toLowerCase().includes('canais') || resolvedTitle.toLowerCase().includes('ao vivo');
+  const cardFocusLift = tightTopSpacing ? -2 : -6;
+  const cardFocusScale = tightTopSpacing ? 1.02 : 1.04;
   
   const cardWidth = layout.isTvProfile
     ? (isLiveRow ? 360 : 240)
@@ -309,7 +323,8 @@ export const CategoryRow: React.FC<CategoryRowProps> = ({
   const cardHeight = isLiveRow ? Math.round(cardWidth * (9 / 16)) : Math.round(cardWidth * 1.5);
   const titleSize = layout.isTvProfile ? 20 : layout.isCompact ? 24 : 28;
 
-  const seeAllNavId = `see-all-${rowIndex}`;
+  const makeNavId = React.useCallback((id: string) => `${navIdPrefix}${id}`, [navIdPrefix]);
+  const seeAllNavId = makeNavId(`see-all-${rowIndex}`);
   const rowHeight = cardHeight + (layout.isTvProfile ? 100 : 140);
 
   return (
@@ -353,7 +368,7 @@ export const CategoryRow: React.FC<CategoryRowProps> = ({
             {onSeeAll && resolvedMediaItems.length > 0 ? (
               <button
                 ref={(el) =>
-                  registerNode(seeAllNavId, el, 'body', {
+                  registerNode(seeAllNavId, el, navSection, {
                     onEnter: () => onSeeAll(resolvedCategory),
                   })
                 }
@@ -395,18 +410,21 @@ export const CategoryRow: React.FC<CategoryRowProps> = ({
               scrollSnapType: 'x mandatory',
               paddingLeft: rowPaddingX,
               paddingRight: rowPaddingX,
-              paddingBottom: tightTopSpacing ? 28 : 45,
-              paddingTop: tightTopSpacing ? 12 : 30,
+              paddingBottom: tightTopSpacing ? 24 : 45,
+              paddingTop: tightTopSpacing ? 18 : 30,
             }}
           >
             {resolvedItems.slice(0, renderedCount).map((item, index) => (
               <MediaCard
                 key={`${item.id}-${index}`}
                 item={item}
-                navId={`item-${rowIndex}-${index}`}
+                navId={makeNavId(`item-${rowIndex}-${index}`)}
+                navSection={navSection}
                 cardWidth={cardWidth}
                 cardHeight={cardHeight}
                 imageUrl={resolveImageUrl(item, preloadedTMDBByKey)}
+                focusLift={cardFocusLift}
+                focusScale={cardFocusScale}
                 onPress={onMediaPress}
                 onFocus={(m, id) => onFocusWrapper(m, id, index)}
               />
