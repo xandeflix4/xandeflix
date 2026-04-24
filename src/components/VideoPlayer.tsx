@@ -715,7 +715,9 @@ export const VideoPlayer = React.memo(
     const shouldUseEmbeddedNativePreview = isAndroid && isNativePlatform && isPreview && isLiveStream;
     const shouldUseNativeBridgePlayer = shouldUseNativePlayer || shouldUseEmbeddedNativePreview;
     const savePlaybackProgress = useStore((state) => state.savePlaybackProgress);
-    const [isChannelBrowserOpen, setIsChannelBrowserOpen] = useState(false);
+    const isChannelBrowserOpen = useStore((state) => state.isChannelBrowserOpen);
+    const setIsChannelBrowserOpen = useStore((state) => state.setIsChannelBrowserOpen);
+    // REPLACED BY GLOBAL STORE: const [isChannelBrowserOpen, setIsChannelBrowserOpen] = useState(false);
     const videoObjectFitClass = 'object-cover';
     const [channelGroupId, setChannelGroupId] = useState<string | null>(null);
     const [channelSearchQuery, setChannelSearchQuery] = useState('');
@@ -738,7 +740,9 @@ export const VideoPlayer = React.memo(
     }, [channelGroupId, liveBrowserCategories]);
 
     useEffect(() => {
-      if (!isLiveStream || liveBrowserCategories.length === 0) {
+      // Se a sidebar estiver aberta, não permitimos que a sincronização automática 
+      // do canal atual sobrescreva a navegação manual do usuário.
+      if (!isLiveStream || liveBrowserCategories.length === 0 || isChannelBrowserOpen) {
         return;
       }
 
@@ -754,7 +758,7 @@ export const VideoPlayer = React.memo(
       if (matchingCategory && matchingCategory.id !== channelGroupId) {
         setChannelGroupId(matchingCategory.id);
       }
-    }, [channelGroupId, isLiveStream, liveBrowserCategories, media?.id, url]);
+    }, [channelGroupId, isLiveStream, liveBrowserCategories, media?.id, url, isChannelBrowserOpen]);
 
     const activeBrowserCategory = useMemo(
       () => liveBrowserCategories.find((category) => category.id === channelGroupId) || liveBrowserCategories[0] || null,
@@ -762,11 +766,17 @@ export const VideoPlayer = React.memo(
     );
 
     const browserChannels = useMemo(() => {
-      const items = activeBrowserCategory?.items || [];
-      const query = channelSearchQuery.trim().toLowerCase();
-      if (!query) return items;
-      return items.filter((item) => item.title.toLowerCase().includes(query));
-    }, [activeBrowserCategory, channelSearchQuery]);
+      console.log('[VideoPlayer] Calculando canais para o grupo:', channelGroupId);
+      const category = liveBrowserCategories.find(c => c.id === channelGroupId);
+      if (!category) {
+        // Fallback para a primeira categoria se nenhuma estiver selecionada
+        return liveBrowserCategories[0]?.items || [];
+      }
+
+      return category.items.filter(i => 
+        i.title.toLowerCase().includes(channelSearchQuery.toLowerCase())
+      );
+    }, [liveBrowserCategories, channelGroupId, channelSearchQuery]);
 
     const canShowChannelBrowser =
       showChannelSidebar && isLiveStream && !isPreview && typeof onZap === 'function' && liveBrowserCategories.length > 0;
@@ -871,19 +881,25 @@ export const VideoPlayer = React.memo(
       isActive: !!isChannelBrowserOpen,
     });
 
-    // Auto-focus ao abrir o navegador de canais
+    // Auto-focus ao abrir o navegador de canais (EXECUTAR APENAS NA ABERTURA)
+    const hasInitialSidebarFocusRef = useRef(false);
     useEffect(() => {
       if (isChannelBrowserOpen) {
+        if (hasInitialSidebarFocusRef.current) return;
+        hasInitialSidebarFocusRef.current = true;
+
         const firstCatId = liveBrowserCategories[0]?.id;
         const targetId = activeBrowserCategory?.id 
-          ? `live-cat-${activeBrowserCategory.id}` 
-          : (firstCatId ? `live-cat-${firstCatId}` : null);
+          ? `tv-sidebar-group-${activeBrowserCategory.id}` 
+          : (firstCatId ? `tv-sidebar-group-${firstCatId}` : null);
         
         if (targetId) {
-          setTimeout(() => setFocusedId(targetId), 100);
+          setTimeout(() => setFocusedId(targetId), 200);
         }
+      } else {
+        hasInitialSidebarFocusRef.current = false;
       }
-    }, [isChannelBrowserOpen, activeBrowserCategory?.id, liveBrowserCategories, setFocusedId]);
+    }, [isChannelBrowserOpen, liveBrowserCategories, setFocusedId]);
 
     const [, setPlaybackDiagnostic] = useState<PlaybackDiagnostic | null>(null);
     const [previewTerminalFailure, setPreviewTerminalFailure] = useState(false);
@@ -1486,9 +1502,9 @@ export const VideoPlayer = React.memo(
       }
     }, [showControls]);
 
-    const handleZap = useCallback((direction: 'next' | 'prev') => {
-      if (!isLiveStream || isPreview) return;
-
+    const allLiveChannels = useMemo(() => {
+      if (!isLiveStream || isPreview) return [];
+      
       const sourceCategories =
         channelBrowserCategories && channelBrowserCategories.length > 0
           ? channelBrowserCategories
@@ -1502,7 +1518,7 @@ export const VideoPlayer = React.memo(
             ];
 
       const seen = new Set<string>();
-      const allLiveChannels = sourceCategories
+      return sourceCategories
         .filter((category) =>
           category.type === 'live' || category.items.some((item) => item.type === 'live'),
         )
@@ -1514,7 +1530,13 @@ export const VideoPlayer = React.memo(
           seen.add(key);
           return true;
         });
-      
+    }, [channelBrowserCategories, isLiveStream, isPreview]);
+
+    const handleZap = useCallback((direction: 'next' | 'prev') => {
+      if (!isLiveStream || isPreview || allLiveChannels.length === 0) return;
+
+
+
       const currentIndex = allLiveChannels.findIndex(i => i.id === media?.id || i.videoUrl === url);
       if (currentIndex === -1) return;
 
@@ -1530,7 +1552,7 @@ export const VideoPlayer = React.memo(
            onClose();
          }
       }
-    }, [channelBrowserCategories, isLiveStream, isPreview, media?.id, onClose, onZap, url]);
+    }, [allLiveChannels, isLiveStream, isPreview, media?.id, onClose, onZap, url]);
 
     // Internal TV key listener
     useEffect(() => {
@@ -1585,7 +1607,7 @@ export const VideoPlayer = React.memo(
           void togglePlayPause();
           e.preventDefault();
         } else if (key === 'ArrowUp' || keyCode === 19) {
-          if (isLiveStream) {
+          if (isLiveStream && !isChannelBrowserOpen) {
             handleZap('prev');
             e.preventDefault();
           } else {
@@ -1593,7 +1615,7 @@ export const VideoPlayer = React.memo(
              e.preventDefault();
           }
         } else if (key === 'ArrowDown' || keyCode === 20) {
-          if (isLiveStream) {
+          if (isLiveStream && !isChannelBrowserOpen) {
             handleZap('next');
             e.preventDefault();
           } else {
@@ -1613,16 +1635,42 @@ export const VideoPlayer = React.memo(
         } else if (key === 'Escape' || key === 'Back' || keyCode === 4 || keyCode === 27) {
           if (isChannelBrowserOpen) {
             setIsChannelBrowserOpen(false);
+            showControls();
           } else {
             void closeNativePlayer();
           }
           e.preventDefault();
+          e.stopImmediatePropagation();
         }
       };
 
       window.addEventListener('keydown', handleTvKey);
       return () => window.removeEventListener('keydown', handleTvKey);
     }, [closeNativePlayer, isLiveStream, isPreview, isChannelBrowserOpen, handleZap, seek, shouldUseNativePlayer, showControls, togglePlayPause]);
+
+    // CRITICAL: Listener de alta prioridade para fechar o navegador de canais com Back/Escape.
+    // Funciona em QUALQUER modo de player (web ou nativo) e usa capture:true para
+    // interceptar o evento ANTES de qualquer outro listener global (HomeScreen).
+    useEffect(() => {
+      if (!canShowChannelBrowser) return;
+
+      const handleChannelBrowserBack = (e: KeyboardEvent) => {
+        const key = e.key;
+        const keyCode = (e as any).keyCode;
+        const isBack = key === 'Escape' || key === 'Back' || keyCode === 4 || keyCode === 27;
+
+        if (!isBack || !isChannelBrowserOpen) return;
+
+        // Fechar apenas o navegador de canais, NÃO o player
+        setIsChannelBrowserOpen(false);
+        e.preventDefault();
+        e.stopImmediatePropagation();
+      };
+
+      // capture: true garante que este handler roda ANTES dos listeners normais
+      window.addEventListener('keydown', handleChannelBrowserBack, true);
+      return () => window.removeEventListener('keydown', handleChannelBrowserBack, true);
+    }, [canShowChannelBrowser, isChannelBrowserOpen, setIsChannelBrowserOpen]);
 
     // Web fullscreen live: abrir navegador de canais com seta esquerda (Android TV)
     useEffect(() => {
@@ -1648,13 +1696,8 @@ export const VideoPlayer = React.memo(
           return;
         }
 
-        if (key === 'ArrowRight' || keyCode === 22) {
-          if (isChannelBrowserOpen) {
-            setIsChannelBrowserOpen(false);
-            showControls();
-            event.preventDefault();
-          }
-        }
+        // O fechamento via ArrowRight foi removido para permitir a navegação entre colunas (Grupos -> Canais)
+
       };
 
       window.addEventListener('keydown', handleWebLiveKey);
@@ -1675,16 +1718,16 @@ export const VideoPlayer = React.memo(
       setPlayerState('opening');
 
       try {
-        listenerHandlesRef.current = [
-          await NativeVideoPlayer.addListener('playerReady', handlePlayerEvent),
-          await NativeVideoPlayer.addListener('playerPlay', handlePlayerEvent),
-          await NativeVideoPlayer.addListener('playerPause', handlePlayerEvent),
-          await NativeVideoPlayer.addListener('playerEnded', handlePlayerEvent),
-          await NativeVideoPlayer.addListener('playerError', handleNativePlayerError),
-          await NativeVideoPlayer.addListener('playerExit', (event) => {
+        listenerHandlesRef.current = await Promise.all([
+          NativeVideoPlayer.addListener('playerReady', handlePlayerEvent),
+          NativeVideoPlayer.addListener('playerPlay', handlePlayerEvent),
+          NativeVideoPlayer.addListener('playerPause', handlePlayerEvent),
+          NativeVideoPlayer.addListener('playerEnded', handlePlayerEvent),
+          NativeVideoPlayer.addListener('playerError', handleNativePlayerError),
+          NativeVideoPlayer.addListener('playerExit', (event) => {
             void handlePlayerExit(event);
           }),
-        ];
+        ]);
 
         const isEmbeddedPreviewMode = shouldUseEmbeddedNativePreview;
 
@@ -2748,7 +2791,7 @@ export const VideoPlayer = React.memo(
               onClick={(event) => {
                 event.stopPropagation();
                 if (canShowChannelBrowser) {
-                  setIsChannelBrowserOpen((prev) => !prev);
+                  setIsChannelBrowserOpen(!isChannelBrowserOpen);
                 }
               }}
               className={`inline-flex h-14 w-14 items-center justify-center rounded-2xl border-2 border-white/35 bg-black/65 text-white shadow-[0_8px_24px_rgba(0,0,0,0.45)] transition-colors hover:bg-black/80 ${
@@ -2865,7 +2908,7 @@ export const VideoPlayer = React.memo(
                   type="button"
                   onClick={(event) => {
                     event.stopPropagation();
-                    setIsChannelBrowserOpen((prev) => !prev);
+                    setIsChannelBrowserOpen(!isChannelBrowserOpen);
                   }}
                   className="rounded-md border border-white/20 bg-black/40 px-3 py-2 text-xs font-semibold text-white"
                 >
@@ -2943,8 +2986,16 @@ export const VideoPlayer = React.memo(
                 <div className="text-sm font-black uppercase tracking-[0.2em] text-red-500 font-['Outfit']">Navegador de Canais</div>
                 <button
                   type="button"
+                  id="tv-sidebar-close"
+                  data-nav-id="tv-sidebar-close"
+                  ref={(el) => {
+                    if (el) registerNode('tv-sidebar-close', el, 'modal-top', {
+                      onEnter: () => setIsChannelBrowserOpen(false),
+                      onBack: () => setIsChannelBrowserOpen(false),
+                    });
+                  }}
                   onClick={() => setIsChannelBrowserOpen(false)}
-                  className="rounded-xl border border-white/15 bg-white/5 px-4 py-2 text-xs font-black text-white/85 font-['Outfit'] uppercase"
+                  className="rounded-xl border border-white/15 bg-white/5 px-4 py-2 text-xs font-black text-white/85 font-['Outfit'] uppercase hover:bg-white/10 transition-colors"
                 >
                   Fechar
                 </button>
@@ -2956,17 +3007,29 @@ export const VideoPlayer = React.memo(
                     const selected = (activeBrowserCategory?.id || '') === category.id;
                     return (
                       <button
-                        key={`live-cat-${category.id}`}
-                        id={`live-cat-${category.id}`}
+                        key={`tv-sidebar-group-${category.id}`}
+                        id={`tv-sidebar-group-${category.id}`}
                         type="button"
-                        data-nav-id={`live-cat-${category.id}`}
+                        data-nav-id={`tv-sidebar-group-${category.id}`}
                         ref={(el) => {
-                          if (el) registerNode(`live-cat-${category.id}`, el, 'modal-live-categories', {
+                          if (el) registerNode(`tv-sidebar-group-${category.id}`, el, 'modal-live-categories', {
                             onFocus: () => {
-                              setChannelGroupId(category.id);
-                              setChannelSearchQuery('');
+                              console.log('[Sidebar] Grupo focado:', category.title);
                             },
-                            disableAutoScroll: true,
+                            onEnter: () => {
+                               console.log('[Sidebar] Grupo selecionado via Enter:', category.title, category.id);
+                               setChannelGroupId(category.id);
+                               setChannelSearchQuery('');
+                               setTimeout(() => {
+                                 const el = document.getElementById('tv-sidebar-search');
+                                 if (el) el.focus();
+                               }, 150);
+                            },
+                            onBack: () => setIsChannelBrowserOpen(false),
+                            onRight: () => {
+                               const el = document.getElementById('tv-sidebar-search');
+                               if (el) el.focus();
+                            },
                           });
                         }}
                         onClick={() => {
@@ -2989,10 +3052,20 @@ export const VideoPlayer = React.memo(
                 <div className="flex h-full min-h-0 flex-col overflow-hidden bg-black/35 p-4">
                   <div className="relative mb-4">
                     <input
+                      id="tv-sidebar-search"
+                      data-nav-id="tv-sidebar-search"
+                      ref={(el) => {
+                        if (el) registerNode('tv-sidebar-search', el, 'modal-search', {
+                          onFocus: () => {
+                             // Opcional: highlight visual
+                          },
+                          onEnter: () => el.focus(),
+                        });
+                      }}
                       value={channelSearchQuery}
                       onChange={(event) => setChannelSearchQuery(event.target.value)}
                       placeholder="Buscar canal..."
-                      className="w-full rounded-xl border border-white/10 bg-white/5 px-4 py-4 text-sm font-black text-white outline-none focus:border-red-500/50 transition-colors font-['Outfit']"
+                      className="w-full rounded-xl border border-white/10 bg-white/5 px-4 py-4 text-sm font-black text-white outline-none focus:border-red-500/50 transition-colors font-['Outfit'] focus:bg-white/10"
                     />
                   </div>
                   <div ref={channelListContainerRef} className="min-h-0 flex-1 overflow-y-auto pr-1 scrollbar-hide">
@@ -3000,22 +3073,22 @@ export const VideoPlayer = React.memo(
                       const selected = channel.id === media?.id || channel.videoUrl === url;
                       return (
                         <button
-                          key={`live-channel-${channel.id}`}
-                          id={`live-channel-${channel.id}`}
+                          key={`tv-sidebar-channel-${channel.id}`}
+                          id={`tv-sidebar-channel-${channel.id}`}
                           type="button"
-                          data-nav-id={`live-channel-${channel.id}`}
+                          data-nav-id={`tv-sidebar-channel-${channel.id}`}
                           ref={(el) => {
-                            if (el) registerNode(`live-channel-${channel.id}`, el, 'modal-live-channels', {
+                            if (el) registerNode(`tv-sidebar-channel-${channel.id}`, el, 'modal-live-channels', {
                               onEnter: () => {
                                 onZap?.(channel);
-                                setIsChannelBrowserOpen(false);
                               },
-                              disableAutoScroll: true,
+                              onRight: () => setIsChannelBrowserOpen(false),
+                              onBack: () => setIsChannelBrowserOpen(false),
                             });
                           }}
                           onClick={() => {
                             onZap?.(channel);
-                            setIsChannelBrowserOpen(false);
+                            // REMOVIDO: setIsChannelBrowserOpen(false);
                           }}
                           className="mb-3 w-full rounded-2xl px-4 py-4 text-left transition-transform hover:scale-[1.02] active:scale-98"
                           style={{

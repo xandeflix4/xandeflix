@@ -148,6 +148,8 @@ interface XandeflixState {
   setPlayingMedia: (media: Media | null) => void;
   videoType: 'live' | 'movie' | 'series' | null;
   setVideoType: (type: 'live' | 'movie' | 'series' | null) => void;
+  isChannelBrowserOpen: boolean;
+  setIsChannelBrowserOpen: (open: boolean) => void;
 }
 
 const initialTvMode = detectTvEnvironment();
@@ -238,6 +240,8 @@ export const useStore = create<XandeflixState>()(
       setActiveVideoUrl: (url) => set({ activeVideoUrl: url }),
       setPlayingMedia: (media) => set({ playingMedia: media }),
       setVideoType: (type) => set({ videoType: type }),
+      isChannelBrowserOpen: false,
+      setIsChannelBrowserOpen: (open) => set({ isChannelBrowserOpen: open }),
       
       setHiddenCategoryIds: (ids) => set({ hiddenCategoryIds: ids }),
 

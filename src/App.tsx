@@ -122,6 +122,12 @@ export default function App() {
         const currentMedia = currentState.selectedMedia;
         const currentPlayer = currentState.playerMode;
 
+        // Se o navegador de canais estiver aberto, apenas fecha o navegador
+        if (currentState.isChannelBrowserOpen) {
+          currentState.setIsChannelBrowserOpen(false);
+          return;
+        }
+
         // Se o player estiver aberto, fecha o player primeiro
         if (currentPlayer === 'fullscreen' || currentPlayer === 'minimized') {
           currentState.setPlayerMode('closed');

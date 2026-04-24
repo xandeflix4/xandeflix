@@ -640,11 +640,15 @@ export const LiveTVGrid: React.FC<LiveTVGridProps> = ({
       && isArmedForThisChannel
       && armElapsedMs > minDelayForFullscreenMs;
 
-    // Sempre respeitar "preview primeiro". Fullscreen apenas no segundo acionamento
-    // intencional do MESMO canal (evita salto causado por duplo disparo do mesmo Enter/click).
     if (isSecondIntentionalActivation) {
       previewArmRef.current = { mediaId: null, armedAt: 0 };
       void openFullScreen(media);
+      return;
+    }
+
+    // BLOQUEIO: Se o player já está em tela cheia, ignoramos cliques simples que trocariam o preview
+    // Isso evita que a navegação na sidebar do player dispare trocas no fundo.
+    if (isGlobalPlayerActive) {
       return;
     }
 
@@ -668,7 +672,10 @@ export const LiveTVGrid: React.FC<LiveTVGridProps> = ({
     });
   }, [openFullScreen, previewMedia?.id, setLastLiveChannel, selectedCatId, section]);
 
-  const { registerNode, setFocusedId, focusedId } = useTvNavigation({ isActive: !showDiagnostic, subscribeFocused: true });
+  const { registerNode, setFocusedId, focusedId } = useTvNavigation({ 
+    isActive: !showDiagnostic && !isGlobalPlayerActive, 
+    subscribeFocused: true 
+  });
 
   // Register Groups and Channels
   useEffect(() => {

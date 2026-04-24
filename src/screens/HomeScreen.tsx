@@ -212,6 +212,7 @@ interface RowsVirtualListProps {
   canHeroPaginate: boolean;
   onTrailerError: (media: Media) => void;
   scrollRef: React.RefObject<HTMLDivElement>;
+  handleHeroInfo: (media: Media) => void;
 }
 
 const RowsVirtualList = React.memo(({
@@ -237,6 +238,7 @@ const RowsVirtualList = React.memo(({
   canHeroPaginate,
   onTrailerError,
   scrollRef,
+  handleHeroInfo,
 }: RowsVirtualListProps) => {
   const viewportWidth = Math.max(layout.contentMaxWidth || layout.width, layout.width);
   const baseHeroEstimatedHeight = Math.round(
@@ -294,10 +296,7 @@ const RowsVirtualList = React.memo(({
                 preloadedTMDBData={heroPreloadedTMDB}
                 usePreloadedTMDBOnly={false}
                 isVisibleInList={isHeroVisibleInList}
-                onInfo={(m) => {
-                  setDetailsMedia(m);
-                  setIsDetailsVisible(true);
-                }}
+                onInfo={handleHeroInfo}
                 onPrev={onHeroPrev}
                 onNext={onHeroNext}
                 paginationIndex={heroPaginationIndex}
@@ -429,6 +428,7 @@ const HomeScreen: React.FC<{ onLogout: () => void }> = ({ onLogout }) => {
   // TV Navigation — active only in TV mode AND when no overlay is stealing focus
   // CRITICAL: Must disable when activeFilter is 'live' because LiveTVGrid has its own useTvNavigation
   const isHomeNavActive = isTvMode && !isDetailsVisible && !gridCategory && !isSettingsVisible && !playingMedia && activeFilter !== 'live' && activeFilter !== 'sports';
+  const isChannelBrowserOpen = useStore((state) => state.isChannelBrowserOpen);
   const { setFocusedId, focusedId } = useTvNavigation({ isActive: isHomeNavActive, subscribeFocused: true });
 
   // Global Back Handler
@@ -444,6 +444,11 @@ const HomeScreen: React.FC<{ onLogout: () => void }> = ({ onLogout }) => {
       if (!isBack) return;
 
       if (playingMedia) {
+        // Se o navegador de canais (sidebar) estiver aberto, o VideoPlayer cuidará do fechamento via stopImmediatePropagation.
+        // Como rede de segurança aqui, também verificamos o estado global.
+        if (isChannelBrowserOpen) {
+          return;
+        }
         setPlayingMedia(null);
         setActiveVideoUrl(null);
         setPlayerMode('closed');
@@ -498,7 +503,7 @@ const HomeScreen: React.FC<{ onLogout: () => void }> = ({ onLogout }) => {
 
     window.addEventListener('keydown', handleGlobalBack);
     return () => window.removeEventListener('keydown', handleGlobalBack);
-  }, [playingMedia, isDetailsVisible, gridCategory, isSettingsVisible, setPlayerMode, setIsSettingsVisible, activeFilter, setActiveFilter, isSideMenuExpanded, setIsSideMenuExpanded, isTvMode, setFocusedId]);
+  }, [playingMedia, isDetailsVisible, gridCategory, isSettingsVisible, setPlayerMode, setIsSettingsVisible, activeFilter, setActiveFilter, isSideMenuExpanded, setIsSideMenuExpanded, isTvMode, setFocusedId, isChannelBrowserOpen]);
 
   const {
     fetchPlaylist,
@@ -806,6 +811,11 @@ const HomeScreen: React.FC<{ onLogout: () => void }> = ({ onLogout }) => {
       setIsDetailsVisible(true);
     }
   }, [handlePlay]);
+
+  const handleHeroInfo = useCallback((media: Media) => {
+    setDetailsMedia(media);
+    setIsDetailsVisible(true);
+  }, []);
 
   const handleCategorySelect = useCallback((id: string) => {
     // Sidebar deve sempre navegar imediatamente para a seção escolhida.
@@ -1974,6 +1984,7 @@ const HomeScreen: React.FC<{ onLogout: () => void }> = ({ onLogout }) => {
                   canHeroPaginate={heroSelectionCandidates.length > 1}
                   onTrailerError={handleTrailerError}
                   scrollRef={scrollRef as any}
+                  handleHeroInfo={handleHeroInfo}
                 />
               </div>
             </div>

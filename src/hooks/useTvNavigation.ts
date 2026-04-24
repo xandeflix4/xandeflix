@@ -5,6 +5,10 @@ interface NavCallbacks {
   onFocus?: () => void;
   onEnter?: () => void;
   onBack?: () => void;
+  onUp?: () => void;
+  onDown?: () => void;
+  onLeft?: () => void;
+  onRight?: () => void;
   disableAutoScroll?: boolean;
 }
 
@@ -15,6 +19,10 @@ interface NavNode {
   onFocus?: () => void;
   onEnter?: () => void;
   onBack?: () => void;
+  onUp?: () => void;
+  onDown?: () => void;
+  onLeft?: () => void;
+  onRight?: () => void;
   disableAutoScroll?: boolean;
 }
 
@@ -281,6 +289,10 @@ export const useTvNavigation = (options?: { onBack?: () => void; isActive?: bool
           onFocus: idOrObject.onFocus,
           onEnter: idOrObject.onEnter,
           onBack: idOrObject.onBack,
+          onUp: idOrObject.onUp,
+          onDown: idOrObject.onDown,
+          onLeft: idOrObject.onLeft,
+          onRight: idOrObject.onRight,
           disableAutoScroll: idOrObject.disableAutoScroll,
         };
       }
@@ -350,6 +362,7 @@ export const useTvNavigation = (options?: { onBack?: () => void; isActive?: bool
       if (key === 'Escape' || key === 'Back') {
         if (currentNode?.onBack) {
           e.preventDefault();
+          e.stopImmediatePropagation();
           currentNode.onBack();
           return;
         }
@@ -358,6 +371,28 @@ export const useTvNavigation = (options?: { onBack?: () => void; isActive?: bool
           e.preventDefault();
           onBack();
         }
+        return;
+      }
+
+      // Check for directional callbacks
+      if (key === 'ArrowUp' && currentNode?.onUp) {
+        e.preventDefault();
+        currentNode.onUp();
+        return;
+      }
+      if (key === 'ArrowDown' && currentNode?.onDown) {
+        e.preventDefault();
+        currentNode.onDown();
+        return;
+      }
+      if (key === 'ArrowLeft' && currentNode?.onLeft) {
+        e.preventDefault();
+        currentNode.onLeft();
+        return;
+      }
+      if (key === 'ArrowRight' && currentNode?.onRight) {
+        e.preventDefault();
+        currentNode.onRight();
         return;
       }
 
@@ -477,11 +512,14 @@ export const useTvNavigation = (options?: { onBack?: () => void; isActive?: bool
       }
 
       // ============================================================
-      // Fast path for LiveTV groups (tv-group-*) — index-based nav
+      // Fast path for LiveTV groups (tv-group-* ou tv-sidebar-group-*) — index-based nav
       // ============================================================
-      if (currentFocusedId.startsWith('tv-group-')) {
+      if (currentFocusedId.startsWith('tv-group-') || currentFocusedId.startsWith('tv-sidebar-group-')) {
+        const prefix = currentFocusedId.startsWith('tv-sidebar-group-') ? 'tv-sidebar-group-' : 'tv-group-';
+        const channelPrefix = prefix === 'tv-sidebar-group-' ? 'tv-sidebar-channel-' : 'tv-channel-';
+        
         const groupIds = Array.from(navNodes.keys())
-          .filter(k => k.startsWith('tv-group-'))
+          .filter(k => k.startsWith(prefix))
           .sort((a, b) => {
             const aEl = findElementByNavId(a);
             const bEl = findElementByNavId(b);
@@ -523,7 +561,7 @@ export const useTvNavigation = (options?: { onBack?: () => void; isActive?: bool
         if (key === 'ArrowRight') {
           // Move into the channels column — pick first channel
           const attemptFocusChannel = () => {
-            const channelIds = Array.from(navNodes.keys()).filter(k => k.startsWith('tv-channel-'));
+            const channelIds = Array.from(navNodes.keys()).filter(k => k.startsWith(channelPrefix));
             if (channelIds.length > 0) {
               const target = navNodes.get(channelIds[0]);
               if (target && focusNode(target, () => e.preventDefault(), !isTvMode)) {
@@ -560,12 +598,14 @@ export const useTvNavigation = (options?: { onBack?: () => void; isActive?: bool
         }
       }
 
+      // Fast path for LiveTV channels (tv-channel-* ou tv-sidebar-channel-*) — index-based nav
       // ============================================================
-      // Fast path for LiveTV channels (tv-channel-*) — index-based nav
-      // ============================================================
-      if (currentFocusedId.startsWith('tv-channel-')) {
+      if (currentFocusedId.startsWith('tv-channel-') || currentFocusedId.startsWith('tv-sidebar-channel-')) {
+        const prefix = currentFocusedId.startsWith('tv-sidebar-channel-') ? 'tv-sidebar-channel-' : 'tv-channel-';
+        const groupPrefix = prefix === 'tv-sidebar-channel-' ? 'tv-sidebar-group-' : 'tv-group-';
+
         const channelIds = Array.from(navNodes.keys())
-          .filter(k => k.startsWith('tv-channel-'));
+          .filter(k => k.startsWith(prefix));
         // channelIds are in insertion order which matches the list order
         const currentIdx = channelIds.indexOf(currentFocusedId);
 
@@ -597,7 +637,7 @@ export const useTvNavigation = (options?: { onBack?: () => void; isActive?: bool
 
         if (key === 'ArrowLeft') {
           // Move back to the groups column — pick the currently active group
-          const groupIds = Array.from(navNodes.keys()).filter(k => k.startsWith('tv-group-'));
+          const groupIds = Array.from(navNodes.keys()).filter(k => k.startsWith(groupPrefix));
           if (groupIds.length > 0) {
             // Try to find the currently selected group first
             for (const gid of groupIds) {

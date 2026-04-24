@@ -35,7 +35,8 @@ interface MediaCardProps {
   focusLift?: number;
   focusScale?: number;
   onPress?: (media: Media) => void;
-  onFocus?: (media: Media, id: string) => void;
+  onFocus?: (media: Media, id: string, index: number) => void;
+  index: number;
 }
 
 const sanitizeCategoryId = (value: string) =>
@@ -98,6 +99,7 @@ const MediaCard = React.memo(({
   focusScale = 1.04,
   onPress,
   onFocus,
+  index,
 }: MediaCardProps) => {
   const { registerNode } = useTvNavigation({ isActive: false, subscribeFocused: false });
   const mediaType = isMedia(item) ? String(item.type || '').toLowerCase() : '';
@@ -160,7 +162,7 @@ const MediaCard = React.memo(({
           },
           onFocus: () => {
             if (isMedia(item)) {
-              onFocus?.(item, navId);
+              onFocus?.(item, navId, index);
             }
           },
         })
@@ -337,6 +339,11 @@ export const CategoryRow: React.FC<CategoryRowProps> = ({
     ? resolvedItems.length
     : Math.min(resolvedItems.length, Math.max(renderedCount, baseInitialRenderedCount));
 
+  const effectiveRenderedCountRef = React.useRef(effectiveRenderedCount);
+  React.useEffect(() => {
+    effectiveRenderedCountRef.current = effectiveRenderedCount;
+  }, [effectiveRenderedCount]);
+
   React.useEffect(() => {
     if (eagerRowRender) {
       setRenderedCount(resolvedItems.length);
@@ -382,11 +389,11 @@ export const CategoryRow: React.FC<CategoryRowProps> = ({
   }, []);
 
   const onFocusWrapper = React.useCallback((media: Media, id: string, index: number) => {
-    if (!eagerRowRender && index >= effectiveRenderedCount - 6) {
+    if (!eagerRowRender && index >= effectiveRenderedCountRef.current - 6) {
       setRenderedCount((prev) => Math.min(resolvedItems.length, prev + (layout.isTvProfile ? 10 : 12)));
     }
     onMediaFocus?.(media, id);
-  }, [eagerRowRender, effectiveRenderedCount, layout.isTvProfile, onMediaFocus, resolvedItems.length]);
+  }, [eagerRowRender, layout.isTvProfile, onMediaFocus, resolvedItems.length]);
 
   const resolvedCategory = useMemo<Category>(
     () =>
@@ -534,7 +541,8 @@ export const CategoryRow: React.FC<CategoryRowProps> = ({
                 focusLift={cardFocusLift}
                 focusScale={cardFocusScale}
                 onPress={onMediaPress}
-                onFocus={(m, id) => onFocusWrapper(m, id, index)}
+                onFocus={onFocusWrapper}
+                index={index}
               />
             ))}
             <div style={{ width: 6, flex: '0 0 auto' }} />

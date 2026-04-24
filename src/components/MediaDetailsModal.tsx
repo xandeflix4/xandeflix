@@ -169,7 +169,7 @@ export const MediaDetailsPage: React.FC<MediaDetailsPageProps> = ({
   const playbackProgress = useStore(state => state.playbackProgress);
   const favorites = useStore(state => state.favorites);
   const toggleFavorite = useStore(state => state.toggleFavorite);
-  const { items: relatedDiskItems } = useDiskCategory(media.category, 0, 1200);
+  const { items: relatedDiskItems } = useDiskCategory(media.category, 0, 150);
   const normalizeSeriesKey = useCallback((value: string) => {
     return cleanMediaTitle(String(value || '').trim())
       .cleanTitle
