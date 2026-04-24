@@ -522,15 +522,27 @@ export const useTvNavigation = (options?: { onBack?: () => void; isActive?: bool
 
         if (key === 'ArrowRight') {
           // Move into the channels column — pick first channel
-          const channelIds = Array.from(navNodes.keys()).filter(k => k.startsWith('tv-channel-'));
-          if (channelIds.length > 0) {
-            const target = navNodes.get(channelIds[0]);
-            if (target && focusNode(target, () => e.preventDefault(), !isTvMode)) {
-              focusedIdRef.current = target.id;
-              emitFocusedId(target.id);
-              return;
+          const attemptFocusChannel = () => {
+            const channelIds = Array.from(navNodes.keys()).filter(k => k.startsWith('tv-channel-'));
+            if (channelIds.length > 0) {
+              const target = navNodes.get(channelIds[0]);
+              if (target && focusNode(target, () => e.preventDefault(), !isTvMode)) {
+                focusedIdRef.current = target.id;
+                emitFocusedId(target.id);
+                return true;
+              }
             }
+            return false;
+          };
+
+          if (!attemptFocusChannel()) {
+            // Se não encontrou canais imediatamente (ex: categoria mudando), tenta no próximo frame
+            requestAnimationFrame(() => {
+              attemptFocusChannel();
+            });
           }
+          e.preventDefault();
+          return;
         }
 
         if (key === 'ArrowLeft') {

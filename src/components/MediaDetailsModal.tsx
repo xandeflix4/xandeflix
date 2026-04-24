@@ -1572,14 +1572,14 @@ const styles = StyleSheet.create({
     flex: 1,
     overflowY: 'auto',
     padding: 16,
-  },
+  } as any,
   actorFilmographyGrid: {
     display: 'grid',
     gridTemplateColumns: 'repeat(auto-fill, minmax(170px, 1fr))',
     gap: 14,
     alignItems: 'start',
     alignContent: 'start',
-  },
+  } as any,
   actorFilmographyItem: {
     borderRadius: 10,
     borderWidth: 1,
@@ -1603,7 +1603,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     background: 'linear-gradient(135deg, #101010, #1b1b1b)',
-  },
+  } as any,
   trailerModalBackdrop: {
     position: 'absolute',
     top: 0,

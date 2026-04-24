@@ -489,7 +489,7 @@ export async function fetchTMDBPersonFilmography(
   const mapped = castEntries
     .filter((entry) => entry && (entry.media_type === 'movie' || entry.media_type === 'tv'))
     .map((entry) => {
-      const mediaType = entry.media_type === 'movie' ? 'movie' : 'series';
+      const mediaType: 'movie' | 'series' = entry.media_type === 'movie' ? 'movie' : 'series';
       const title = String(entry.title || entry.name || '').trim();
       const year = Number(String(entry.release_date || entry.first_air_date || '0').slice(0, 4));
       const voteAverage = Number(entry.vote_average || 0);

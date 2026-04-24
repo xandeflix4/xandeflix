@@ -431,7 +431,8 @@ export const LiveTVGrid: React.FC<LiveTVGridProps> = ({
         autoPreviewTimerRef.current = null;
       }
     };
-  }, [externalMedia, globalPreviewPool, selectedCatId, lastLiveChannel, section]);
+    // Auto-preview: EXECUTAR APENAS UMA VEZ ao entrar na grade ou se a pool mudar radicalmente (ex: carga inicial)
+  }, [externalMedia, globalPreviewPool, lastLiveChannel, section]); // Removido selectedCatId para evitar re-trigger ao navegar grupos
 
   const filteredItems = useMemo(() => {
     if (!searchQuery.trim()) return categoryItems;
@@ -515,7 +516,7 @@ export const LiveTVGrid: React.FC<LiveTVGridProps> = ({
     autoPreviewActiveRef.current = true;
     setSelectedMediaId(nextMedia.id);
     setPreviewMedia(nextMedia);
-  }, [globalPreviewPool, isGlobalPlayerActive, previewMedia, selectedCatId]);
+  }, [globalPreviewPool, isGlobalPlayerActive, previewMedia]); // Removido selectedCatId para estabilizar a referência
 
   useEffect(() => {
     if (!selectedCatId) {
@@ -601,6 +602,13 @@ export const LiveTVGrid: React.FC<LiveTVGridProps> = ({
     }, 60);
   }, [onPlayFull]);
 
+  const handlePreviewClose = useCallback(() => {}, []);
+  const handlePreviewFullscreen = useCallback(() => {
+    if (previewMedia) {
+      void openFullScreen(previewMedia);
+    }
+  }, [openFullScreen, previewMedia]);
+
   useEffect(() => {
     if (!isGlobalPlayerActive) {
       return;
@@ -672,9 +680,11 @@ export const LiveTVGrid: React.FC<LiveTVGridProps> = ({
         onFocus: () => {
           setFocusColumn('groups');
           setFocusedGroupIndex(index);
+          // Apenas preparamos a categoria visualmente, mas NÃO limpamos o canal atual
+          // para permitir que o usuário navegue pelos grupos sem interromper o que está assistindo.
           setSelectedCatId(cat.id);
           setSearchQuery('');
-          setFocusedChannelIndex(0);
+          // NÃO resetamos o focusedChannelIndex aqui para manter a posição ao voltar
         },
         onEnter: () => setFocusColumn('channels')
       }));
@@ -789,8 +799,13 @@ export const LiveTVGrid: React.FC<LiveTVGridProps> = ({
                 setSelectedCatId(cat.id);
                 setSearchQuery('');
                 setFocusedChannelIndex(0);
+                
+                // Em modo TV, o foco deve permanecer no grupo ou mover para o primeiro canal
+                // Corrigido: tv-group-${cat.id} é o ID correto do grupo
                 try {
-                  setFocusedId(`tv-channel-${cat.id}`);
+                  if (layout.isTvProfile) {
+                    setFocusedId(`tv-group-${cat.id}`);
+                  }
                 } catch (error) {
                   void error;
                 }
@@ -879,10 +894,10 @@ export const LiveTVGrid: React.FC<LiveTVGridProps> = ({
                 onPress={() => {
                   setFocusColumn('channels');
                   setFocusedChannelIndex(index);
-                  // Em Android TV, alguns runtimes WebView podem disparar onPress
-                  // durante navegação por foco (D-pad), causando troca de canal
-                  // sem confirmação do usuário. Mantemos a troca somente no onEnter.
-                  if (!layout.isTvMode) {
+                  // Em modo TV, IGNORAMOS o onPress para evitar disparos duplos/acidentais.
+                  // A navegação real e o OK (Enter) são tratados pelo registerNode.
+                  const isTv = layout.isTvProfile || layout.isTvMode || (typeof window !== 'undefined' && window.innerWidth > 900);
+                  if (!isTv) {
                     handleMediaClick(media);
                   }
                   try {
@@ -940,9 +955,7 @@ export const LiveTVGrid: React.FC<LiveTVGridProps> = ({
           >
             <View style={styles.previewContainer}>
                 <TouchableHighlight 
-                  onPress={() => {
-                    void openFullScreen(previewMedia);
-                  }}
+                  onPress={handlePreviewFullscreen}
                   id="tv-preview-player"
                   data-nav-id="tv-preview-player"
                   style={[
@@ -955,10 +968,8 @@ export const LiveTVGrid: React.FC<LiveTVGridProps> = ({
                      mediaType="live"
                      media={previewMedia}
                      onPreviewPlaybackFailed={handlePreviewPlaybackFailed}
-                     onClose={() => {}}
-                     onPreviewRequestFullscreen={() => {
-                       void openFullScreen(previewMedia);
-                     }}
+                     onClose={handlePreviewClose}
+                     onPreviewRequestFullscreen={handlePreviewFullscreen}
                      suppressNativePreviewExitOnUnmount={false}
                      isMinimized={false}
                      isPreview={true}

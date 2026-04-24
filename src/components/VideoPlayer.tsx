@@ -22,6 +22,8 @@ import {
   syncPlaybackProgressSilently,
 } from '../lib/playbackProgressSync';
 
+import { useTvNavigation } from '../hooks/useTvNavigation';
+
 interface VideoPlayerProps {
   url: string;
   mediaType: string;
@@ -632,10 +634,11 @@ export function loadMediaStream(targetUrl: string, expectedType: 'hls' | 'dash' 
   return normalizedTargetUrl;
 }
 
-export const VideoPlayer = React.forwardRef<VideoPlayerHandle, VideoPlayerProps>(
-  (
-    {
-      url,
+export const VideoPlayer = React.memo(
+  React.forwardRef<VideoPlayerHandle, VideoPlayerProps>(
+    (
+      {
+        url,
       mediaType,
       media = null,
       onClose,
@@ -655,6 +658,17 @@ export const VideoPlayer = React.forwardRef<VideoPlayerHandle, VideoPlayerProps>
     },
     ref,
   ) => {
+    const [retryCount, setRetryCount] = useState(0);
+    const [isAutoRetrying, setIsAutoRetrying] = useState(false);
+    const [autoRetrySeconds, setAutoRetrySeconds] = useState(0);
+    const autoRetryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+    const isTransitioningRef = useRef(false);
+    const isUnmountingRef = useRef(false);
+
+    useEffect(() => {
+      return () => { isUnmountingRef.current = true; };
+    }, []);
+
     const isNativePlatform = Capacitor.isNativePlatform();
     const isLiveStream = (media?.type || mediaType) === 'live';
     const streamSource = useMemo(() => resolveStreamSource(url), [url]);
@@ -852,6 +866,25 @@ export const VideoPlayer = React.forwardRef<VideoPlayerHandle, VideoPlayerProps>
       return () => cancelAnimationFrame(rafId);
     }, [browserChannels.length, canShowChannelBrowser, channelGroupId, isChannelBrowserOpen, media?.id, url]);
 
+    // Sistema de Navegação para o Channel Browser (Sidebar)
+    const { registerNode, setFocusedId } = useTvNavigation({
+      isActive: !!isChannelBrowserOpen,
+    });
+
+    // Auto-focus ao abrir o navegador de canais
+    useEffect(() => {
+      if (isChannelBrowserOpen) {
+        const firstCatId = liveBrowserCategories[0]?.id;
+        const targetId = activeBrowserCategory?.id 
+          ? `live-cat-${activeBrowserCategory.id}` 
+          : (firstCatId ? `live-cat-${firstCatId}` : null);
+        
+        if (targetId) {
+          setTimeout(() => setFocusedId(targetId), 100);
+        }
+      }
+    }, [isChannelBrowserOpen, activeBrowserCategory?.id, liveBrowserCategories, setFocusedId]);
+
     const [, setPlaybackDiagnostic] = useState<PlaybackDiagnostic | null>(null);
     const [previewTerminalFailure, setPreviewTerminalFailure] = useState(false);
     const hideBufferIndicator = useCallback(() => {}, []);
@@ -885,6 +918,13 @@ export const VideoPlayer = React.forwardRef<VideoPlayerHandle, VideoPlayerProps>
       setInlineError(null);
       setPlaybackDiagnostic(null);
       setPreviewTerminalFailure(false);
+      setRetryCount(0);
+      setIsAutoRetrying(false);
+      setAutoRetrySeconds(0);
+      if (autoRetryTimerRef.current) {
+        clearTimeout(autoRetryTimerRef.current);
+        autoRetryTimerRef.current = null;
+      }
       hideBufferIndicator();
     }, [hideBufferIndicator, url, isPreview]);
 
@@ -1888,6 +1928,13 @@ export const VideoPlayer = React.forwardRef<VideoPlayerHandle, VideoPlayerProps>
       let hlsMediaRecoveryAttempts = 0;
       let nativePromotionRequested = false;
       let hardPreviewFailureReported = false;
+
+      // Fase 2.1: Debounce de inicialização para evitar colapso de memória em trocas rápidas
+      const initDelay = isPreview ? 250 : 50;
+      let initTimer: ReturnType<typeof setTimeout> | null = setTimeout(() => {
+        playCurrentSource();
+      }, initDelay);
+
       // Regra UX: na grade de canais, o preview deve permanecer inline.
       // Fullscreen só pode ocorrer por ação explícita do usuário (Enter/OK/click).
       const allowAutomaticPreviewPromotion = false;
@@ -1994,13 +2041,39 @@ export const VideoPlayer = React.forwardRef<VideoPlayerHandle, VideoPlayerProps>
           return;
         }
 
+        const targetUrl = failureUrl || resolveCurrentCandidateUrl();
+
+        // Fase 1.1: Rotina de Auto-Retry com Backoff
+        if (retryCount < 3 && !isAutoRetrying) {
+          console.warn(`[VideoPlayer] Falha terminal em todos os candidatos. Iniciando retry ${retryCount + 1}/3 em 5s...`);
+          setRetryCount(prev => prev + 1);
+          setIsAutoRetrying(true);
+          setAutoRetrySeconds(5);
+          
+          let secondsLeft = 5;
+          autoRetryTimerRef.current = setInterval(() => {
+            secondsLeft -= 1;
+            setAutoRetrySeconds(secondsLeft);
+            if (secondsLeft <= 0) {
+              if (autoRetryTimerRef.current) {
+                clearInterval(autoRetryTimerRef.current);
+                autoRetryTimerRef.current = null;
+              }
+              setIsAutoRetrying(false);
+              candidateIndex = 0;
+              playCurrentSource();
+            }
+          }, 1000);
+          
+          return;
+        }
+
         hardPreviewFailureReported = true;
         setPreviewTerminalFailure(true);
         teardownCurrentSource();
         clearStartupTimeout();
         clearStallWatchdog();
         hideBufferIndicator();
-        const targetUrl = failureUrl || resolveCurrentCandidateUrl();
         setInlineError('Falha ao abrir o canal');
         registerPreviewDiagnostic(failureReason, targetUrl, {
           code: failureCode,
@@ -2165,6 +2238,10 @@ export const VideoPlayer = React.forwardRef<VideoPlayerHandle, VideoPlayerProps>
         destroyMpegtsInstance();
         destroyHlsInstance();
         releaseHtml5Video();
+        
+        // Garantir que refs de erro e estados de falha sejam resetados para nova tentativa
+        setInlineError(null);
+        setPreviewTerminalFailure(false);
       };
 
       const startLiveStallWatchdog = () => {
@@ -2192,7 +2269,8 @@ export const VideoPlayer = React.forwardRef<VideoPlayerHandle, VideoPlayerProps>
             return;
           }
 
-          if (Date.now() - lastLiveProgressAt < 12000) {
+          // Tolerância de 20 segundos para redes instáveis de TV
+          if (Date.now() - lastLiveProgressAt < 20000) {
             return;
           }
 
@@ -2262,12 +2340,16 @@ export const VideoPlayer = React.forwardRef<VideoPlayerHandle, VideoPlayerProps>
             enableWorker: true,
             lowLatencyMode: false, // Desativado para priorizar estabilidade sobre latência
             backBufferLength: 30, // Manter 30s no buffer traseiro para replays rápidos
-            maxBufferLength: isSportsChannel ? 120 : (isLiveStream ? 30 : 60), // 120s para Esportes, 30s para Live normal, 60s para VOD
-            maxMaxBufferLength: isSportsChannel ? 240 : (isLiveStream ? 60 : 180), // Limite máximo tolerado
-            maxBufferSize: isSportsChannel ? 200 * 1024 * 1024 : (isLiveStream ? 60 * 1024 * 1024 : 150 * 1024 * 1024), // 200MB para esportes
-            manifestLoadingTimeOut: 15000,
-            levelLoadingTimeOut: 15000,
-            fragLoadingTimeOut: 15000,
+            maxBufferLength: isSportsChannel ? 60 : (isLiveStream ? 20 : 40), 
+            maxMaxBufferLength: isSportsChannel ? 120 : (isLiveStream ? 40 : 120),
+            maxBufferSize: isSportsChannel ? 80 * 1024 * 1024 : (isLiveStream ? 30 * 1024 * 1024 : 60 * 1024 * 1024),
+            manifestLoadingTimeOut: 30000,
+            levelLoadingTimeOut: 30000,
+            fragLoadingTimeOut: 30000,
+            manifestLoadingMaxRetry: 8,
+            levelLoadingMaxRetry: 8,
+            fragLoadingMaxRetry: 10,
+            fragLoadingRetryDelay: 1000,
             xhrSetup: (xhr: XMLHttpRequest) => {
               if (!hasStreamHeaders) {
                 return;
@@ -2306,7 +2388,10 @@ export const VideoPlayer = React.forwardRef<VideoPlayerHandle, VideoPlayerProps>
 
             switch (data.type) {
               case Hls.ErrorTypes.NETWORK_ERROR:
-                console.warn('[HLS] Falha de rede irrecuperável, tentando proxima fonte...', data);
+                console.warn('[HLS] Falha de rede irrecuperável ou timeout, tentando proxima fonte...', data);
+                if (data.response && data.response.code) {
+                  console.warn(`[HLS] Código HTTP do erro: ${data.response.code}`);
+                }
                 advanceCandidateOrFail(
                   'Falha de rede no HLS',
                   'HLS_NETWORK_ERROR',
@@ -2363,11 +2448,11 @@ export const VideoPlayer = React.forwardRef<VideoPlayerHandle, VideoPlayerProps>
             const player = mpegts.createPlayer(mediaDataSource as any, {
               enableWorker: true,
               liveBufferLatencyChasing: false, // Desativado: evita pulos (stuttering) para alcançar o "ao vivo"
-              liveBufferLatencyMaxLatency: isSportsChannel ? 30 : 15, // Tolera até 30s de atraso em esportes antes de pular
-              liveBufferLatencyMinRemain: 5.0, // Mantém no mínimo 5s de buffer seguro para esportes
+              liveBufferLatencyMaxLatency: isSportsChannel ? 15 : 10,
+              liveBufferLatencyMinRemain: 3.0,
               lazyLoad: false,
-              lazyLoadMaxDuration: isSportsChannel ? 120 : (isLiveStream ? 30 : 120), // Cache de 120s para Esportes
-              lazyLoadRecoverDuration: isSportsChannel ? 60 : (isLiveStream ? 15 : 60),
+              lazyLoadMaxDuration: isSportsChannel ? 60 : (isLiveStream ? 30 : 120),
+              lazyLoadRecoverDuration: isSportsChannel ? 30 : (isLiveStream ? 15 : 60),
             });
 
             mpegtsPlayerRef.current = player;
@@ -2484,20 +2569,31 @@ export const VideoPlayer = React.forwardRef<VideoPlayerHandle, VideoPlayerProps>
         video.addEventListener('ended', endedHandler);
       };
 
-      playCurrentSource();
-
       return () => {
         disposed = true;
         hideBufferIndicator();
+        if (initTimer) clearTimeout(initTimer);
+        
+        if (autoRetryTimerRef.current) {
+          clearInterval(autoRetryTimerRef.current);
+          autoRetryTimerRef.current = null;
+        }
+        
         if (!isLiveStream && !isPreview) {
           syncProgressToSupabase(lastKnownTimeRef.current, { force: true });
         }
+        
         clearStartupTimeout();
         clearStallWatchdog();
         removeVideoEventListeners();
-        destroyMpegtsInstance();
-        destroyHlsInstance();
-        releaseHtml5Video();
+
+        // Se estivermos saindo da tela, fazemos a limpeza pesada.
+        // Caso contrário, deixamos o vídeo anterior visível até o próximo play.
+        if (isUnmountingRef.current) {
+          destroyMpegtsInstance();
+          destroyHlsInstance();
+          releaseHtml5Video();
+        }
       };
     }, [
       canUseNativeFallback,
@@ -2593,6 +2689,20 @@ export const VideoPlayer = React.forwardRef<VideoPlayerHandle, VideoPlayerProps>
              <div className="mt-1 text-[12px] text-white/80">
                {inlineError || 'Falha no carregamento do canal'}
              </div>
+             
+             {isAutoRetrying && (
+               <div className="mt-4 flex flex-col items-center gap-2">
+                 <div className="h-1 w-24 bg-white/10 rounded-full overflow-hidden">
+                   <div 
+                     className="h-full bg-red-600 transition-all duration-1000" 
+                     style={{ width: `${(5 - autoRetrySeconds) * 20}%` }}
+                   />
+                 </div>
+                 <div className="text-[10px] font-bold text-white/60 animate-pulse">
+                   RECONECTANDO EM {autoRetrySeconds}s...
+                 </div>
+               </div>
+             )}
            </div>
         )}
         {shouldShowSimpleErrorOverlay && (
@@ -2847,7 +2957,18 @@ export const VideoPlayer = React.forwardRef<VideoPlayerHandle, VideoPlayerProps>
                     return (
                       <button
                         key={`live-cat-${category.id}`}
+                        id={`live-cat-${category.id}`}
                         type="button"
+                        data-nav-id={`live-cat-${category.id}`}
+                        ref={(el) => {
+                          if (el) registerNode(`live-cat-${category.id}`, el, 'modal-live-categories', {
+                            onFocus: () => {
+                              setChannelGroupId(category.id);
+                              setChannelSearchQuery('');
+                            },
+                            disableAutoScroll: true,
+                          });
+                        }}
                         onClick={() => {
                           setChannelGroupId(category.id);
                           setChannelSearchQuery('');
@@ -2880,8 +3001,18 @@ export const VideoPlayer = React.forwardRef<VideoPlayerHandle, VideoPlayerProps>
                       return (
                         <button
                           key={`live-channel-${channel.id}`}
-                          data-channel-selected={selected ? 'true' : undefined}
+                          id={`live-channel-${channel.id}`}
                           type="button"
+                          data-nav-id={`live-channel-${channel.id}`}
+                          ref={(el) => {
+                            if (el) registerNode(`live-channel-${channel.id}`, el, 'modal-live-channels', {
+                              onEnter: () => {
+                                onZap?.(channel);
+                                setIsChannelBrowserOpen(false);
+                              },
+                              disableAutoScroll: true,
+                            });
+                          }}
                           onClick={() => {
                             onZap?.(channel);
                             setIsChannelBrowserOpen(false);
@@ -2921,6 +3052,16 @@ export const VideoPlayer = React.forwardRef<VideoPlayerHandle, VideoPlayerProps>
     </>
     );
   },
-);
+), (prev, next) => {
+  // O Player só deve re-renderizar se a mídia real mudar ou o estado de preview mudar.
+  // Mudanças de foco no grid pai são ignoradas.
+  return (
+    prev.url === next.url &&
+    prev.media?.id === next.media?.id &&
+    prev.isPreview === next.isPreview &&
+    prev.isMinimized === next.isMinimized &&
+    prev.showChannelSidebar === next.showChannelSidebar
+  );
+});
 
 VideoPlayer.displayName = 'VideoPlayer';
