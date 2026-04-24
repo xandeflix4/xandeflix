@@ -196,7 +196,7 @@ textarea[data-nav-id]:focus {
 .media-card-transition:focus,
 [data-nav-id].media-card-transition:focus-visible,
 [data-nav-id].media-card-transition:focus {
-  transform: translate3d(0, -10px, 0) scale(1.10) !important;
+  transform: translate3d(0, var(--media-focus-lift, -10px), 0) scale(var(--media-focus-scale, 1.10)) !important;
   outline: 4px solid #E50914 !important;
   outline-offset: 4px;
   z-index: 100 !important;

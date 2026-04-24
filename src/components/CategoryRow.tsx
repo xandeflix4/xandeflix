@@ -31,6 +31,7 @@ interface MediaCardProps {
   cardWidth: number;
   cardHeight: number;
   imageUrl: string;
+  prioritizeImageLoading?: boolean;
   focusLift?: number;
   focusScale?: number;
   onPress?: (media: Media) => void;
@@ -46,6 +47,22 @@ const sanitizeCategoryId = (value: string) =>
 
 const isMedia = (item: RowItem): item is Media => 'videoUrl' in item;
 
+const normalizeArtworkUrl = (value: string | null | undefined): string => {
+  const raw = String(value || '').trim();
+  if (!raw) return '';
+
+  let normalized = raw;
+  if (normalized.startsWith('//')) {
+    normalized = `https:${normalized}`;
+  }
+
+  try {
+    return encodeURI(normalized);
+  } catch {
+    return normalized;
+  }
+};
+
 const resolveImageUrl = (item: RowItem, preloadedTMDBByKey?: Record<string, TMDBData>): string => {
   const metadata = preloadedTMDBByKey?.[item.id];
   const isLive = isMedia(item) && (item.type === 'live' || (item as any).isLive);
@@ -60,7 +77,7 @@ const resolveImageUrl = (item: RowItem, preloadedTMDBByKey?: Record<string, TMDB
   ];
 
   for (const candidate of candidates) {
-    const normalized = String(candidate || '').trim();
+    const normalized = normalizeArtworkUrl(candidate as string);
     if (normalized.length > 0) {
       return normalized;
     }
@@ -76,12 +93,13 @@ const MediaCard = React.memo(({
   cardWidth,
   cardHeight,
   imageUrl,
+  prioritizeImageLoading = false,
   focusLift = -6,
   focusScale = 1.04,
   onPress,
   onFocus,
 }: MediaCardProps) => {
-  const { registerNode, focusedId } = useTvNavigation({ isActive: false, subscribeFocused: true });
+  const { registerNode } = useTvNavigation({ isActive: false, subscribeFocused: false });
   const mediaType = isMedia(item) ? String(item.type || '').toLowerCase() : '';
   const shouldUseTMDBImageFallback =
     isMedia(item)
@@ -96,23 +114,40 @@ const MediaCard = React.memo(({
     },
   );
   const resolvedImageUrl = useMemo(() => {
-    const local = String(imageUrl || '').trim();
+    const local = normalizeArtworkUrl(imageUrl);
     if (local) return local;
-    const tmdbThumb = String(tmdbFallbackData?.thumbnail || '').trim();
+    const tmdbThumb = normalizeArtworkUrl(tmdbFallbackData?.thumbnail);
     if (tmdbThumb) return tmdbThumb;
-    const tmdbBackdrop = String(tmdbFallbackData?.backdrop || '').trim();
+    const tmdbBackdrop = normalizeArtworkUrl(tmdbFallbackData?.backdrop);
     if (tmdbBackdrop) return tmdbBackdrop;
     return '';
   }, [imageUrl, tmdbFallbackData?.backdrop, tmdbFallbackData?.thumbnail]);
   const [imageStatus, setImageStatus] = React.useState<'loading' | 'loaded' | 'error'>(imageUrl ? 'loading' : 'error');
-  
-  const isFocused = focusedId === navId;
+  const [imageRetryCount, setImageRetryCount] = React.useState(0);
+  const retryTimerRef = React.useRef<number | null>(null);
+
+  const retryableImageUrl = useMemo(() => {
+    if (!resolvedImageUrl) return '';
+    if (imageRetryCount <= 0) return resolvedImageUrl;
+    const glue = resolvedImageUrl.includes('?') ? '&' : '?';
+    return `${resolvedImageUrl}${glue}retry=${imageRetryCount}`;
+  }, [imageRetryCount, resolvedImageUrl]);
+
   const canOpenMedia = Boolean(onPress && isMedia(item));
 
   // Reset status when image changes
   React.useEffect(() => {
     setImageStatus(resolvedImageUrl ? 'loading' : 'error');
+    setImageRetryCount(0);
   }, [resolvedImageUrl]);
+
+  React.useEffect(() => {
+    return () => {
+      if (retryTimerRef.current !== null) {
+        window.clearTimeout(retryTimerRef.current);
+      }
+    };
+  }, []);
 
   return (
     <div
@@ -144,6 +179,8 @@ const MediaCard = React.memo(({
       }}
       className="media-card-transition"
       style={{
+        '--media-focus-lift': `${focusLift}px`,
+        '--media-focus-scale': `${focusScale}`,
         width: cardWidth,
         height: cardHeight,
         borderRadius: 12,
@@ -152,13 +189,11 @@ const MediaCard = React.memo(({
         position: 'relative',
         flex: '0 0 auto',
         cursor: 'pointer',
-        transform: isFocused
-          ? `translate3d(0, ${focusLift}px, 0) scale(${focusScale})`
-          : 'translate3d(0, 0, 0) scale(1)',
+        transform: 'translate3d(0, 0, 0) scale(1)',
         transition: 'transform 150ms cubic-bezier(0.2, 0, 0.2, 1)',
         willChange: 'transform',
-        zIndex: isFocused ? 10 : 1,
-      }}
+        zIndex: 1,
+      } as any}
     >
       {/* Background Fallback (Always there during loading or error) */}
       <div
@@ -181,12 +216,33 @@ const MediaCard = React.memo(({
         <span style={{ opacity: 0.15 }}>{String(item.title || '?').slice(0, 2)}</span>
       </div>
 
-      {resolvedImageUrl && imageStatus !== 'error' && (
+      {retryableImageUrl && imageStatus !== 'error' && (
         <img
-          src={resolvedImageUrl}
+          src={retryableImageUrl}
           alt={item.title}
           onLoad={() => setImageStatus('loaded')}
-          onError={() => setImageStatus('error')}
+          onError={() => {
+            if (retryTimerRef.current !== null) {
+              window.clearTimeout(retryTimerRef.current);
+              retryTimerRef.current = null;
+            }
+            setImageRetryCount((current) => {
+              if (current < 2) {
+                retryTimerRef.current = window.setTimeout(() => {
+                  setImageStatus('loading');
+                  setImageRetryCount((count) => Math.min(2, count + 1));
+                  retryTimerRef.current = null;
+                }, 350 + (current * 250));
+                return current;
+              }
+              setImageStatus('error');
+              return current;
+            });
+          }}
+          loading={prioritizeImageLoading ? 'eager' : 'lazy'}
+          decoding="async"
+          fetchPriority={prioritizeImageLoading ? 'high' : 'auto'}
+          referrerPolicy="no-referrer"
           style={{
             width: '100%',
             height: '100%',
@@ -269,9 +325,50 @@ export const CategoryRow: React.FC<CategoryRowProps> = ({
 }) => {
   const layout = useResponsiveLayout();
   const { registerNode } = useTvNavigation({ isActive: false, subscribeFocused: false });
+  const resolvedTitle = category?.title || title || 'Categoria';
+  const resolvedItems = (category?.items || items || []).filter(Boolean) as RowItem[];
+  const resolvedMediaItems = resolvedItems.filter(isMedia);
+  const eagerRowRender = tightTopSpacing;
+  const baseInitialRenderedCount = layout.isTvProfile ? 12 : 16;
+  const [renderedCount, setRenderedCount] = React.useState(baseInitialRenderedCount);
   const [isVisible, setIsVisible] = React.useState(false);
-  const [renderedCount, setRenderedCount] = React.useState(layout.isTvProfile ? 8 : 12);
   const rowRef = React.useRef<HTMLDivElement>(null);
+  const effectiveRenderedCount = eagerRowRender
+    ? resolvedItems.length
+    : Math.min(resolvedItems.length, Math.max(renderedCount, baseInitialRenderedCount));
+
+  React.useEffect(() => {
+    if (eagerRowRender) {
+      setRenderedCount(resolvedItems.length);
+      return;
+    }
+    setRenderedCount((current) => {
+      if (current >= baseInitialRenderedCount) return current;
+      return baseInitialRenderedCount;
+    });
+  }, [baseInitialRenderedCount, eagerRowRender, resolvedItems.length]);
+
+  React.useEffect(() => {
+    if (eagerRowRender || !isVisible) return;
+    if (effectiveRenderedCount >= resolvedItems.length) return;
+
+    const chunkSize = layout.isTvProfile ? 6 : 8;
+    const timer = window.setTimeout(() => {
+      setRenderedCount((current) => {
+        const base = Math.max(current, baseInitialRenderedCount);
+        return Math.min(resolvedItems.length, base + chunkSize);
+      });
+    }, layout.isTvProfile ? 180 : 130);
+
+    return () => window.clearTimeout(timer);
+  }, [
+    baseInitialRenderedCount,
+    eagerRowRender,
+    effectiveRenderedCount,
+    isVisible,
+    layout.isTvProfile,
+    resolvedItems.length,
+  ]);
 
   React.useEffect(() => {
     const observer = new IntersectionObserver(
@@ -285,15 +382,11 @@ export const CategoryRow: React.FC<CategoryRowProps> = ({
   }, []);
 
   const onFocusWrapper = React.useCallback((media: Media, id: string, index: number) => {
-    if (index >= renderedCount - 4) {
-      setRenderedCount(prev => Math.min(resolvedItems.length, prev + 10));
+    if (!eagerRowRender && index >= effectiveRenderedCount - 6) {
+      setRenderedCount((prev) => Math.min(resolvedItems.length, prev + (layout.isTvProfile ? 10 : 12)));
     }
     onMediaFocus?.(media, id);
-  }, [onMediaFocus, renderedCount, (category?.items || items || []).length]);
-
-  const resolvedTitle = category?.title || title || 'Categoria';
-  const resolvedItems = (category?.items || items || []).filter(Boolean) as RowItem[];
-  const resolvedMediaItems = resolvedItems.filter(isMedia);
+  }, [eagerRowRender, effectiveRenderedCount, layout.isTvProfile, onMediaFocus, resolvedItems.length]);
 
   const resolvedCategory = useMemo<Category>(
     () =>
@@ -322,10 +415,23 @@ export const CategoryRow: React.FC<CategoryRowProps> = ({
     : (layout.isCompact ? (isLiveRow ? 320 : 210) : (isLiveRow ? 360 : 230));
   const cardHeight = isLiveRow ? Math.round(cardWidth * (9 / 16)) : Math.round(cardWidth * 1.5);
   const titleSize = layout.isTvProfile ? 20 : layout.isCompact ? 24 : 28;
+  const horizontalLoadChunk = layout.isTvProfile ? 8 : 10;
 
-  const makeNavId = React.useCallback((id: string) => `${navIdPrefix}${id}`, [navIdPrefix]);
+  const makeNavId = (id: string) => `${navIdPrefix}${id}`;
   const seeAllNavId = makeNavId(`see-all-${rowIndex}`);
   const rowHeight = cardHeight + (layout.isTvProfile ? 100 : 140);
+  const visibleItems = eagerRowRender ? resolvedItems : resolvedItems.slice(0, effectiveRenderedCount);
+
+  const handleRowScroll = (event: React.UIEvent<HTMLDivElement>) => {
+    if (eagerRowRender) return;
+    const el = event.currentTarget;
+    const nearRightEdge = (el.scrollLeft + el.clientWidth) >= (el.scrollWidth - Math.max(cardWidth, 240));
+    if (!nearRightEdge) return;
+    setRenderedCount((current) => {
+      const base = Math.max(current, baseInitialRenderedCount);
+      return Math.min(resolvedItems.length, base + horizontalLoadChunk);
+    });
+  };
 
   return (
     <div
@@ -402,6 +508,7 @@ export const CategoryRow: React.FC<CategoryRowProps> = ({
 
           <div
             className="scrollbar-hide"
+            onScroll={handleRowScroll}
             style={{
               display: 'flex',
               gap: rowGap,
@@ -414,7 +521,7 @@ export const CategoryRow: React.FC<CategoryRowProps> = ({
               paddingTop: tightTopSpacing ? 18 : 30,
             }}
           >
-            {resolvedItems.slice(0, renderedCount).map((item, index) => (
+            {visibleItems.map((item, index) => (
               <MediaCard
                 key={`${item.id}-${index}`}
                 item={item}
@@ -423,6 +530,7 @@ export const CategoryRow: React.FC<CategoryRowProps> = ({
                 cardWidth={cardWidth}
                 cardHeight={cardHeight}
                 imageUrl={resolveImageUrl(item, preloadedTMDBByKey)}
+                prioritizeImageLoading={layout.isTvProfile ? index < 16 : index < 8}
                 focusLift={cardFocusLift}
                 focusScale={cardFocusScale}
                 onPress={onMediaPress}

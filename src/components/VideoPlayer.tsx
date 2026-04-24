@@ -4,12 +4,11 @@ import { App as CapacitorApp } from '@capacitor/app';
 import type { PluginListenerHandle } from '@capacitor/core';
 import { ScreenOrientation } from '@capacitor/screen-orientation';
 import { StatusBar } from '@capacitor/status-bar';
-import { LoaderCircle, X, Play, Pause, Volume2, VolumeX, FastForward, Rewind, Activity, SlidersHorizontal, ChevronDown } from 'lucide-react';
+import { Menu, X } from 'lucide-react';
 import Hls from 'hls.js';
 import mpegts from 'mpegts.js';
-import type { Category, Media } from '../types';
+import type { Category, EPGProgram, Media } from '../types';
 import { useStore } from '../store/useStore';
-import { NetworkDiagnostic } from './NetworkDiagnostic';
 import {
   NativeVideoPlayer,
   type NativeVideoPlayerEvent,
@@ -56,15 +55,6 @@ type PlaybackDiagnostic = {
   url?: string;
   timestamp: number;
   httpStatus?: string;
-};
-type BufferIndicatorState = {
-  visible: boolean;
-  label: string;
-  progress: number;
-  phase: number;
-  startedAt: number;
-  attempt: number;
-  total: number;
 };
 
 function isLikelyConnectionFailure(input: {
@@ -167,6 +157,18 @@ function isLikelyRecoverableMediaFailure(input: {
 
   return mediaTextHints.some((hint) => mergedText.includes(hint));
 }
+
+function normalizeChannelLookupKey(value: string | null | undefined): string {
+  return String(value || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/\b(canal|channel|tv|hd|fhd|h265|h264|sd|4k|uhd)\b/g, ' ')
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim()
+    .replace(/\s+/g, ' ');
+}
+
 type StreamSourceResolution = {
   originalUrl: string;
   playbackUrl: string;
@@ -175,12 +177,19 @@ type StreamSourceResolution = {
 };
 const PLAYBACK_PROGRESS_SYNC_INTERVAL_MS = 15000;
 const MIN_PROGRESS_DELTA_SECONDS = 3;
-const TABLET_MIN_WIDTH = 768;
-const SWIPE_UP_MIN_DISTANCE_PX = 70;
-const SWIPE_MAX_HORIZONTAL_DRIFT_PX = 160;
-const SWIPE_MAX_DURATION_MS = 900;
+const LIVE_CONTROLS_AUTO_HIDE_MS = 3000;
+const VOD_CONTROLS_AUTO_HIDE_MS = 8000;
 const REMOTE_OK_KEYCODES = new Set([13, 23, 66]);
 const DEFAULT_NATIVE_USER_AGENT = 'VLC/3.0.21 LibVLC/3.0.21';
+const NATIVE_SESSION_HANDOFF_WINDOW_MS = 6000;
+
+type NativeSessionHandoffState = {
+  url: string;
+  embedded: boolean;
+  capturedAt: number;
+};
+
+let nativeSessionHandoff: NativeSessionHandoffState | null = null;
 
 function extractStreamHost(targetUrl: string): string {
   try {
@@ -635,7 +644,7 @@ export const VideoPlayer = React.forwardRef<VideoPlayerHandle, VideoPlayerProps>
       suppressNativePreviewExitOnUnmount = false,
       isMinimized = false,
       onToggleMinimize,
-      isBrowseMode = false,
+      isBrowseMode: _isBrowseMode = false,
       isPreview = false,
       showChannelSidebar = false,
       channelBrowserCategories,
@@ -675,115 +684,25 @@ export const VideoPlayer = React.forwardRef<VideoPlayerHandle, VideoPlayerProps>
 
       return normalizedHeaders;
     }, [streamHeaderEntries]);
-    const epgData = useStore((state) => state.epgData);
-    const playlistCategories = useStore((state) => state.playlistCategories);
-    const [now, setNow] = useState(() => Date.now());
-
-    useEffect(() => {
-      if (!isLiveStream) return;
-      const interval = setInterval(() => setNow(Date.now()), 30000);
-      return () => clearInterval(interval);
-    }, [isLiveStream]);
-
-    const normalizeKey = useCallback((value: string | null | undefined) => {
-      const raw = String(value || '')
-        .normalize('NFD')
-        .replace(/[\u0300-\u036f]/g, '')
-        .toLowerCase()
-        .replace(/\b(canal|channel|tv|hd|fhd|h265|h264|sd|4k|uhd)\b/g, ' ')
-        .replace(/[^a-z0-9]+/g, ' ')
-        .trim()
-        .replace(/\s+/g, ' ');
-      return raw;
-    }, []);
-
-    const currentProgram = useMemo(() => {
-      if (!isLiveStream || !media || !epgData) {
-        return null;
-      }
-      
-      const tvgId = (media as any).tvgId?.toLowerCase();
-      const tvgName = (media as any).tvgName?.toLowerCase();
-      
-      let programs = (tvgId ? epgData[tvgId] : null) || (tvgName ? epgData[tvgName] : null) || [];
-      
-      if (programs.length === 0) {
-        const titleKey = normalizeKey(media.title);
-        
-        // 1. Tentar match exato com as chaves (ID ou Nomes normalizados no parser)
-        const match = Object.entries(epgData).find(([key]) => {
-          const normalizedKey = normalizeKey(key);
-          return normalizedKey === titleKey;
-        });
-
-        if (match) {
-          programs = match[1];
-        } else {
-          // 2. Tentar match parcial (fuzzy) - se o título do canal estiver contido na chave do EPG ou vice-versa
-          const fuzzyMatch = Object.entries(epgData).find(([key]) => {
-            const normalizedKey = normalizeKey(key);
-            if (!normalizedKey || !titleKey) return false;
-            return (titleKey.length >= 4 && normalizedKey.includes(titleKey)) || 
-                   (normalizedKey.length >= 4 && titleKey.includes(normalizedKey));
-          });
-          if (fuzzyMatch) programs = fuzzyMatch[1];
-        }
-      }
-
-      const found = programs.find(p => now >= p.start && now < p.stop) || null;
-      return found;
-    }, [isLiveStream, media, epgData, now, normalizeKey]);
-
-    const nextProgram = useMemo(() => {
-      if (!isLiveStream || !media || !epgData || !currentProgram) return null;
-      
-      const tvgId = (media as any).tvgId?.toLowerCase();
-      const tvgName = (media as any).tvgName?.toLowerCase();
-      
-      let programs = (tvgId ? epgData[tvgId] : null) || (tvgName ? epgData[tvgName] : null) || [];
-      
-      if (programs.length === 0) {
-        const titleKey = normalizeKey(media.title);
-        const match = Object.entries(epgData).find(([key]) => {
-          const normalizedKey = normalizeKey(key);
-          if (!normalizedKey || !titleKey) return false;
-          return normalizedKey === titleKey || 
-                 (titleKey.length >= 4 && normalizedKey.includes(titleKey)) || 
-                 (normalizedKey.length >= 4 && titleKey.includes(normalizedKey));
-        });
-        if (match) programs = match[1];
-      }
-
-      const sorted = [...programs].sort((a, b) => a.start - b.start);
-      return sorted.find(p => p.start >= currentProgram.stop) || null;
-    }, [isLiveStream, media, epgData, currentProgram, normalizeKey]);
-
-    const currentProgramProgress = useMemo(() => {
-      if (!currentProgram) return 0;
-      const total = currentProgram.stop - currentProgram.start;
-      const elapsed = now - currentProgram.start;
-      return Math.min(100, Math.max(0, (elapsed / total) * 100));
-    }, [currentProgram, now]);
-
     const [forceNativeFallback, setForceNativeFallback] = useState(false);
     
     // TVs Philips e Android TVs no geral precisam do Player Nativo (ExoPlayer) para rodar Live TV.
     // O player web (MSE) costuma dar TIMEOUT ou erro de codec nessas TVs.
+    const shouldPreferWebLiveFullscreen = isLiveStream && !isPreview && showChannelSidebar;
     const canUseNativeFallback = isNativePlatform && !isPreview;
     
     // Força o player nativo em Android para canais ao vivo, exceto se for explicitamente um tablet pequeno.
     // Em TVs, window.innerWidth é grande, então vamos focar na plataforma.
     const isAndroid = Capacitor.getPlatform() === 'android';
-    const shouldUseNativePlayer = canUseNativeFallback && (forceNativeFallback || (isAndroid && isLiveStream));
+    const shouldUseNativePlayer =
+      canUseNativeFallback &&
+      !shouldPreferWebLiveFullscreen &&
+      (forceNativeFallback || (isAndroid && isLiveStream));
     const shouldUseEmbeddedNativePreview = isAndroid && isNativePlatform && isPreview && isLiveStream;
     const shouldUseNativeBridgePlayer = shouldUseNativePlayer || shouldUseEmbeddedNativePreview;
     const savePlaybackProgress = useStore((state) => state.savePlaybackProgress);
     const [isChannelBrowserOpen, setIsChannelBrowserOpen] = useState(false);
-    const [isRelatedVisible, setIsRelatedVisible] = useState(false);
-    const [isSettingsOpen, setIsSettingsOpen] = useState(false);
-    const [videoScale, setVideoScale] = useState<'fit' | 'fill' | 'zoom'>('fit');
-    const touchSwipeStartRef = useRef<{ x: number; y: number; startedAt: number } | null>(null);
-    const suppressTapAfterSwipeRef = useRef(false);
+    const videoObjectFitClass = 'object-cover';
     const [channelGroupId, setChannelGroupId] = useState<string | null>(null);
     const [channelSearchQuery, setChannelSearchQuery] = useState('');
     const channelListContainerRef = useRef<HTMLDivElement | null>(null);
@@ -797,26 +716,6 @@ export const VideoPlayer = React.forwardRef<VideoPlayerHandle, VideoPlayerProps>
         }))
         .filter((category) => category.items.length > 0);
     }, [channelBrowserCategories]);
-
-    const relatedMedia = useMemo(() => {
-      if (!media || isLiveStream || isPreview) return [];
-      const categoryItems = playlistCategories[media.category] || [];
-      return categoryItems
-        .filter(item => item.id !== media.id)
-        .slice(0, 15)
-        .map(item => ({
-           id: item.id,
-           title: item.title,
-           thumbnail: item.logo,
-           backdrop: item.logo,
-           category: item.group || media.category,
-           videoUrl: item.url,
-           type: (item.type as any) || 'movie',
-           description: '',
-           rating: '',
-           year: 0
-        } as Media));
-    }, [isLiveStream, isPreview, media, playlistCategories]);
 
     useEffect(() => {
       if (!channelGroupId && liveBrowserCategories.length > 0) {
@@ -857,6 +756,81 @@ export const VideoPlayer = React.forwardRef<VideoPlayerHandle, VideoPlayerProps>
 
     const canShowChannelBrowser =
       showChannelSidebar && isLiveStream && !isPreview && typeof onZap === 'function' && liveBrowserCategories.length > 0;
+    const epgData = useStore((state) => state.epgData);
+    const [epgNowTs, setEpgNowTs] = useState(() => Date.now());
+
+    useEffect(() => {
+      if (!isLiveStream || isPreview) {
+        return;
+      }
+      const intervalId = window.setInterval(() => {
+        setEpgNowTs(Date.now());
+      }, 30000);
+      return () => window.clearInterval(intervalId);
+    }, [isLiveStream, isPreview]);
+
+    const livePrograms = useMemo<EPGProgram[]>(() => {
+      if (!isLiveStream || !media || !epgData) {
+        return [];
+      }
+
+      const map = new Map<string, EPGProgram[]>();
+      Object.entries(epgData).forEach(([key, programs]) => {
+        if (!Array.isArray(programs) || programs.length === 0) return;
+
+        const directKey = key.trim().toLowerCase();
+        if (directKey && !map.has(directKey)) {
+          map.set(directKey, programs);
+        }
+
+        const normalizedKey = normalizeChannelLookupKey(key);
+        if (normalizedKey && !map.has(normalizedKey)) {
+          map.set(normalizedKey, programs);
+        }
+      });
+
+      const lookupCandidates = [media.tvgId, media.tvgName, media.title]
+        .map((value) => String(value || '').trim())
+        .filter(Boolean);
+
+      for (const key of lookupCandidates) {
+        const direct = map.get(key.toLowerCase());
+        if (direct && direct.length > 0) {
+          return [...direct].sort((a, b) => a.start - b.start);
+        }
+
+        const normalized = map.get(normalizeChannelLookupKey(key));
+        if (normalized && normalized.length > 0) {
+          return [...normalized].sort((a, b) => a.start - b.start);
+        }
+      }
+
+      return [];
+    }, [epgData, isLiveStream, media]);
+
+    const currentLiveProgram = useMemo(
+      () => livePrograms.find((program) => epgNowTs >= program.start && epgNowTs < program.stop) || null,
+      [epgNowTs, livePrograms],
+    );
+
+    const nextLiveProgram = useMemo(
+      () => livePrograms.find((program) => program.start > epgNowTs) || null,
+      [epgNowTs, livePrograms],
+    );
+
+    const liveProgramProgress = useMemo(() => {
+      if (!currentLiveProgram) return 0;
+      const duration = Math.max(1, currentLiveProgram.stop - currentLiveProgram.start);
+      const elapsed = Math.min(duration, Math.max(0, epgNowTs - currentLiveProgram.start));
+      return Math.min(100, Math.max(0, Math.round((elapsed / duration) * 100)));
+    }, [currentLiveProgram, epgNowTs]);
+
+    const formatProgramTime = useCallback((timestamp: number) => {
+      const date = new Date(timestamp);
+      const hours = String(date.getHours()).padStart(2, '0');
+      const minutes = String(date.getMinutes()).padStart(2, '0');
+      return `${hours}:${minutes}`;
+    }, []);
 
     useEffect(() => {
       if (!isChannelBrowserOpen || !canShowChannelBrowser) {
@@ -878,140 +852,31 @@ export const VideoPlayer = React.forwardRef<VideoPlayerHandle, VideoPlayerProps>
       return () => cancelAnimationFrame(rafId);
     }, [browserChannels.length, canShowChannelBrowser, channelGroupId, isChannelBrowserOpen, media?.id, url]);
 
-    const [showDiagnostic, setShowDiagnostic] = useState(false);
-    const [playbackDiagnostic, setPlaybackDiagnostic] = useState<PlaybackDiagnostic | null>(null);
+    const [, setPlaybackDiagnostic] = useState<PlaybackDiagnostic | null>(null);
     const [previewTerminalFailure, setPreviewTerminalFailure] = useState(false);
-    const [bufferIndicator, setBufferIndicator] = useState<BufferIndicatorState>({
-      visible: false,
-      label: '',
-      progress: 0,
-      phase: 0,
-      startedAt: 0,
-      attempt: 0,
-      total: 0,
-    });
-    const bufferHideTimerRef = useRef<number | null>(null);
-    const hideBufferIndicator = useCallback(() => {
-      if (bufferHideTimerRef.current) {
-        window.clearTimeout(bufferHideTimerRef.current);
-        bufferHideTimerRef.current = null;
-      }
-      setBufferIndicator((prev) => ({
-        ...prev,
-        visible: false,
-        label: '',
-        progress: 0,
-        phase: 0,
-        startedAt: 0,
-        attempt: 0,
-        total: 0,
-      }));
-    }, []);
+    const hideBufferIndicator = useCallback(() => {}, []);
     const touchBufferIndicator = useCallback(
       (
-        label: string,
-        options?: {
+        _label: string,
+        _options?: {
           step?: number;
           cap?: number;
           attempt?: number;
           total?: number;
           forceResetTimer?: boolean;
         },
-      ) => {
-        const step = options?.step ?? 2;
-        const cap = options?.cap ?? 95;
-        const attempt = options?.attempt;
-        const total = options?.total;
-        const forceResetTimer = options?.forceResetTimer ?? false;
-        const now = Date.now();
-
-        setBufferIndicator((prev) => {
-          const baseProgress =
-            !prev.visible || forceResetTimer
-              ? Math.max(4, Math.min(18, step * 2))
-              : Math.min(cap, prev.progress + step);
-
-          return {
-            visible: true,
-            label: label || prev.label || 'Carregando stream',
-            progress: baseProgress,
-            phase: prev.visible ? prev.phase : 0,
-            startedAt: !prev.visible || forceResetTimer ? now : prev.startedAt,
-            attempt: typeof attempt === 'number' ? attempt : prev.attempt,
-            total: typeof total === 'number' ? total : prev.total,
-          };
-        });
-      },
+      ) => {},
       [],
     );
-    const completeBufferIndicator = useCallback(() => {
-      if (bufferHideTimerRef.current) {
-        window.clearTimeout(bufferHideTimerRef.current);
-        bufferHideTimerRef.current = null;
-      }
-      setBufferIndicator((prev) => ({
-        ...prev,
-        visible: true,
-        progress: 100,
-        phase: prev.phase,
-      }));
-      bufferHideTimerRef.current = window.setTimeout(() => {
-        hideBufferIndicator();
-      }, 420);
-    }, [hideBufferIndicator]);
-
-    useEffect(() => {
-      if (!bufferIndicator.visible) {
-        return;
-      }
-
-      const intervalId = window.setInterval(() => {
-        setBufferIndicator((prev) => {
-          if (!prev.visible) return prev;
-
-          const driftStep =
-            prev.progress < 35 ? 4.6
-              : prev.progress < 68 ? 2.2
-              : prev.progress < 90 ? 0.9
-              : 0.2;
-          const nextProgress = prev.progress >= 99 ? prev.progress : Math.min(95, prev.progress + driftStep);
-
-          return {
-            ...prev,
-            phase: (prev.phase + 1) % 4,
-            progress: nextProgress,
-          };
-        });
-      }, 340);
-
-      return () => {
-        clearInterval(intervalId);
-      };
-    }, [bufferIndicator.visible]);
-
-    useEffect(() => {
-      return () => {
-        if (bufferHideTimerRef.current) {
-          window.clearTimeout(bufferHideTimerRef.current);
-          bufferHideTimerRef.current = null;
-        }
-      };
-    }, []);
+    const completeBufferIndicator = useCallback(() => {}, []);
 
     const [playerState, setPlayerState] = useState<NativePlayerState>(
       shouldUseNativeBridgePlayer ? 'opening' : 'error',
     );
-    const [error, setError] = useState<string | null>(
-      shouldUseNativeBridgePlayer ? null : 'O player nativo esta disponivel apenas no app Android/Capacitor.',
-    );
+    const [error, setError] = useState<string | null>(null);
     const [inlineError, setInlineError] = useState<string | null>(null);
     const applyPlaybackDiagnostic = useCallback(
-      (diagnostic: Omit<PlaybackDiagnostic, 'timestamp'>) => {
-        setPlaybackDiagnostic({
-          ...diagnostic,
-          timestamp: Date.now(),
-        });
-      },
+      (_diagnostic: Omit<PlaybackDiagnostic, 'timestamp'>) => {},
       [],
     );
 
@@ -1149,7 +1014,7 @@ export const VideoPlayer = React.forwardRef<VideoPlayerHandle, VideoPlayerProps>
             console.warn('[PlaybackProgress] Falha ao resolver usuario para sincronizacao:', syncError);
           });
       },
-      [isLiveStream, media?.id, media?.type, mediaType, url],
+      [isLiveStream, media?.id, media?.title, media?.type, mediaType, url],
     );
 
     const persistProgress = useCallback(
@@ -1354,8 +1219,27 @@ export const VideoPlayer = React.forwardRef<VideoPlayerHandle, VideoPlayerProps>
     );
 
     const closeNativePlayer = useCallback(async () => {
+      const shouldKeepNativeSessionAlive =
+        isNativePlatform &&
+        isLiveStream &&
+        suppressNativePreviewExitOnUnmountRef.current;
+
       if (!openedPlayerRef.current) {
         syncProgressToSupabase(lastKnownTimeRef.current, { force: true });
+        onClose();
+        return;
+      }
+
+      if (shouldKeepNativeSessionAlive) {
+        handledExitRef.current = true;
+        openedPlayerRef.current = false;
+        clearProgressPolling();
+        removeListeners();
+        nativeSessionHandoff = {
+          url: playbackUrl || url,
+          embedded: shouldUseEmbeddedNativePreview,
+          capturedAt: Date.now(),
+        };
         onClose();
         return;
       }
@@ -1377,11 +1261,16 @@ export const VideoPlayer = React.forwardRef<VideoPlayerHandle, VideoPlayerProps>
     }, [
       clearProgressPolling,
       flushTelemetry,
+      isLiveStream,
+      isNativePlatform,
       onClose,
+      playbackUrl,
       removeListeners,
       restoreSystemUi,
+      shouldUseEmbeddedNativePreview,
       syncProgressFromNativePlayer,
       syncProgressToSupabase,
+      url,
     ]);
 
     useImperativeHandle(
@@ -1394,12 +1283,13 @@ export const VideoPlayer = React.forwardRef<VideoPlayerHandle, VideoPlayerProps>
 
     const [isControlsVisible, setIsControlsVisible] = useState(true);
     const controlsTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+    const controlsAutoHideMs = isLiveStream ? LIVE_CONTROLS_AUTO_HIDE_MS : VOD_CONTROLS_AUTO_HIDE_MS;
 
     const showControls = useCallback(() => {
       setIsControlsVisible(true);
       if (controlsTimerRef.current) clearTimeout(controlsTimerRef.current);
-      controlsTimerRef.current = setTimeout(() => setIsControlsVisible(false), 8000);
-    }, []);
+      controlsTimerRef.current = setTimeout(() => setIsControlsVisible(false), controlsAutoHideMs);
+    }, [controlsAutoHideMs]);
 
     useEffect(() => {
       return () => {
@@ -1556,17 +1446,6 @@ export const VideoPlayer = React.forwardRef<VideoPlayerHandle, VideoPlayerProps>
       }
     }, [showControls]);
 
-    const openRelatedDrawer = useCallback(() => {
-      if (isLiveStream || isPreview || relatedMedia.length === 0) {
-        return false;
-      }
-      setIsSettingsOpen(false);
-      setIsChannelBrowserOpen(false);
-      setIsRelatedVisible(true);
-      showControls();
-      return true;
-    }, [isLiveStream, isPreview, relatedMedia.length, showControls]);
-
     const handleZap = useCallback((direction: 'next' | 'prev') => {
       if (!isLiveStream || isPreview) return;
 
@@ -1678,9 +1557,8 @@ export const VideoPlayer = React.forwardRef<VideoPlayerHandle, VideoPlayerProps>
             handleZap('next');
             e.preventDefault();
           } else {
-             if (openRelatedDrawer()) {
-               e.preventDefault();
-             }
+             showControls();
+             e.preventDefault();
           }
         } else if (key === 'ArrowLeft' || keyCode === 21) {
            if (!isLiveStream) {
@@ -1693,12 +1571,10 @@ export const VideoPlayer = React.forwardRef<VideoPlayerHandle, VideoPlayerProps>
              e.preventDefault();
            }
         } else if (key === 'Escape' || key === 'Back' || keyCode === 4 || keyCode === 27) {
-          if (isRelatedVisible) {
-            setIsRelatedVisible(false);
-          } else if (isChannelBrowserOpen) {
+          if (isChannelBrowserOpen) {
             setIsChannelBrowserOpen(false);
           } else {
-            onClose();
+            void closeNativePlayer();
           }
           e.preventDefault();
         }
@@ -1706,7 +1582,7 @@ export const VideoPlayer = React.forwardRef<VideoPlayerHandle, VideoPlayerProps>
 
       window.addEventListener('keydown', handleTvKey);
       return () => window.removeEventListener('keydown', handleTvKey);
-    }, [isLiveStream, isPreview, isRelatedVisible, isChannelBrowserOpen, handleZap, onClose, openRelatedDrawer, seek, shouldUseNativePlayer, showControls, togglePlayPause]);
+    }, [closeNativePlayer, isLiveStream, isPreview, isChannelBrowserOpen, handleZap, seek, shouldUseNativePlayer, showControls, togglePlayPause]);
 
     // Web fullscreen live: abrir navegador de canais com seta esquerda (Android TV)
     useEffect(() => {
@@ -1777,11 +1653,23 @@ export const VideoPlayer = React.forwardRef<VideoPlayerHandle, VideoPlayerProps>
         }
 
         // Ensure no other player is lingering before starting
-        try {
-          await NativeVideoPlayer.stopAllPlayers().catch(() => {});
-        } catch (error) {
-          console.warn('[VideoPlayer] Falha ao garantir stopAllPlayers antes de init:', error);
+        const handoffUrl = playbackUrl || url;
+        const handoffAgeMs = nativeSessionHandoff ? Date.now() - nativeSessionHandoff.capturedAt : Number.POSITIVE_INFINITY;
+        const canReuseNativeSession =
+          Boolean(nativeSessionHandoff) &&
+          handoffAgeMs <= NATIVE_SESSION_HANDOFF_WINDOW_MS &&
+          nativeSessionHandoff?.url === handoffUrl;
+
+        if (!canReuseNativeSession) {
+          try {
+            await NativeVideoPlayer.stopAllPlayers().catch(() => {});
+          } catch (error) {
+            console.warn('[VideoPlayer] Falha ao garantir stopAllPlayers antes de init:', error);
+          }
+        } else {
+          console.log('[NativePlayer] Reutilizando sessão ativa para handoff preview/fullscreen');
         }
+        nativeSessionHandoff = null;
 
         const isLive = isLiveStream || mediaType === 'live';
         const secureStreamUrl = isLive
@@ -1899,7 +1787,7 @@ export const VideoPlayer = React.forwardRef<VideoPlayerHandle, VideoPlayerProps>
         setPlayerState('error');
         flushTelemetry('fatal_error');
       }
-    }, [applyPlaybackDiagnostic, clearProgressPolling, flushTelemetry, handleNativePlayerError, handlePlayerEvent, handlePlayerExit, hideBufferIndicator, isLiveStream, media?.backdrop, media?.category, media?.thumbnail, media?.title, media?.type, nativePlayerHeaders, playbackUrl, prepareSystemUi, removeListeners, restoreSystemUi, shouldUseEmbeddedNativePreview, syncProgressFromNativePlayer, touchBufferIndicator, url]);
+    }, [applyPlaybackDiagnostic, clearProgressPolling, flushTelemetry, handleNativePlayerError, handlePlayerEvent, handlePlayerExit, hideBufferIndicator, isLiveStream, media?.backdrop, media?.category, media?.thumbnail, media?.title, media?.type, mediaType, nativePlayerHeaders, playbackUrl, prepareSystemUi, removeListeners, restoreSystemUi, shouldUseEmbeddedNativePreview, syncProgressFromNativePlayer, touchBufferIndicator, url]);
 
     useEffect(() => {
       let appStateListener: Promise<PluginListenerHandle> | null = null;
@@ -1933,10 +1821,33 @@ export const VideoPlayer = React.forwardRef<VideoPlayerHandle, VideoPlayerProps>
         clearProgressPolling();
         removeListeners();
         if (openedPlayerRef.current) {
-          NativeVideoPlayer.exitPlayer().catch(() => {});
+          const shouldKeepNativeSessionAlive =
+            isNativePlatform &&
+            isLiveStream &&
+            suppressNativePreviewExitOnUnmountRef.current;
+
+          if (shouldKeepNativeSessionAlive) {
+            nativeSessionHandoff = {
+              url: playbackUrl || url,
+              embedded: shouldUseEmbeddedNativePreview,
+              capturedAt: Date.now(),
+            };
+          } else {
+            NativeVideoPlayer.exitPlayer().catch(() => {});
+          }
         }
       };
-    }, [shouldUseNativeBridgePlayer, url, setupNativePlayer, clearProgressPolling, removeListeners]);
+    }, [
+      shouldUseNativeBridgePlayer,
+      url,
+      setupNativePlayer,
+      clearProgressPolling,
+      isLiveStream,
+      isNativePlatform,
+      playbackUrl,
+      removeListeners,
+      shouldUseEmbeddedNativePreview,
+    ]);
 
     const previewVideoRef = useRef<HTMLVideoElement>(null);
     const latestPreviewUrlRef = useRef(url);
@@ -2004,7 +1915,7 @@ export const VideoPlayer = React.forwardRef<VideoPlayerHandle, VideoPlayerProps>
           return false;
         }
 
-        if (canUseNativeFallback && !forceNativeFallback) {
+        if (canUseNativeFallback && !forceNativeFallback && !shouldPreferWebLiveFullscreen) {
           console.warn(`[VideoPlayer] Acionando fallback para player nativo: ${reason}`);
           touchBufferIndicator('Fallback para player nativo', {
             step: 6,
@@ -2590,6 +2501,7 @@ export const VideoPlayer = React.forwardRef<VideoPlayerHandle, VideoPlayerProps>
       };
     }, [
       canUseNativeFallback,
+      shouldPreferWebLiveFullscreen,
       forceNativeFallback,
       hasStreamHeaders,
       isLiveStream,
@@ -2613,18 +2525,10 @@ export const VideoPlayer = React.forwardRef<VideoPlayerHandle, VideoPlayerProps>
 
     const fallbackPoster = media?.backdrop || media?.thumbnail || "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7";
     const shouldShowPreviewFailureOverlay = isPreview && previewTerminalFailure;
-    const bufferMiniDiagReason = playbackDiagnostic?.reason
-      ? (playbackDiagnostic.reason.length > 86 ? `${playbackDiagnostic.reason.slice(0, 83)}...` : playbackDiagnostic.reason)
-      : '';
-    const shouldShowBufferIndicator =
-      bufferIndicator.visible &&
-      !previewTerminalFailure &&
-      !inlineError &&
-      !(shouldUseNativeBridgePlayer && playerState === 'error');
-    const bufferElapsedSeconds = bufferIndicator.startedAt
-      ? Math.max(0, Math.floor((Date.now() - bufferIndicator.startedAt) / 1000))
-      : 0;
-    const bufferAnimatedDots = '.'.repeat((bufferIndicator.phase % 3) + 1);
+    const shouldShowSimpleErrorOverlay = !isPreview && Boolean(inlineError || error);
+    const shouldShowLiveTopOverlay = !isPreview && isLiveStream;
+    const isLiveUiVisible = isControlsVisible || isChannelBrowserOpen;
+    const liveChannelTitle = media?.title || 'Canal Ao Vivo';
 
     return (
     <>
@@ -2634,60 +2538,8 @@ export const VideoPlayer = React.forwardRef<VideoPlayerHandle, VideoPlayerProps>
           isPreview && !isNativePlatform ? 'overflow-hidden rounded-2xl shadow-2xl' : ''
         }`}
         onMouseMove={showControls}
-        onPointerDown={(event) => {
-          showControls();
-          touchSwipeStartRef.current = null;
-
-          const isTouchGesture = event.pointerType === 'touch' || event.pointerType === 'pen';
-          if (!isTouchGesture) {
-            return;
-          }
-          if (isLiveStream || isPreview || isRelatedVisible || isChannelBrowserOpen || isSettingsOpen || relatedMedia.length === 0) {
-            return;
-          }
-          if (typeof window !== 'undefined') {
-            if (window.innerWidth < TABLET_MIN_WIDTH) {
-              return;
-            }
-            if (event.clientY < window.innerHeight * 0.4) {
-              return;
-            }
-          }
-
-          touchSwipeStartRef.current = {
-            x: event.clientX,
-            y: event.clientY,
-            startedAt: Date.now(),
-          };
-        }}
-        onPointerUp={(event) => {
-          const swipeStart = touchSwipeStartRef.current;
-          touchSwipeStartRef.current = null;
-          if (!swipeStart) {
-            return;
-          }
-          const deltaY = swipeStart.y - event.clientY;
-          const deltaX = Math.abs(event.clientX - swipeStart.x);
-          const elapsedMs = Date.now() - swipeStart.startedAt;
-          const isValidSwipeUp =
-            deltaY >= SWIPE_UP_MIN_DISTANCE_PX &&
-            deltaX <= SWIPE_MAX_HORIZONTAL_DRIFT_PX &&
-            elapsedMs <= SWIPE_MAX_DURATION_MS;
-          if (isValidSwipeUp && openRelatedDrawer()) {
-            suppressTapAfterSwipeRef.current = true;
-            event.preventDefault();
-          }
-        }}
-        onPointerCancel={() => {
-          touchSwipeStartRef.current = null;
-        }}
-        onClick={(e) => {
-          if (suppressTapAfterSwipeRef.current) {
-            suppressTapAfterSwipeRef.current = false;
-            e.preventDefault();
-            return;
-          }
-          if (!isPreview && !isRelatedVisible && !isChannelBrowserOpen && !isSettingsOpen) {
+        onClick={() => {
+          if (!isPreview && !isChannelBrowserOpen) {
             void togglePlayPause();
           }
         }}
@@ -2695,9 +2547,9 @@ export const VideoPlayer = React.forwardRef<VideoPlayerHandle, VideoPlayerProps>
         {shouldUseNativeBridgePlayer ? (
           <>
             {playerState !== 'ready' && (
-              <div className="absolute inset-0 bg-[radial-gradient(circle_at_top,rgba(239,68,68,0.18),rgba(0,0,0,0.96)_58%)]" />
+              <div className="absolute inset-0 bg-black" />
             )}
-            {playerState !== 'ready' && !shouldShowBufferIndicator && (
+            {playerState !== 'ready' && (
               <div className="absolute inset-0 flex items-center justify-center bg-black/35 px-3 text-center text-[11px] font-semibold tracking-wide text-white/90">
                 {error ? `Previa indisponivel: ${error}` : 'Carregando previa...'}
               </div>
@@ -2708,14 +2560,12 @@ export const VideoPlayer = React.forwardRef<VideoPlayerHandle, VideoPlayerProps>
             ref={previewVideoRef}
             className={`h-full w-full ${
               isPreview ? 'transform-gpu' : 'transition-transform duration-300'
-            } ${
-              videoScale === 'fit' ? 'object-contain' : videoScale === 'fill' ? 'object-fill' : 'object-cover'
-            }`}
+            } ${videoObjectFitClass}`}
             style={{ transform: 'translateZ(0)' }}
             autoPlay
             muted={false}
             playsInline
-            poster={isPreview ? undefined : fallbackPoster}
+            poster={isPreview || isLiveStream ? undefined : fallbackPoster}
             onPlay={() => setIsPlaying(true)}
             onPause={() => setIsPlaying(false)}
             onTimeUpdate={() => {
@@ -2732,408 +2582,243 @@ export const VideoPlayer = React.forwardRef<VideoPlayerHandle, VideoPlayerProps>
                   onPlayNextEpisode?.();
                 }
               } else if (!isLiveStream) {
-                onClose();
+                void closeNativePlayer();
               }
             }}
           />
         )}
-        {shouldShowBufferIndicator && (
-          <div className="absolute inset-0 z-[11] flex items-center justify-center bg-black/82 px-4 text-center">
-            <div className="relative w-full max-w-[390px] rounded-2xl border border-white/10 bg-zinc-950/90 p-4 shadow-2xl">
-              <div className="text-[10px] font-black uppercase tracking-[0.18em] text-red-300 font-['Outfit']">
-                Buffer Dinâmico
-              </div>
-              <div className="mt-2 text-[12px] font-semibold text-white/90 break-words">
-                {bufferIndicator.label || 'Conectando stream'}{bufferAnimatedDots}
-              </div>
-              <div className="mt-3 h-2 overflow-hidden rounded-full bg-white/10">
-                <div
-                  className="h-full rounded-full bg-gradient-to-r from-red-600 via-red-500 to-amber-400 transition-all duration-300"
-                  style={{ width: `${Math.max(2, Math.min(100, bufferIndicator.progress))}%` }}
-                />
-              </div>
-              <div className="mt-2 flex items-center justify-between text-[10px] text-white/65">
-                <span>{Math.round(Math.max(0, Math.min(100, bufferIndicator.progress)))}%</span>
-                <span>{bufferElapsedSeconds}s</span>
-              </div>
-              {bufferIndicator.total > 0 && (
-                <div className="mt-1 text-[9px] uppercase tracking-widest text-white/45">
-                  Tentativa {Math.max(1, bufferIndicator.attempt)}/{bufferIndicator.total}
-                </div>
-              )}
-              {playbackDiagnostic && (
-                <div className="absolute bottom-3 right-3 max-w-[188px] rounded-lg border border-red-500/35 bg-black/75 p-2 text-left shadow-lg">
-                  <div className="text-[8px] font-black uppercase tracking-[0.16em] text-red-300">Diag</div>
-                  {playbackDiagnostic.code && (
-                    <div className="mt-0.5 text-[8px] font-semibold text-white/85 break-all">
-                      {playbackDiagnostic.code}
-                    </div>
-                  )}
-                  <div className="mt-0.5 text-[8px] text-white/65 break-words">
-                    {bufferMiniDiagReason}
-                  </div>
-                </div>
-              )}
-            </div>
-          </div>
-        )}
-
         {shouldShowPreviewFailureOverlay && (
-           <div className="absolute inset-0 z-[20] flex flex-col items-center justify-center bg-black/80 px-4 text-center">
-             <div className="text-[11px] font-black uppercase tracking-[0.2em] text-red-500 mb-1 font-['Outfit']">Sem Sinal</div>
-             <div className="text-[10px] font-bold text-white/70 uppercase tracking-widest font-['Outfit']">
+           <div className="absolute inset-0 z-[20] flex flex-col items-center justify-center bg-black/78 px-4 text-center">
+             <div className="text-[12px] font-bold uppercase tracking-wide text-red-500">Sem Sinal</div>
+             <div className="mt-1 text-[12px] text-white/80">
                {inlineError || 'Falha no carregamento do canal'}
              </div>
-             {playbackDiagnostic && (
-               <div className="mt-3 w-full max-w-[340px] rounded-xl border border-red-500/35 bg-black/70 p-3 text-left">
-                 <div className="text-[9px] font-black uppercase tracking-[0.2em] text-red-300 font-['Outfit']">Diagnóstico</div>
-                 <div className="mt-1 text-[10px] font-semibold text-white/90 break-words">
-                   {playbackDiagnostic.reason}
-                 </div>
-                 {playbackDiagnostic.code && (
-                   <div className="mt-1 text-[9px] text-white/70 break-words">
-                     Código: {playbackDiagnostic.code}
-                   </div>
-                 )}
-                 {playbackDiagnostic.httpStatus && (
-                   <div className="mt-1 text-[9px] text-white/70 break-words">
-                     HTTP: {playbackDiagnostic.httpStatus}
-                   </div>
-                 )}
-                 {playbackDiagnostic.url && (
-                   <div className="mt-1 text-[9px] text-white/60 break-all">
-                     URL: {playbackDiagnostic.url}
-                   </div>
-                 )}
-                 {playbackDiagnostic.detail && (
-                   <div className="mt-1 text-[9px] text-white/60 break-words">
-                     Detalhe: {playbackDiagnostic.detail}
-                   </div>
-                 )}
-               </div>
-             )}
-             <div className="text-[9px] text-white/40 mt-3 uppercase max-w-[200px] font-['Outfit']">O player nativo pode suportar este canal. Clique em tela cheia.</div>
            </div>
         )}
-        {inlineError && !isPreview && !shouldUseNativeBridgePlayer && (
-          <div className="absolute top-6 left-1/2 -translate-x-1/2 z-[90] rounded-xl border border-red-500/30 bg-zinc-900/95 px-4 py-2 text-[11px] font-black uppercase tracking-wider text-red-200 font-['Outfit']">
-            {inlineError}
-          </div>
-        )}
-        {playbackDiagnostic && !isPreview && (inlineError || error || playerState === 'error') && (
-          <div className="absolute bottom-6 left-6 right-6 z-[95] rounded-2xl border border-red-500/35 bg-zinc-950/95 p-4 text-left shadow-2xl md:max-w-[720px] md:right-auto">
-            <div className="text-[10px] font-black uppercase tracking-[0.2em] text-red-300 font-['Outfit']">Diagnóstico do Player</div>
-            <div className="mt-2 text-[12px] font-semibold text-white break-words">
-              {playbackDiagnostic.reason}
-            </div>
-            {playbackDiagnostic.code && (
-              <div className="mt-1 text-[11px] text-white/80 break-words">
-                Código: {playbackDiagnostic.code}
-              </div>
-            )}
-            {playbackDiagnostic.httpStatus && (
-              <div className="mt-1 text-[11px] text-white/80 break-words">
-                HTTP: {playbackDiagnostic.httpStatus}
-              </div>
-            )}
-            {playbackDiagnostic.url && (
-              <div className="mt-1 text-[10px] text-white/60 break-all">
-                URL: {playbackDiagnostic.url}
-              </div>
-            )}
-            {playbackDiagnostic.detail && (
-              <div className="mt-1 text-[10px] text-white/60 break-words">
-                Detalhe: {playbackDiagnostic.detail}
-              </div>
-            )}
-            <div className="mt-2 text-[9px] uppercase tracking-widest text-white/40">
-              Atualizado: {new Date(playbackDiagnostic.timestamp).toLocaleTimeString()}
-            </div>
+        {shouldShowSimpleErrorOverlay && (
+          <div className="absolute top-6 left-1/2 -translate-x-1/2 z-[90] rounded-md border border-red-500/30 bg-black/85 px-4 py-2 text-[12px] font-semibold text-red-200">
+            {inlineError || error}
           </div>
         )}
         
         {/* Auto Next Countdown Overlay */}
         {autoNextCountdown !== null && nextEpisode && (
-          <div className="absolute bottom-40 right-12 z-[60] flex flex-col items-end gap-4 animate-in fade-in slide-in-from-right-10 duration-500">
-            <div className="bg-zinc-900/98 border border-white/10 p-6 rounded-2xl shadow-[0_0_50px_rgba(0,0,0,0.8)] flex flex-col gap-4 max-w-[340px] ring-1 ring-white/5">
-              <div className="flex items-center justify-between gap-4">
-                <div className="flex items-center gap-2">
-                  <div className="w-2 h-2 rounded-full bg-red-600 animate-pulse" />
-                  <span className="text-[10px] font-black uppercase tracking-[0.2em] text-red-500 font-['Outfit']">Próximo Episódio em {autoNextCountdown}s</span>
+          <div className="absolute bottom-16 right-6 z-[60] rounded-md border border-white/20 bg-black/85 px-4 py-3">
+            <div className="text-xs font-semibold text-white">
+              Próximo episódio em {autoNextCountdown}s
+            </div>
+            <div className="mt-2 flex gap-2">
+              <button
+                onClick={() => {
+                  cancelAutoNext();
+                  onPlayNextEpisode?.();
+                }}
+                className="rounded-md border border-white/20 bg-black/40 px-3 py-1 text-xs font-semibold text-white"
+              >
+                Assistir agora
+              </button>
+              <button
+                onClick={cancelAutoNext}
+                className="rounded-md border border-white/20 bg-black/40 px-3 py-1 text-xs font-semibold text-white"
+              >
+                Cancelar
+              </button>
+            </div>
+          </div>
+        )}
+
+        {shouldShowLiveTopOverlay && (
+          <div
+            className={`pointer-events-none absolute left-0 right-0 top-0 z-[70] flex items-start justify-between px-6 py-5 transition-opacity duration-300 ${
+              isLiveUiVisible ? 'opacity-100' : 'opacity-0'
+            }`}
+          >
+            <button
+              type="button"
+              onClick={(event) => {
+                event.stopPropagation();
+                if (canShowChannelBrowser) {
+                  setIsChannelBrowserOpen((prev) => !prev);
+                }
+              }}
+              className={`inline-flex h-14 w-14 items-center justify-center rounded-2xl border-2 border-white/35 bg-black/65 text-white shadow-[0_8px_24px_rgba(0,0,0,0.45)] transition-colors hover:bg-black/80 ${
+                isLiveUiVisible ? 'pointer-events-auto' : 'pointer-events-none'
+              }`}
+              aria-label="Abrir menu de canais"
+              title="Abrir menu de canais"
+            >
+              <Menu size={28} />
+            </button>
+            <div className="pointer-events-none max-w-[68vw] rounded-2xl border border-white/20 bg-black/60 px-6 py-3 text-right text-[26px] font-black tracking-tight text-white shadow-[0_8px_24px_rgba(0,0,0,0.45)] font-['Outfit']">
+              <span className="line-clamp-1">{liveChannelTitle}</span>
+            </div>
+          </div>
+        )}
+
+        {!isPreview && isLiveStream && (
+          <div
+            className={`pointer-events-none absolute inset-x-0 bottom-0 z-[64] bg-gradient-to-t from-black/95 via-black/72 to-transparent px-6 pb-6 pt-20 transition-all duration-300 ${
+              isLiveUiVisible ? 'translate-y-0 opacity-100' : 'translate-y-3 opacity-0'
+            }`}
+          >
+            <div className="rounded-2xl border border-white/18 bg-black/42 px-5 py-4 shadow-[0_10px_26px_rgba(0,0,0,0.5)] backdrop-blur-[2px]">
+              <div className="flex items-center gap-4">
+                <div className="h-16 w-16 shrink-0 overflow-hidden rounded-xl border border-white/20 bg-black/40">
+                  {media?.thumbnail ? (
+                    <img
+                      src={media.thumbnail}
+                      alt={media?.title || 'Canal'}
+                      className="h-full w-full object-cover"
+                    />
+                  ) : (
+                    <div className="flex h-full w-full items-center justify-center text-xs font-black uppercase tracking-[0.2em] text-white/70">
+                      TV
+                    </div>
+                  )}
                 </div>
-                <button onClick={cancelAutoNext} className="text-white/40 hover:text-white p-1 transition-colors">
-                  <X size={18} />
-                </button>
-              </div>
-              <div className="flex gap-4">
-                <div className="relative">
-                  <img 
-                    src={nextEpisode.thumbnail || nextEpisode.backdrop || ''} 
-                    className="w-28 h-18 rounded-lg object-cover border border-white/10 shadow-lg"
-                    alt="Próximo"
-                  />
-                  <div className="absolute inset-0 bg-black/20 rounded-lg flex items-center justify-center">
-                    <Play size={20} fill="white" className="text-white opacity-60" />
+
+                <div className="min-w-0 flex-1">
+                  <div className="mb-1 truncate text-[12px] font-black uppercase tracking-[0.14em] text-white/60 font-['Outfit']">
+                    {media?.category ? `Grupo: ${media.category}` : 'Canal ao vivo'}
+                  </div>
+                  <div className="truncate text-[34px] leading-none font-black text-white font-['Outfit']">
+                    {liveChannelTitle}
+                  </div>
+
+                  <div className="mt-3 grid grid-cols-[1fr_auto_1fr] items-center gap-3 text-[15px] font-semibold text-white/90 font-['Outfit']">
+                    <div className="truncate">
+                      {currentLiveProgram
+                        ? `${formatProgramTime(currentLiveProgram.start)} ${currentLiveProgram.title}`
+                        : 'Programação indisponível'}
+                    </div>
+                    <div className="text-white/45">|</div>
+                    <div className="truncate text-right text-white/75">
+                      {nextLiveProgram
+                        ? `${formatProgramTime(nextLiveProgram.start)} ${nextLiveProgram.title}`
+                        : 'Sem próximo no EPG'}
+                    </div>
+                  </div>
+
+                  <div className="mt-2 h-1.5 w-full overflow-hidden rounded-full bg-white/18">
+                    <div
+                      className="h-full rounded-full bg-red-500 transition-all duration-500"
+                      style={{ width: `${liveProgramProgress}%` }}
+                    />
                   </div>
                 </div>
-                <div className="flex-1 min-w-0 flex flex-col justify-center">
-                  <h4 className="text-white font-black text-sm truncate font-['Outfit']">{nextEpisode.title}</h4>
-                  <p className="text-white/40 text-[10px] font-bold uppercase tracking-wider mt-1.5 font-['Outfit']">Série • Próximo</p>
-                </div>
-              </div>
-              <div className="flex gap-3 mt-1">
-                <button 
-                  onClick={() => { cancelAutoNext(); onPlayNextEpisode?.(); }}
-                  className="flex-1 bg-white text-black font-black py-3 rounded-xl text-[11px] uppercase tracking-[0.1em] hover:bg-red-600 hover:text-white transition-colors shadow-xl active:scale-95 font-['Outfit']"
-                >
-                  Assistir Agora
-                </button>
-                <button 
-                  onClick={cancelAutoNext}
-                  className="px-5 bg-white/10 text-white font-black py-3 rounded-xl text-[11px] uppercase tracking-[0.1em] hover:bg-white/20 transition-colors border border-white/5 active:scale-95 font-['Outfit']"
-                >
-                  Cancelar
-                </button>
               </div>
             </div>
           </div>
         )}
 
-        {/* Cinematic Controls Overlay (Z-50) */}
-        {!isPreview && (
-          <div 
+        {!isPreview && !isLiveStream && (
+          <div
             className={`
-              absolute inset-0 z-50 flex flex-col justify-between p-8 bg-gradient-to-t from-black/90 via-transparent to-black/70
-              transition-opacity duration-500 ease-in-out
+              absolute inset-x-0 bottom-0 z-50 bg-black/75 px-4 py-3
+              transition-opacity duration-200 ease-out
               ${isControlsVisible || !isPlaying ? 'opacity-100 pointer-events-auto' : 'opacity-0 pointer-events-none'}
             `}
           >
-            {/* Top Bar: Title & Subtitle */}
-            <div className="flex items-start justify-between">
-               <div className="flex flex-col gap-1">
-                 <div className="flex items-center gap-4 mb-2">
-                    {canShowChannelBrowser && (
-                      <button
-                        type="button"
-                        onClick={(event) => {
-                          event.stopPropagation();
-                          setIsChannelBrowserOpen((prev) => !prev);
-                        }}
-                        className="rounded-xl border border-red-500/30 bg-zinc-900/95 px-4 py-2 text-[11px] font-black uppercase tracking-wider text-red-200 font-['Outfit']"
-                      >
-                        {isChannelBrowserOpen ? 'Ocultar Canais' : 'Canais'}
-                      </button>
-                    )}
-                 </div>
-                 <h2 className="text-4xl font-black text-white drop-shadow-2xl font-['Outfit'] tracking-tight">
-                   {media?.title || 'Xandeflix Player'}
-                 </h2>
-                 {(media as any).currentEpisode && (
-                   <p className="text-xl font-bold text-white/60 font-['Outfit'] mt-1">
-                     Temporada {(media as any).currentSeasonNumber} • Episódio {(media as any).currentEpisode.episodeNumber}: {(media as any).currentEpisode.title}
-                   </p>
-                 )}
-                 {isLiveStream && currentProgram && (
-                   <div className="flex items-center gap-3 mt-2 bg-red-600/20 self-start px-3 py-1 rounded-full border border-red-500/30">
-                      <div className="w-2 h-2 rounded-full bg-red-600 animate-pulse" />
-                      <span className="text-xs font-black text-red-500 uppercase tracking-widest font-['Outfit']">AO VIVO AGORA</span>
-                   </div>
-                 )}
-               </div>
-
-               <div className="flex items-center gap-4">
-                  <button 
-                    onClick={(e) => { e.stopPropagation(); setIsSettingsOpen(!isSettingsOpen); }}
-                    className="p-3 rounded-full bg-zinc-900/90 hover:bg-white/10 transition-transform border border-white/10"
-                    aria-label="Configurações de vídeo"
-                  >
-                    <SlidersHorizontal size={24} className="text-white" />
-                  </button>
-                  <button 
-                    onClick={(e) => { e.stopPropagation(); onClose(); }}
-                    className="p-3 rounded-full bg-zinc-900/90 hover:bg-white/10 transition-transform border border-white/10"
-                    aria-label="Fechar player"
-                  >
-                    <X size={28} className="text-white" />
-                  </button>
-               </div>
+            <div className="mb-2 flex items-center justify-between gap-3">
+              <div className="truncate text-sm font-semibold text-white">
+                {media?.title || 'Xandeflix Player'}
+              </div>
+              <button
+                onClick={(event) => {
+                  event.stopPropagation();
+                  void closeNativePlayer();
+                }}
+                className="rounded-md border border-white/20 bg-black/40 px-2 py-1 text-white"
+                aria-label="Fechar player"
+              >
+                <X size={16} />
+              </button>
             </div>
 
-            {/* Center: Big Play/Pause & Skip Buttons */}
-            <div className="absolute inset-0 flex items-center justify-center gap-16 pointer-events-none">
+            {!isLiveStream && (
+              <div className="mb-3">
+                <ProgressBar videoRef={previewVideoRef} />
+                <div className="mt-1 flex items-center justify-between text-[11px] text-white/70">
+                  <TimeDisplay videoRef={previewVideoRef} />
+                  <span>
+                    {previewVideoRef.current?.duration
+                      ? new Date(previewVideoRef.current.duration * 1000).toISOString().substring(11, 19)
+                      : '--:--:--'}
+                  </span>
+                </div>
+              </div>
+            )}
+
+            <div className="flex items-center gap-2">
+              {canShowChannelBrowser && (
+                <button
+                  type="button"
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    setIsChannelBrowserOpen((prev) => !prev);
+                  }}
+                  className="rounded-md border border-white/20 bg-black/40 px-3 py-2 text-xs font-semibold text-white"
+                >
+                  {isChannelBrowserOpen ? 'Ocultar Canais' : 'Canais'}
+                </button>
+              )}
+
               {!isLiveStream && (
                 <button
-                  onClick={(e) => { e.stopPropagation(); seek(-10); }}
-                  className="p-6 rounded-full bg-zinc-900/80 border border-white/5 transition-transform pointer-events-auto hover:scale-110 active:scale-95"
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    seek(-10);
+                  }}
+                  className="rounded-md border border-white/20 bg-black/40 px-3 py-2 text-xs font-semibold text-white"
                 >
-                  <Rewind size={42} className="text-white/80" />
-                  <span className="absolute -bottom-8 left-1/2 -translate-x-1/2 text-[10px] font-black text-white/40 uppercase font-['Outfit']">10s</span>
+                  -10s
                 </button>
               )}
 
               <button
-                onClick={(e) => { e.stopPropagation(); togglePlayPause(); }}
-                className={`
-                  p-12 rounded-full bg-zinc-900/95 border border-white/20
-                  transition-transform duration-500 pointer-events-auto hover:scale-110 active:scale-90
-                  shadow-[0_0_60px_rgba(0,0,0,0.5)]
-                `}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  void togglePlayPause();
+                }}
+                className="rounded-md border border-white/20 bg-black/40 px-3 py-2 text-xs font-semibold text-white"
               >
-                {isPlaying ? (
-                  <Pause size={64} fill="white" className="text-white drop-shadow-2xl" />
-                ) : (
-                  <Play size={64} fill="white" className="text-white ml-2 drop-shadow-2xl" />
-                )}
+                {isPlaying ? 'Pausar' : 'Reproduzir'}
               </button>
 
               {!isLiveStream && (
                 <button
-                  onClick={(e) => { e.stopPropagation(); seek(10); }}
-                  className="p-6 rounded-full bg-zinc-900/80 border border-white/5 transition-transform pointer-events-auto hover:scale-110 active:scale-95"
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    seek(10);
+                  }}
+                  className="rounded-md border border-white/20 bg-black/40 px-3 py-2 text-xs font-semibold text-white"
                 >
-                  <FastForward size={42} className="text-white/80" />
-                  <span className="absolute -bottom-8 left-1/2 -translate-x-1/2 text-[10px] font-black text-white/40 uppercase font-['Outfit']">10s</span>
+                  +10s
+                </button>
+              )}
+
+              <button
+                onClick={(event) => {
+                  event.stopPropagation();
+                  toggleMute();
+                }}
+                className="rounded-md border border-white/20 bg-black/40 px-3 py-2 text-xs font-semibold text-white"
+              >
+                {isMuted ? 'Som Off' : 'Som On'}
+              </button>
+
+              {nextEpisode && !isLiveStream && (
+                <button
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    onPlayNextEpisode?.();
+                  }}
+                  className="rounded-md border border-white/20 bg-black/40 px-3 py-2 text-xs font-semibold text-white"
+                >
+                  Próximo Episódio
                 </button>
               )}
             </div>
-
-            {/* Bottom Section: Progress & Controls */}
-            <div className="flex flex-col gap-6">
-              {!isLiveStream && (
-                <div className="group relative py-4 cursor-pointer">
-                  <ProgressBar videoRef={previewVideoRef} />
-                  <div className="absolute -top-6 left-0 right-0 flex justify-between px-2">
-                     <TimeDisplay videoRef={previewVideoRef} />
-                     <span className="text-white/40 text-xs font-black font-['Outfit']">
-                        {previewVideoRef.current?.duration ? new Date(previewVideoRef.current.duration * 1000).toISOString().substr(11, 8) : '--:--:--'}
-                     </span>
-                  </div>
-                </div>
-              )}
-
-              <div className="flex items-center justify-between">
-                 <div className="flex items-center gap-8">
-                    <button 
-                      onClick={(e) => { e.stopPropagation(); toggleMute(); }}
-                      className="p-2 text-white/70 hover:text-white transition-colors hover:scale-110"
-                    >
-                      {isMuted ? <VolumeX size={32} /> : <Volume2 size={32} />}
-                    </button>
-
-                    {!isLiveStream && (
-                      <button 
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          openRelatedDrawer();
-                        }}
-                        className="flex items-center gap-2 text-white/60 hover:text-white transition-colors font-['Outfit'] font-black uppercase tracking-widest text-sm"
-                      >
-                         <ChevronDown size={20} className="rotate-180" />
-                         Similares
-                      </button>
-                    )}
-                 </div>
-
-                 <div className="flex items-center gap-6">
-                    {nextEpisode && (
-                      <button 
-                        onClick={(e) => { e.stopPropagation(); onPlayNextEpisode?.(); }}
-                        className="flex items-center gap-3 bg-white text-black px-8 py-3 rounded-xl transition-transform shadow-xl active:scale-95 font-['Outfit']"
-                      >
-                        <FastForward size={22} fill="black" />
-                        <span className="text-sm font-black uppercase tracking-wider">Próximo Episódio</span>
-                      </button>
-                    )}
-                 </div>
-              </div>
-            </div>
-          </div>
-        )}
-
-        {/* Settings Overlay */}
-        {isSettingsOpen && (
-          <div 
-            className="absolute top-24 right-8 z-[70] bg-zinc-900/98 border border-white/10 p-6 rounded-3xl w-72 shadow-2xl animate-spring-zoom"
-            onClick={(e) => e.stopPropagation()}
-          >
-             <h4 className="text-white font-black uppercase tracking-[0.2em] text-[10px] mb-6 border-b border-white/10 pb-4">Configurações de Vídeo</h4>
-             
-             <div className="flex flex-col gap-4">
-                <div className="flex flex-col gap-2">
-                   <span className="text-white/40 text-[10px] font-black uppercase tracking-widest">Enquadramento</span>
-                   <div className="grid grid-cols-3 gap-2">
-                      {(['fit', 'fill', 'zoom'] as const).map(scale => (
-                        <button
-                          key={scale}
-                          onClick={() => setVideoScale(scale)}
-                          className={`py-2 rounded-lg text-[10px] font-black uppercase transition-colors ${videoScale === scale ? 'bg-red-600 text-white' : 'bg-white/5 text-white/40 border border-white/5'}`}
-                        >
-                          {scale === 'fit' ? 'Ajustar' : scale === 'fill' ? 'Preencher' : 'Zoom'}
-                        </button>
-                      ))}
-                   </div>
-                </div>
-
-                <button 
-                  onClick={() => setShowDiagnostic(true)}
-                  className="mt-4 flex items-center justify-between w-full p-3 bg-white/5 rounded-xl border border-white/5 hover:bg-white/10 transition-colors"
-                >
-                  <span className="text-white text-xs font-bold font-['Outfit']">Diagnóstico de Rede</span>
-                  <Activity size={16} className="text-white/40" />
-                </button>
-             </div>
-          </div>
-        )}
-
-        {/* Related Titles Drawer */}
-        {isRelatedVisible && (
-          <div
-            className="absolute inset-x-0 bottom-0 z-[80] h-[45vh] bg-zinc-900/98 border-t border-white/10 p-8 animate-spring-up"
-            onClick={(e) => e.stopPropagation()}
-          >
-               <div className="flex items-center justify-between mb-8">
-                  <div className="flex flex-col">
-                    <h3 className="text-2xl font-black text-white font-['Outfit'] uppercase tracking-tight">Títulos Semelhantes</h3>
-                    <p className="text-white/40 text-sm font-medium font-['Outfit']">Mais de {media?.category}</p>
-                  </div>
-                  <button 
-                    onClick={() => setIsRelatedVisible(false)}
-                    className="p-3 rounded-full bg-white/5 hover:bg-white/10 transition-colors border border-white/10"
-                  >
-                    <X size={24} className="text-white" />
-                  </button>
-               </div>
-
-               <div className="flex gap-4 overflow-x-auto pb-4 scrollbar-hide">
-                  {relatedMedia.map((item) => (
-                    <button
-                      key={`related-${item.id}`}
-                      onClick={() => {
-                        onZap?.(item);
-                        setIsRelatedVisible(false);
-                      }}
-                      className="flex-shrink-0 w-64 group relative transition-transform hover:scale-105 active:scale-95"
-                    >
-                      <div className="aspect-video rounded-xl overflow-hidden border border-white/10 shadow-2xl">
-                        <img 
-                          src={item.thumbnail || item.backdrop || ''} 
-                          className="w-full h-full object-cover"
-                          alt={item.title}
-                        />
-                        <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
-                           <Play size={32} fill="white" className="text-white" />
-                        </div>
-                      </div>
-                      <p className="mt-3 text-white font-black text-sm truncate font-['Outfit'] tracking-tight">{item.title}</p>
-                      <p className="text-white/40 text-[10px] font-bold uppercase tracking-widest mt-1 font-['Outfit']">{item.category}</p>
-                    </button>
-                  ))}
-                  {relatedMedia.length === 0 && (
-                    <div className="flex items-center justify-center w-full h-32 text-white/20 font-['Outfit'] font-black uppercase tracking-widest italic">
-                       Nenhum título semelhante encontrado
-                    </div>
-                  )}
-               </div>
           </div>
         )}
 
@@ -3233,9 +2918,6 @@ export const VideoPlayer = React.forwardRef<VideoPlayerHandle, VideoPlayerProps>
           </button>
         )}
       </div>
-      {showDiagnostic && (
-          <NetworkDiagnostic onClose={() => setShowDiagnostic(false)} testUrl={playbackUrl || url} />
-      )}
     </>
     );
   },

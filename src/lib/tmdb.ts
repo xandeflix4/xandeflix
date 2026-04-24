@@ -15,6 +15,18 @@ export interface TMDBData {
   trailerKey?: string | null;
   matchScore?: number;
   matchedTitle?: string;
+  streamingProvider?: {
+    name: string;
+    logo: string | null;
+    sourceType: 'flatrate' | 'free' | 'ads' | 'rent' | 'buy';
+    region: string;
+  } | null;
+  cast?: Array<{
+    id: number;
+    name: string;
+    character?: string;
+    profile: string | null;
+  }>;
 }
 
 export interface FetchTMDBMetadataOptions {
@@ -34,6 +46,31 @@ export interface TMDBSearchResult {
   vote_count?: number;
   popularity?: number;
   genre_ids?: number[];
+}
+
+export interface TMDBPersonFilmographyItem {
+  id: number;
+  title: string;
+  year: number;
+  rating: string;
+  mediaType: 'movie' | 'series';
+  poster: string | null;
+  backdrop: string | null;
+  role?: string;
+}
+
+interface TMDBWatchProviderItem {
+  provider_name?: string;
+  logo_path?: string | null;
+  display_priority?: number;
+}
+
+interface TMDBWatchProviderRegion {
+  flatrate?: TMDBWatchProviderItem[];
+  free?: TMDBWatchProviderItem[];
+  ads?: TMDBWatchProviderItem[];
+  rent?: TMDBWatchProviderItem[];
+  buy?: TMDBWatchProviderItem[];
 }
 
 const rawTmdbApiKey = String(import.meta.env.VITE_TMDB_API_KEY || '').trim();
@@ -374,6 +411,132 @@ function buildPosterUrl(path: string | null, size: 'w500' | 'w1280' | 'original'
   return `${TMDB_IMAGE_BASE}/${size}${path}`;
 }
 
+function buildProviderLogoUrl(path: string | null | undefined): string | null {
+  if (!path) return null;
+  return `${TMDB_IMAGE_BASE}/w92${path}`;
+}
+
+function buildProfileUrl(path: string | null | undefined): string | null {
+  if (!path) return null;
+  return `${TMDB_IMAGE_BASE}/w185${path}`;
+}
+
+function pickStreamingProvider(
+  results: Record<string, TMDBWatchProviderRegion> | undefined,
+): TMDBData['streamingProvider'] {
+  if (!results || typeof results !== 'object') return null;
+
+  const preferredRegions = ['BR', 'US'];
+  const availableRegions = Object.keys(results).filter(Boolean);
+  const regionOrder = [
+    ...preferredRegions.filter((region) => availableRegions.includes(region)),
+    ...availableRegions.filter((region) => !preferredRegions.includes(region)),
+  ];
+
+  const sourcePriority: Array<'flatrate' | 'free' | 'ads' | 'rent' | 'buy'> = [
+    'flatrate',
+    'free',
+    'ads',
+    'rent',
+    'buy',
+  ];
+
+  for (const region of regionOrder) {
+    const regionPayload = results[region];
+    if (!regionPayload) continue;
+
+    for (const sourceType of sourcePriority) {
+      const providers = Array.isArray(regionPayload[sourceType])
+        ? [...(regionPayload[sourceType] as TMDBWatchProviderItem[])]
+        : [];
+      if (providers.length === 0) continue;
+
+      providers.sort(
+        (a, b) =>
+          Number(a?.display_priority ?? Number.MAX_SAFE_INTEGER)
+          - Number(b?.display_priority ?? Number.MAX_SAFE_INTEGER),
+      );
+
+      const best = providers.find((provider) => String(provider?.provider_name || '').trim().length > 0);
+      if (!best) continue;
+
+      return {
+        name: String(best.provider_name || '').trim(),
+        logo: buildProviderLogoUrl(best.logo_path),
+        sourceType,
+        region,
+      };
+    }
+  }
+
+  return null;
+}
+
+export async function fetchTMDBPersonFilmography(
+  personId: number,
+  limit = 24,
+): Promise<TMDBPersonFilmographyItem[]> {
+  if (!Number.isFinite(personId) || personId <= 0) return [];
+
+  const safeLimit = Math.max(1, Math.min(60, Math.round(limit)));
+  const url = new URL(`${TMDB_API_BASE}/person/${Math.round(personId)}/combined_credits`);
+  url.searchParams.set('api_key', getTMDBApiKey());
+  url.searchParams.set('language', 'pt-BR');
+
+  const payload = await fetchTMDBJson<{ cast?: any[] }>(url.toString());
+  const castEntries = Array.isArray(payload.cast) ? payload.cast : [];
+
+  const mapped = castEntries
+    .filter((entry) => entry && (entry.media_type === 'movie' || entry.media_type === 'tv'))
+    .map((entry) => {
+      const mediaType = entry.media_type === 'movie' ? 'movie' : 'series';
+      const title = String(entry.title || entry.name || '').trim();
+      const year = Number(String(entry.release_date || entry.first_air_date || '0').slice(0, 4));
+      const voteAverage = Number(entry.vote_average || 0);
+      const voteCount = Number(entry.vote_count || 0);
+      const popularity = Number(entry.popularity || 0);
+
+      return {
+        id: Number(entry.id || 0),
+        title,
+        year: Number.isFinite(year) && year > 0 ? year : 0,
+        rating: voteAverage > 0 ? voteAverage.toFixed(1) : '0.0',
+        mediaType,
+        poster: entry.poster_path ? buildPosterUrl(entry.poster_path, 'w500') : null,
+        backdrop: entry.backdrop_path ? buildPosterUrl(entry.backdrop_path, 'w1280') : null,
+        role: String(entry.character || '').trim() || undefined,
+        popularity,
+        voteCount,
+      };
+    })
+    .filter((entry) => entry.id > 0 && entry.title.length > 0);
+
+  const deduped = new Map<string, (TMDBPersonFilmographyItem & { popularity: number; voteCount: number })>();
+  for (const entry of mapped) {
+    const key = `${entry.mediaType}:${entry.id}`;
+    const current = deduped.get(key);
+    if (!current) {
+      deduped.set(key, entry);
+      continue;
+    }
+    // Mantém a entrada com mais votos/popularidade quando houver duplicatas.
+    if (entry.voteCount > current.voteCount || entry.popularity > current.popularity) {
+      deduped.set(key, entry);
+    }
+  }
+
+  const sorted = Array.from(deduped.values()).sort((a, b) => {
+    if (b.popularity !== a.popularity) return b.popularity - a.popularity;
+    if (b.voteCount !== a.voteCount) return b.voteCount - a.voteCount;
+    return b.year - a.year;
+  });
+
+  const movieOnly = sorted.filter((entry) => entry.mediaType === 'movie');
+  const preferred = movieOnly.length > 0 ? movieOnly : sorted;
+
+  return preferred.slice(0, safeLimit).map(({ popularity, voteCount, ...rest }) => rest);
+}
+
 export async function searchTMDB(query: string, type: TMDBMediaType): Promise<TMDBSearchResult[]> {
   const cleanedQuery = query.trim();
   if (!cleanedQuery) {
@@ -439,27 +602,53 @@ export async function fetchTMDBMetadata(
 
   let trailerKey: string | null = null;
   let genres: string[] = [];
+  let streamingProvider: TMDBData['streamingProvider'] = null;
+  let cast: NonNullable<TMDBData['cast']> = [];
   if (includeDetails) {
     try {
       const detailsUrl = new URL(`${TMDB_API_BASE}/${buildTMDBEndpoint(type)}/${mapped.id}`);
       detailsUrl.searchParams.set('api_key', getTMDBApiKey());
       detailsUrl.searchParams.set('language', 'pt-BR');
-      detailsUrl.searchParams.set('append_to_response', 'videos');
+      detailsUrl.searchParams.set('append_to_response', 'videos,watch/providers,credits');
       detailsUrl.searchParams.set('include_video_language', 'pt-BR,pt,en-US,en,null');
 
       const detailsPayload = await fetchTMDBJson<{
         genres?: Array<{ name?: string }>;
         videos?: { results?: any[] };
+        'watch/providers'?: {
+          results?: Record<string, TMDBWatchProviderRegion>;
+        };
+        credits?: {
+          cast?: Array<{
+            id?: number;
+            name?: string;
+            character?: string;
+            profile_path?: string | null;
+            order?: number;
+          }>;
+        };
       }>(detailsUrl.toString());
       const videoResults = Array.isArray(detailsPayload.videos?.results)
         ? detailsPayload.videos?.results
         : [];
+      streamingProvider = pickStreamingProvider(detailsPayload['watch/providers']?.results);
       genres = Array.isArray(detailsPayload.genres)
         ? detailsPayload.genres
             .map((genre) => String(genre?.name || '').trim())
             .filter((genre) => genre.length > 0)
             .slice(0, 3)
         : [];
+      const creditsCast = Array.isArray(detailsPayload.credits?.cast) ? detailsPayload.credits.cast : [];
+      cast = creditsCast
+        .filter((member) => Number(member?.id || 0) > 0 && String(member?.name || '').trim().length > 0)
+        .sort((a, b) => Number(a?.order ?? 999) - Number(b?.order ?? 999))
+        .slice(0, 14)
+        .map((member) => ({
+          id: Number(member?.id || 0),
+          name: String(member?.name || '').trim(),
+          character: String(member?.character || '').trim() || undefined,
+          profile: buildProfileUrl(member?.profile_path),
+        }));
 
       let trailer = videoResults.find((v) => v.type === 'Trailer' && v.site === 'YouTube' && (v.iso_639_1 === 'pt' || v.iso_639_1 === 'pt-BR'));
       if (!trailer) trailer = videoResults.find((v) => v.type === 'Trailer' && v.site === 'YouTube' && (v.iso_639_1 === 'en' || v.iso_639_1 === 'en-US'));
@@ -488,6 +677,8 @@ export async function fetchTMDBMetadata(
     popularity: Number.isFinite(mapped.popularity as number) ? Number(mapped.popularity) : 0,
     genres,
     trailerKey,
+    streamingProvider,
+    cast,
     matchScore,
     matchedTitle: mapped.title,
   };

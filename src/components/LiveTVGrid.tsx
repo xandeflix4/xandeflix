@@ -1,10 +1,8 @@
 import React, { useState, useMemo, useEffect, useRef, useCallback } from 'react';
-import { Capacitor } from '@capacitor/core';
 import { View, Text, StyleSheet, ScrollView, TouchableHighlight, Image, Dimensions, FlatList, ListRenderItem } from 'react-native';
 import { Radio, ChevronRight, Play, Maximize2, Search, Heart, Activity, RotateCcw } from 'lucide-react';
 import { Category, Media } from '../types';
 import { VideoPlayer } from './VideoPlayer';
-import { NativeVideoPlayer } from '../lib/nativeVideoPlayer';
 import { useStore } from '../store/useStore';
 import { useTvNavigation } from '../hooks/useTvNavigation';
 import { NetworkDiagnostic } from './NetworkDiagnostic';
@@ -117,7 +115,6 @@ export const LiveTVGrid: React.FC<LiveTVGridProps> = ({
   const [now, setNow] = useState(() => Date.now());
   const openingFullscreenRef = useRef(false);
   const activePreviewChannelIdRef = useRef<string | null>(null);
-  const [isPromotingToFullscreen, setIsPromotingToFullscreen] = useState(false);
   const [focusColumn, setFocusColumn] = useState<LiveTvFocusColumn>('groups');
   const [focusedGroupIndex, setFocusedGroupIndex] = useState(0);
   const [focusedChannelIndex, setFocusedChannelIndex] = useState(0);
@@ -588,33 +585,18 @@ export const LiveTVGrid: React.FC<LiveTVGridProps> = ({
   }, [focusedGroupIndex, liveCategories.length]);
 
 
-  const openFullScreen = useCallback(async (media: Media) => {
+  const openFullScreen = useCallback((media: Media) => {
     if (openingFullscreenRef.current) {
       return;
     }
 
     previewArmRef.current = { mediaId: null, armedAt: 0 };
     openingFullscreenRef.current = true;
-    setIsPromotingToFullscreen(true);
     activePreviewChannelIdRef.current = media.id;
-
-    if (Capacitor.isNativePlatform()) {
-      try {
-        // Nao bloqueia a transicao para fullscreen se o plugin demorar para responder.
-        await Promise.race([
-          NativeVideoPlayer.exitPlayer(),
-          new Promise((resolve) => window.setTimeout(resolve, 450)),
-        ]);
-      } catch (exitError) {
-        console.warn('[LiveTVGrid] Falha ao encerrar player de previa antes do fullscreen:', exitError);
-      }
-    }
-
     window.setTimeout(() => {
       onPlayFull(media);
       window.setTimeout(() => {
         openingFullscreenRef.current = false;
-        setIsPromotingToFullscreen(false);
       }, 500);
     }, 60);
   }, [onPlayFull]);
@@ -625,7 +607,6 @@ export const LiveTVGrid: React.FC<LiveTVGridProps> = ({
     }
 
     openingFullscreenRef.current = false;
-    setIsPromotingToFullscreen(false);
   }, [isGlobalPlayerActive]);
 
   const handleMediaClick = useCallback((media: Media) => {
@@ -660,7 +641,6 @@ export const LiveTVGrid: React.FC<LiveTVGridProps> = ({
     }
 
     openingFullscreenRef.current = false;
-    setIsPromotingToFullscreen(false);
     setFocusColumn('channels');
     activePreviewChannelIdRef.current = media.id;
     autoPreviewActiveRef.current = false; // Usuario assumiu o controle
@@ -899,7 +879,12 @@ export const LiveTVGrid: React.FC<LiveTVGridProps> = ({
                 onPress={() => {
                   setFocusColumn('channels');
                   setFocusedChannelIndex(index);
-                  handleMediaClick(media);
+                  // Em Android TV, alguns runtimes WebView podem disparar onPress
+                  // durante navegação por foco (D-pad), causando troca de canal
+                  // sem confirmação do usuário. Mantemos a troca somente no onEnter.
+                  if (!layout.isTvMode) {
+                    handleMediaClick(media);
+                  }
                   try {
                     setFocusedId(`tv-channel-${media.id}`);
                   } catch (error) {
@@ -970,16 +955,11 @@ export const LiveTVGrid: React.FC<LiveTVGridProps> = ({
                      mediaType="live"
                      media={previewMedia}
                      onPreviewPlaybackFailed={handlePreviewPlaybackFailed}
-                     onClose={() => {
-                       if (!openingFullscreenRef.current) {
-                         activePreviewChannelIdRef.current = null;
-                         setPreviewMedia(null);
-                       }
-                     }}
+                     onClose={() => {}}
                      onPreviewRequestFullscreen={() => {
                        void openFullScreen(previewMedia);
                      }}
-                     suppressNativePreviewExitOnUnmount={isPromotingToFullscreen || !!isGlobalPlayerActive}
+                     suppressNativePreviewExitOnUnmount={false}
                      isMinimized={false}
                      isPreview={true}
                    />
@@ -1037,7 +1017,7 @@ export const LiveTVGrid: React.FC<LiveTVGridProps> = ({
                     </View>
                   )}
                 </View>
-              </View>
+            </View>
           </div>
         ) : (
           <View style={styles.playerPlaceholder}>

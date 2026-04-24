@@ -29,6 +29,7 @@ const navNodes: Map<string, NavNode> = new Map();
 let focusedNodeId: string | null = null;
 const focusListeners = new Set<() => void>();
 let globalLastKeyTime = 0; // Module-level debounce shared across ALL hook instances
+const TV_KEY_DEBOUNCE_MS = 105;
 
 const DPAD_KEY_MAP: Record<number, string> = {
   4: 'Back',
@@ -173,6 +174,19 @@ const getFirstNavigableNode = (): NavNode | null => {
   return preferredNode || validNodes[0] || null;
 };
 
+const isElementMostlyInViewport = (element: HTMLElement, margin = 24): boolean => {
+  if (typeof window === 'undefined') return true;
+  const rect = element.getBoundingClientRect();
+  const viewportWidth = window.innerWidth || document.documentElement.clientWidth || 0;
+  const viewportHeight = window.innerHeight || document.documentElement.clientHeight || 0;
+  return (
+    rect.top >= -margin
+    && rect.left >= -margin
+    && rect.bottom <= viewportHeight + margin
+    && rect.right <= viewportWidth + margin
+  );
+};
+
 const focusNode = (
   node: NavNode,
   preventEventDefault?: () => void,
@@ -185,7 +199,7 @@ const focusNode = (
   if (preventEventDefault) preventEventDefault();
 
   ref.focus({ preventScroll: true });
-  if (!node.disableAutoScroll) {
+  if (!node.disableAutoScroll && !isElementMostlyInViewport(ref)) {
     ref.scrollIntoView({
       behavior: smoothScroll ? 'smooth' : 'auto',
       block: 'center',
@@ -326,7 +340,7 @@ export const useTvNavigation = (options?: { onBack?: () => void; isActive?: bool
   const handleKeyDown = useCallback(
     (e: KeyboardEvent) => {
       const now = Date.now();
-      if (now - globalLastKeyTime < 150) return;
+      if (now - globalLastKeyTime < TV_KEY_DEBOUNCE_MS) return;
       globalLastKeyTime = now;
 
       const key = normalizeTvKey(e);
@@ -369,30 +383,31 @@ export const useTvNavigation = (options?: { onBack?: () => void; isActive?: bool
       const currentRect = currentRef.getBoundingClientRect();
 
       // Fast path for carousel body items.
-      const itemMatch = currentFocusedId.match(/^item-(\d+)-(\d+)$/);
+      const itemMatch = currentFocusedId.match(/^(.*?)(item-(\d+)-(\d+))$/);
       if (itemMatch && (key === 'ArrowLeft' || key === 'ArrowRight' || key === 'ArrowUp' || key === 'ArrowDown')) {
-        const row = Number(itemMatch[1]);
-        const column = Number(itemMatch[2]);
+        const idPrefix = itemMatch[1] || '';
+        const row = Number(itemMatch[3]);
+        const column = Number(itemMatch[4]);
         const candidateIds: string[] = [];
 
         if (key === 'ArrowLeft') {
           if (column > 0) {
-            candidateIds.push(`item-${row}-${column - 1}`);
+            candidateIds.push(`${idPrefix}item-${row}-${column - 1}`);
           } else {
             const activeMenuId = `menu-${useStore.getState().activeFilter || 'home'}`;
             candidateIds.push(activeMenuId, 'menu-home', 'menu-search', 'menu-live', 'menu-movie', 'menu-series');
           }
         } else if (key === 'ArrowRight') {
-          candidateIds.push(`item-${row}-${column + 1}`, `see-all-${row}`);
+          candidateIds.push(`${idPrefix}item-${row}-${column + 1}`, `${idPrefix}see-all-${row}`, `see-all-${row}`);
         } else if (key === 'ArrowUp') {
           if (row > 0) {
-            candidateIds.push(`item-${row - 1}-${column}`);
+            candidateIds.push(`${idPrefix}item-${row - 1}-${column}`, `item-${row - 1}-${column}`);
           } else {
             // Row 0 -> VAI PARA OS BOTÕES DO HERO
             candidateIds.push('hero-play', 'hero-info', 'menu-home');
           }
         } else if (key === 'ArrowDown') {
-          candidateIds.push(`item-${row + 1}-${column}`, `see-all-${row + 1}`);
+          candidateIds.push(`${idPrefix}item-${row + 1}-${column}`, `${idPrefix}see-all-${row + 1}`, `see-all-${row + 1}`);
         }
 
         for (const candidateId of candidateIds) {

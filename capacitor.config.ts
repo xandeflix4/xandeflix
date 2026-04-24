@@ -3,7 +3,7 @@ import type { CapacitorConfig } from '@capacitor/cli';
 
 const devServerUrl = String(process.env.CAPACITOR_DEV_SERVER_URL || '').trim().replace(/\/+$/, '');
 const usesDevServer = devServerUrl.length > 0;
-const androidScheme = usesDevServer && !devServerUrl.startsWith('https://') ? 'http' : 'https';
+const androidScheme = 'http';
 
 const config: CapacitorConfig = {
   appId: 'com.xandeflix.app',
@@ -11,8 +11,8 @@ const config: CapacitorConfig = {
   webDir: 'dist',
   backgroundColor: '#050505',
   server: {
-    // Keep the app on a native Android scheme in production and allow cleartext
-    // streams when the provider still exposes HTTP endpoints.
+    // Android TV playlists and artwork frequently include HTTP-only hosts.
+    // Keeping the WebView origin in HTTP avoids mixed-content blocking.
     androidScheme,
     cleartext: true,
     ...(usesDevServer

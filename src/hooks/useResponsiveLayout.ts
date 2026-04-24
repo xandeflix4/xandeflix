@@ -37,16 +37,16 @@ export const useResponsiveLayout = () => {
 
     const rawScale = longestSide / 1366;
     const uiScale = isTvProfile
-      ? 0.7 // Reduzido para 0.7 conforme pedido para visual cinema e performance
+      ? 0.88
       : Math.max(0.92, Math.min(1.1, rawScale));
 
     const sideRailCollapsedWidth = isTvProfile
-      ? 56
+      ? 72
       : isLandscape
         ? (isMobile ? 72 : 80)
         : 72;
     const sideRailExpandedWidth = isTvProfile
-      ? 200
+      ? 256
       : sideRailCollapsedWidth + (isMobile ? 168 : 196);
     const horizontalPadding = isTvProfile
       ? 20 // Fixo menor
@@ -55,20 +55,20 @@ export const useResponsiveLayout = () => {
         : isTablet
           ? Math.round(24 * uiScale)
           : Math.round(32 * uiScale);
-    const topHeaderPadding = isTvProfile ? 10 : isMobile ? 20 : Math.round(28 * uiScale);
+    const topHeaderPadding = isTvProfile ? 18 : isMobile ? 20 : Math.round(28 * uiScale);
     const bottomNavigationHeight = isMobile && !isTvMode ? 78 : 0;
     const heroHeightMax = isTvProfile ? 900 : isMobile ? 420 : 680;
     const heroHeightRatio = isTvProfile ? 0.66 : isMobile ? 0.58 : 0.66;
     const heroMinHeight = isTvProfile ? 480 : isMobile ? 300 : 390;
     const heroContentMaxWidth = isTvProfile ? 760 : 760;
-    const heroTitleSize = isTvProfile ? 18 : isMobile ? 22 : isTablet ? 30 : 34; // Era 26
-    const heroMetaSize = isTvProfile ? 9 : isMobile ? 12 : 14; // Era 11
-    const heroButtonFontSize = isTvProfile ? 10 : isMobile ? 13 : 15; // Era 13
-    const rowCardWidth = isTvProfile ? 85 : null; // Era 110
+    const heroTitleSize = isTvProfile ? 24 : isMobile ? 22 : isTablet ? 30 : 34;
+    const heroMetaSize = isTvProfile ? 12 : isMobile ? 12 : 14;
+    const heroButtonFontSize = isTvProfile ? 13 : isMobile ? 13 : 15;
+    const rowCardWidth = isTvProfile ? 110 : null;
     const rowCardGap = isTvProfile ? 12 : null;
-    const gridCardMaxWidth = isTvProfile ? 110 : null; // Era 152
-    const menuLabelSize = isTvProfile ? 11 : 18;
-    const menuIconSize = isTvProfile ? 15 : 22;
+    const gridCardMaxWidth = isTvProfile ? 152 : null;
+    const menuLabelSize = isTvProfile ? 14 : 18;
+    const menuIconSize = isTvProfile ? 20 : 22;
 
     return {
       width,

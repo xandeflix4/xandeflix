@@ -74,7 +74,7 @@ const GridItem = React.memo(({ item, navId, onPress, onFocus, cardWidth, cardHei
         style={{
           width: '100%',
           height: '100%',
-          borderRadius: 12,
+          borderRadius: 0,
           overflow: 'hidden',
           backgroundColor: '#1a1a1a',
           border: '2px solid rgba(255,255,255,0.05)',
@@ -155,8 +155,8 @@ const GridItem = React.memo(({ item, navId, onPress, onFocus, cardWidth, cardHei
               bottom: 0,
               padding: 12,
               backgroundColor: 'rgba(0,0,0,0.82)',
-              borderBottomLeftRadius: 10,
-              borderBottomRightRadius: 10,
+              borderBottomLeftRadius: 0,
+              borderBottomRightRadius: 0,
             }}
           >
             <div
@@ -340,9 +340,10 @@ export const CategoryGridView: React.FC<CategoryGridViewProps> = ({ category, on
     return diskItems.filter((item) => item.title.toLowerCase().includes(normalized));
   }, [diskItems, search]);
 
-  const sideRailOffset = layout.isDesktop ? (layout.sideRailCollapsedWidth || 80) : 0;
-  const railSafePadding = layout.isDesktop ? 16 : 0;
-  const gridGap = layout.isMobile ? 12 : 14;
+  const shouldReserveSideRail = (!layout.isMobile || layout.isTvProfile);
+  const sideRailOffset = shouldReserveSideRail ? (layout.sideRailCollapsedWidth || 80) : 0;
+  const railSafePadding = shouldReserveSideRail ? (layout.isTvProfile ? 18 : 16) : 0;
+  const gridGap = layout.isTvProfile ? 6 : layout.isMobile ? 12 : 14;
   const contentPadding = layout.isMobile
     ? 16
     : layout.isTablet
@@ -350,15 +351,22 @@ export const CategoryGridView: React.FC<CategoryGridViewProps> = ({ category, on
       : Math.max(24, Math.min(36, Math.round((layout.horizontalPadding || 40) * 0.82)));
   const gridAreaWidth =
     layout.width - sideRailOffset - ((contentPadding * 2) + railSafePadding);
-  const minCardWidth = layout.isMobile ? 132 : 160;
-  let columns = layout.isMobile ? 2 : layout.width >= 1700 ? 6 : 5;
+  const minCardWidth = layout.isTvProfile ? 212 : layout.isMobile ? 132 : 160;
+  let columns = layout.isTvProfile
+    ? (layout.width >= 1900 ? 6 : layout.width >= 1450 ? 5 : 4)
+    : layout.isMobile
+      ? 2
+      : layout.width >= 1700
+        ? 6
+        : 5;
   while (columns > 2 && (minCardWidth * columns + (gridGap * (columns - 1))) > gridAreaWidth) {
     columns -= 1;
   }
   const availableWidth = gridAreaWidth - (gridGap * (columns - 1));
+  const cardMaxWidth = layout.isTvProfile ? 280 : (layout.gridCardMaxWidth || (layout.isMobile ? 180 : layout.isTablet ? 200 : 210));
   const cardWidth = Math.max(
     minCardWidth,
-    Math.min(layout.gridCardMaxWidth || (layout.isMobile ? 180 : layout.isTablet ? 200 : 210), Math.floor(availableWidth / columns)),
+    Math.min(cardMaxWidth, Math.floor(availableWidth / columns)),
   );
   const cardHeight = Math.round(cardWidth * (3 / 2));
   const gridTitleSize = layout.isTvProfile ? 26 : layout.isCompact ? 22 : 32;

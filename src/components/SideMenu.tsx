@@ -1,5 +1,4 @@
 import React, { useState } from 'react';
-import { Text } from 'react-native';
 import { motion } from 'motion/react';
 import { Search, Home, Film, Tv, Settings, User, Radio, LogOut, Heart, Trophy, Baby } from 'lucide-react';
 import { clsx, type ClassValue } from 'clsx';
@@ -112,15 +111,15 @@ export const SideMenu: React.FC<SideMenuProps> = ({ onSelect, activeId = 'home',
   // Colapsar menu automaticamente quando o filtro ativo muda e garante
   // que o menu nÃ£o fica preso expandido ao carregar/recarregar a home.
   React.useEffect(() => {
-    collapseMenu();
+    collapseMenu({ blurActiveElement: false });
   }, [activeId]);
 
-  const collapseMenu = () => {
+  const collapseMenu = (options: { blurActiveElement?: boolean } = {}) => {
     setIsExpanded(false);
     setFocusedItem(null);
     setMenuHasFocus(false);
 
-    if (typeof document !== 'undefined' && document.activeElement instanceof HTMLElement) {
+    if (options.blurActiveElement !== false && typeof document !== 'undefined' && document.activeElement instanceof HTMLElement) {
       document.activeElement.blur();
     }
   };
@@ -137,7 +136,7 @@ export const SideMenu: React.FC<SideMenuProps> = ({ onSelect, activeId = 'home',
       return;
     }
 
-    collapseMenu();
+    collapseMenu({ blurActiveElement: false });
 
     if (onSelect) {
       onSelect(id);
@@ -153,36 +152,45 @@ export const SideMenu: React.FC<SideMenuProps> = ({ onSelect, activeId = 'home',
         setFocusedItem(null);
         setMenuHasFocus(false);
       }
-    }, 50);
+    }, layout.isTvProfile ? 12 : 50);
   };
 
   const showBackdrop = isTvDevice && menuHasFocus;
   const collapsedWidth = layout.sideRailCollapsedWidth || 80;
   const expandedWidth = layout.sideRailExpandedWidth || 280;
   const iconSize = layout.menuIconSize || 28;
+  const boostedIconSize = Math.round(iconSize * (layout.isTvProfile ? 1.55 : 1.3));
   const labelFontSize = layout.menuLabelSize || 18;
-  const panelHorizontalPadding = layout.isTvProfile ? 12 : 16;
+  const panelHorizontalPadding = layout.isTvProfile ? 10 : 16;
+  const collapsedHorizontalPadding = layout.isTvProfile ? 6 : panelHorizontalPadding;
+  const panelContentPaddingX = isExpanded ? panelHorizontalPadding : collapsedHorizontalPadding;
   const panelVerticalPadding = layout.isTvProfile ? 24 : 32;
   const logoBottomMargin = layout.isTvProfile ? 18 : 24;
   const itemPadding = layout.isTvProfile ? 11 : 12;
+  const iconColumnWidth = Math.max(28, collapsedWidth - (collapsedHorizontalPadding * 2));
+  const profileAvatarSize = Math.max(30, Math.min(iconColumnWidth, layout.isTvProfile ? 38 : 44));
+  const profileIconSize = Math.round(boostedIconSize * 1.05);
   const isMenuActivated = menuHasFocus || isExpanded;
 
   return (
     <>
       <div
         className={cn(
-          'pointer-events-none fixed inset-0 z-[240] bg-black/80 transition-opacity duration-220 ease-out',
+          'pointer-events-none fixed inset-0 z-[240] bg-black/80 transition-opacity duration-120 ease-out',
           showBackdrop ? 'opacity-100' : 'opacity-0',
         )}
       />
 
       <div
         className={cn(
-          'side-menu-panel fixed left-0 top-0 bottom-0 z-[260] border-r border-white/5 flex flex-col shadow-2xl transition-all ease-in-out',
+          'side-menu-panel fixed left-0 top-0 bottom-0 z-[260] border-r border-white/5 flex flex-col shadow-2xl',
           'bg-black/60 backdrop-blur-xl'
         )}
         style={{
           width: isExpanded ? expandedWidth : collapsedWidth,
+          transition: layout.isTvProfile
+            ? 'width 120ms ease-out, background-color 120ms ease-out'
+            : 'width 200ms ease-out, background-color 200ms ease-out',
           paddingTop: panelVerticalPadding,
           paddingBottom: Math.max(16, panelVerticalPadding - 8),
           borderRightWidth: 1,
@@ -202,9 +210,10 @@ export const SideMenu: React.FC<SideMenuProps> = ({ onSelect, activeId = 'home',
         <div
           className="h-10 flex items-center shrink-0"
           style={{
-            paddingLeft: panelHorizontalPadding + 8,
-            paddingRight: panelHorizontalPadding + 8,
+            paddingLeft: panelContentPaddingX + 8,
+            paddingRight: panelContentPaddingX + 8,
             marginBottom: logoBottomMargin,
+            justifyContent: isExpanded ? 'flex-start' : 'center',
           }}
         >
           <span className="text-red-600 font-display font-black text-2xl tracking-tighter italic">
@@ -215,7 +224,7 @@ export const SideMenu: React.FC<SideMenuProps> = ({ onSelect, activeId = 'home',
         {/* User Profile Section */}
         <div
           className="mb-4 shrink-0"
-          style={{ paddingLeft: panelHorizontalPadding, paddingRight: panelHorizontalPadding }}
+          style={{ paddingLeft: panelContentPaddingX, paddingRight: panelContentPaddingX }}
         >
           <div
             role="button"
@@ -236,13 +245,18 @@ export const SideMenu: React.FC<SideMenuProps> = ({ onSelect, activeId = 'home',
           >
             <div
               className="flex flex-row items-center"
-              style={{ width: isExpanded ? '100%' : 'auto', justifyContent: isExpanded ? 'flex-start' : 'center' }}
+              style={{ width: '100%', justifyContent: isExpanded ? 'flex-start' : 'center' }}
             >
               <div
                 className="bg-gradient-to-br from-blue-600 to-indigo-800 rounded-lg flex items-center justify-center shadow-lg shrink-0"
-                style={{ width: layout.isTvProfile ? 36 : 40, height: layout.isTvProfile ? 36 : 40 }}
+                style={{
+                  width: profileAvatarSize,
+                  height: profileAvatarSize,
+                  marginLeft: isExpanded ? Math.max(0, (iconColumnWidth - profileAvatarSize) / 2) : 0,
+                  marginRight: isExpanded ? Math.max(0, (iconColumnWidth - profileAvatarSize) / 2) : 0,
+                }}
               >
-                <User color="white" size={layout.isTvProfile ? 22 : 24} />
+                <User color="white" size={profileIconSize} />
               </div>
               {isExpanded && (
                 isTvDevice ? (
@@ -269,8 +283,8 @@ export const SideMenu: React.FC<SideMenuProps> = ({ onSelect, activeId = 'home',
         <div
           className="flex-1 space-y-1 overflow-y-auto scrollbar-hide"
           style={{
-            paddingLeft: panelHorizontalPadding,
-            paddingRight: panelHorizontalPadding,
+            paddingLeft: panelContentPaddingX,
+            paddingRight: panelContentPaddingX,
             paddingTop: 8,
             paddingBottom: 8,
           }}
@@ -291,8 +305,8 @@ export const SideMenu: React.FC<SideMenuProps> = ({ onSelect, activeId = 'home',
                 onBlur={handleBlur}
                 onClick={() => handlePress(item.id)}
                 className={cn(
-                  "w-full flex items-center rounded-xl transition-all duration-300 cursor-pointer group outline-none border-none bg-transparent",
-                  isFocused ? "scale-110" : "opacity-70 scale-100"
+                  "w-full flex items-center rounded-xl transition-all duration-150 cursor-pointer group outline-none border-none bg-transparent",
+                  isFocused ? "scale-105" : "opacity-70 scale-100"
                 )}
                 style={{
                   padding: itemPadding,
@@ -304,11 +318,14 @@ export const SideMenu: React.FC<SideMenuProps> = ({ onSelect, activeId = 'home',
               >
                 <div
                   className="flex flex-row items-center"
-                  style={{ width: isExpanded ? '100%' : 'auto', justifyContent: isExpanded ? 'flex-start' : 'center' }}
+                  style={{ width: '100%', justifyContent: isExpanded ? 'flex-start' : 'center' }}
                 >
-                  <div className="w-8 flex items-center justify-center shrink-0 transition-transform duration-300 group-hover:scale-110">
+                  <div
+                    className="flex items-center justify-center shrink-0 transition-transform duration-300 group-hover:scale-110"
+                    style={{ width: isExpanded ? iconColumnWidth : '100%' }}
+                  >
                     <Icon 
-                      size={iconSize} 
+                      size={boostedIconSize} 
                       color={isHighlighted ? "#E50914" : "rgba(255,255,255,0.6)"} 
                       strokeWidth={isHighlighted ? 2.5 : 1.5}
                     />
@@ -348,8 +365,8 @@ export const SideMenu: React.FC<SideMenuProps> = ({ onSelect, activeId = 'home',
         <div
           className="border-t border-white/5 space-y-2 shrink-0"
           style={{
-            paddingLeft: panelHorizontalPadding,
-            paddingRight: panelHorizontalPadding,
+            paddingLeft: panelContentPaddingX,
+            paddingRight: panelContentPaddingX,
             paddingTop: 12,
             paddingBottom: 12,
           }}
@@ -365,8 +382,8 @@ export const SideMenu: React.FC<SideMenuProps> = ({ onSelect, activeId = 'home',
               onLogout?.();
             }}
             className={cn(
-              "w-full flex items-center rounded-xl transition-all duration-300 cursor-pointer group outline-none border-none bg-transparent",
-              focusedItem === 'logout' ? "scale-110" : "opacity-70"
+              "w-full flex items-center rounded-xl transition-all duration-150 cursor-pointer group outline-none border-none bg-transparent",
+              focusedItem === 'logout' ? "scale-105" : "opacity-70"
             )}
             style={{
               padding: itemPadding,
@@ -378,11 +395,14 @@ export const SideMenu: React.FC<SideMenuProps> = ({ onSelect, activeId = 'home',
           >
             <div
               className="flex flex-row items-center"
-              style={{ width: isExpanded ? '100%' : 'auto', justifyContent: isExpanded ? 'flex-start' : 'center' }}
+              style={{ width: '100%', justifyContent: isExpanded ? 'flex-start' : 'center' }}
             >
-              <div className="w-8 flex items-center justify-center shrink-0 transition-transform duration-300 group-hover:scale-110">
+              <div
+                className="flex items-center justify-center shrink-0 transition-transform duration-300 group-hover:scale-110"
+                style={{ width: isExpanded ? iconColumnWidth : '100%' }}
+              >
                 <LogOut 
-                  size={iconSize} 
+                  size={boostedIconSize} 
                   color={focusedItem === 'logout' ? "#E50914" : "rgba(255,255,255,0.6)"} 
                 />
               </div>

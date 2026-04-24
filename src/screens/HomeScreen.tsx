@@ -63,12 +63,13 @@ const normalizeTMDBType = (type: string | undefined): 'movie' | 'series' | null 
 };
 
 const _isTvBoot = detectTvEnvironment();
-const HOME_ARTWORK_PREFETCH_ITEM_LIMIT = _isTvBoot ? 12 : 60;
-const HOME_ARTWORK_DIRECT_IMAGE_LIMIT = _isTvBoot ? 16 : 90;
-const HOME_ARTWORK_PREFETCH_CONCURRENCY = _isTvBoot ? 2 : 6;
-const HOME_ARTWORK_PREFETCH_TIMEOUT_MS = _isTvBoot ? 5000 : 18000;
-const HOME_ARTWORK_CRITICAL_CATEGORY_LIMIT = _isTvBoot ? 2 : 4;
-const HOME_ARTWORK_CRITICAL_ITEMS_PER_CATEGORY = _isTvBoot ? 4 : 8;
+const HOME_ARTWORK_PREFETCH_ITEM_LIMIT = _isTvBoot ? 24 : 60;
+const HOME_ARTWORK_DIRECT_IMAGE_LIMIT = _isTvBoot ? 36 : 90;
+const HOME_ARTWORK_PREFETCH_CONCURRENCY = _isTvBoot ? 3 : 6;
+const HOME_ARTWORK_PREFETCH_TIMEOUT_MS = _isTvBoot ? 9000 : 18000;
+const HOME_ARTWORK_CRITICAL_CATEGORY_LIMIT = _isTvBoot ? 3 : 4;
+const HOME_ARTWORK_CRITICAL_ITEMS_PER_CATEGORY = _isTvBoot ? 6 : 8;
+const HOME_CATEGORY_RANK_CANDIDATE_LIMIT = _isTvBoot ? 140 : 220;
 
 const isLikelyPlaceholderArtwork = (url: string): boolean => {
   const normalized = String(url || '').trim().toLowerCase();
@@ -257,7 +258,7 @@ const RowsVirtualList = React.memo(({
       if (index === 0) return heroEstimatedHeight;
       return rowEstimatedHeight;
     },
-    overscan: 10,
+    overscan: layout.isTvProfile ? 4 : 8,
   });
 
   return (
@@ -409,6 +410,7 @@ const HomeScreen: React.FC<{ onLogout: () => void }> = ({ onLogout }) => {
   const [heroMedia, setHeroMedia] = useState<Media | null>(null);
   const [isHeroVisibleInList, setIsHeroVisibleInList] = useState(true);
   const [isSideMenuExpanded, setIsSideMenuExpanded] = useState(false);
+  const [lastClosedLiveMedia, setLastClosedLiveMedia] = useState<Media | null>(null);
   const [heroPreloadedTMDB, setHeroPreloadedTMDB] = useState<Record<string, TMDBData>>({});
   const [cardPreloadedTMDB, setCardPreloadedTMDB] = useState<Record<string, TMDBData>>({});
   const [cardTMDBMissedByKey, setCardTMDBMissedByKey] = useState<Record<string, true>>({});
@@ -435,7 +437,7 @@ const HomeScreen: React.FC<{ onLogout: () => void }> = ({ onLogout }) => {
       const key = e.key;
       const isBack = key === 'Escape' || key === 'Back' || (e as any).keyCode === 4;
       
-      if (isBack) {
+      if (import.meta.env.DEV && isBack) {
         console.log(`[HomeScreen] Comando de Back detectado: ${key}`);
       }
       
@@ -568,6 +570,7 @@ const HomeScreen: React.FC<{ onLogout: () => void }> = ({ onLogout }) => {
   const sideMenuPushOffset = sideMenuExpandedWidth - sideMenuCollapsedWidth;
   const shouldRenderSideMenu = !layout.isMobile || layout.isTvProfile;
   const isFullscreenPlayerActive = Boolean(activeVideoUrl && playerMode === 'fullscreen');
+  const shouldKeepLiveSessionOnClose = false;
   const shouldShowSideMenu = shouldRenderSideMenu && !isFullscreenPlayerActive;
   const mainContentShift = shouldRenderSideMenu && isSideMenuExpanded ? sideMenuPushOffset : 0;
 
@@ -770,6 +773,11 @@ const HomeScreen: React.FC<{ onLogout: () => void }> = ({ onLogout }) => {
 
   const handlePlay = useCallback((media: Media) => {
     clearAutoRotateResumeTimer();
+    if (media.type === 'live') {
+      setLastClosedLiveMedia(media);
+    } else {
+      setLastClosedLiveMedia(null);
+    }
     setPlayingMedia(media);
     setActiveVideoUrl(media.videoUrl);
     setVideoType(media.type as any);
@@ -779,12 +787,16 @@ const HomeScreen: React.FC<{ onLogout: () => void }> = ({ onLogout }) => {
   }, [clearAutoRotateResumeTimer, setPlayerMode]);
 
   const closeActivePlayer = useCallback(() => {
+    const closedLiveMedia = videoType === 'live' ? playingMedia : null;
     setActiveVideoUrl(null);
     setPlayingMedia(null);
     setVideoType(null);
+    if (closedLiveMedia) {
+      setLastClosedLiveMedia(closedLiveMedia);
+    }
     setPlayerMode('closed');
     scheduleHeroAutoRotateResume(layout.isTvProfile ? 9000 : 6000);
-  }, [layout.isTvProfile, scheduleHeroAutoRotateResume, setPlayerMode]);
+  }, [layout.isTvProfile, playingMedia, scheduleHeroAutoRotateResume, setPlayerMode, videoType]);
 
   const handleMediaPress = useCallback((media: Media) => {
     if (media.type === 'live') {
@@ -826,7 +838,7 @@ const HomeScreen: React.FC<{ onLogout: () => void }> = ({ onLogout }) => {
     
     // Garantir que o Hero apareca inteiramente no topo ao ganhar foco
     if (layout.isTvProfile && scrollRef.current) {
-      scrollRef.current.scrollTo({ top: 0, behavior: 'smooth' });
+      scrollRef.current.scrollTo({ top: 0, behavior: 'auto' });
     }
   }, [layout.isTvProfile, scheduleHeroAutoRotateResume]);
 
@@ -1193,38 +1205,33 @@ const HomeScreen: React.FC<{ onLogout: () => void }> = ({ onLogout }) => {
     };
   }, [clearAutoRotateResumeTimer]);
 
-  const categoriesWithCoverCards = useMemo(() => {
-    if (activeFilter === 'live') {
-      return filteredCategories;
-    }
-
-    const preparedCategories = filteredCategories
-      .map((category) => {
-        const coveredItems = category.items.filter((item) => {
-          if (item.type === 'live') return true;
-          const mediaKey = getHeroMediaKey(item);
-          const preloaded = mediaKey ? cardPreloadedTMDB[mediaKey] : null;
-          return (
-            hasUsefulArtworkUrl(item.thumbnail)
-            || hasUsefulArtworkUrl(item.backdrop)
-            || hasUsefulArtworkUrl(preloaded?.thumbnail)
-            || hasUsefulArtworkUrl(preloaded?.backdrop)
-          );
-        });
-
-        const sourceItems = coveredItems.length > 0 ? coveredItems : category.items;
-
-        const rankedItems = sourceItems
+  const preparedCategoriesWithArtwork = useMemo(
+    () =>
+      filteredCategories
+        .map((category) => {
+          const candidateItems = category.items.slice(0, HOME_CATEGORY_RANK_CANDIDATE_LIMIT);
+          const rankedItems = candidateItems
           .map((item, originalIndex) => {
             const mediaKey = getHeroMediaKey(item);
             const metadata = mediaKey ? cardPreloadedTMDB[mediaKey] : null;
+            const hasArtwork =
+              item.type === 'live'
+              || hasUsefulArtworkUrl(item.thumbnail)
+              || hasUsefulArtworkUrl(item.backdrop)
+              || hasUsefulArtworkUrl(metadata?.thumbnail)
+              || hasUsefulArtworkUrl(metadata?.backdrop);
             return {
               item,
               originalIndex,
               rankScore: getTMDBRankingScore(metadata),
+              hasArtwork,
             };
           })
           .sort((left, right) => {
+            if (left.hasArtwork !== right.hasArtwork) {
+              return Number(right.hasArtwork) - Number(left.hasArtwork);
+            }
+
             const leftScore = left.rankScore;
             const rightScore = right.rankScore;
 
@@ -1240,16 +1247,24 @@ const HomeScreen: React.FC<{ onLogout: () => void }> = ({ onLogout }) => {
             }
             return diff;
           })
-          .slice(0, 40)
-          .map((entry) => entry.item);
+            .slice(0, 40)
+            .map((entry) => entry.item);
 
-        return {
-          ...category,
-          items: rankedItems,
-        };
-      })
-      .filter((category) => category.items.length > 0);
+          return {
+            ...category,
+            items: rankedItems,
+          };
+        })
+        .filter((category) => category.items.length > 0),
+    [cardPreloadedTMDB, filteredCategories],
+  );
 
+  const categoriesWithCoverCards = useMemo(() => {
+    if (activeFilter === 'live') {
+      return filteredCategories;
+    }
+
+    const preparedCategories = preparedCategoriesWithArtwork;
     if (activeFilter !== 'home') {
       return preparedCategories;
     }
@@ -1267,7 +1282,7 @@ const HomeScreen: React.FC<{ onLogout: () => void }> = ({ onLogout }) => {
         return left.originalIndex - right.originalIndex;
       })
       .map((entry) => entry.category);
-  }, [activeFilter, cardPreloadedTMDB, filteredCategories]);
+  }, [activeFilter, filteredCategories, preparedCategoriesWithArtwork]);
 
   const categoriesForRows = useMemo(() => {
     if (activeFilter !== 'home') {
@@ -1469,6 +1484,7 @@ const HomeScreen: React.FC<{ onLogout: () => void }> = ({ onLogout }) => {
     && activeFilter !== 'mylist';
 
   useEffect(() => {
+    if (!import.meta.env.DEV) return;
     console.log('[HomeScreen] Gate de render:', JSON.stringify({
       loading,
       playlistStatus,
@@ -1619,14 +1635,32 @@ const HomeScreen: React.FC<{ onLogout: () => void }> = ({ onLogout }) => {
 
   const isAnyOverlayActive = isDetailsVisible || !!gridCategory || isSettingsVisible;
   const shouldBlockBaseInteractions = isDetailsVisible || !!gridCategory || isSettingsVisible;
-  const shouldDisableSideMenu = isDetailsVisible || isSettingsVisible;
+  const shouldDisableSideMenu = isSettingsVisible;
   const centeredContentMaxWidth = layout.isTvProfile
     ? null
     : null; // No centering on TV for full-bleed Hero appearance
+  const isDetailsPageMode = Boolean(isDetailsVisible && detailsMedia);
+  const homeLogoSize = layout.isTvProfile
+    ? Math.max(24, Math.min(34, Math.round(layout.width * 0.021)))
+    : 22;
 
   return (
     <View style={styles.container}>
-      {!hasBlockingPlaylistError && (
+      {!hasBlockingPlaylistError && isDetailsPageMode && shouldShowSideMenu && (
+        <div
+          aria-hidden={shouldDisableSideMenu}
+          style={{ pointerEvents: shouldDisableSideMenu ? 'none' : 'auto' }}
+        >
+          <SideMenu 
+            onSelect={handleCategorySelect} 
+            activeId={activeFilter} 
+            onLogout={onLogout}
+            onExpandedChange={setIsSideMenuExpanded}
+          />
+        </div>
+      )}
+
+      {!hasBlockingPlaylistError && !isDetailsPageMode && (
       <View 
         style={{ flex: 1, flexDirection: 'row', width: '100%', height: '100%' }}
       >
@@ -1657,8 +1691,6 @@ const HomeScreen: React.FC<{ onLogout: () => void }> = ({ onLogout }) => {
             height: '100%',
             marginLeft: 0,
             pointerEvents: shouldBlockBaseInteractions ? 'none' : 'auto',
-            transition: 'margin-left 200ms ease-out',
-            willChange: 'margin-left'
           }}
         >
         <View style={{ flex: 1 }}>
@@ -1669,7 +1701,7 @@ const HomeScreen: React.FC<{ onLogout: () => void }> = ({ onLogout }) => {
                 categories={filteredCategories}
                 onPlayFull={handlePlay} 
                 layout={layout}
-                externalMedia={null}
+                externalMedia={playingMedia?.type === 'live' ? playingMedia : lastClosedLiveMedia}
                 isGlobalPlayerActive={!!activeVideoUrl}
                 section={activeFilter}
                 isCatalogSyncing={isWritingDatabase || isBackgroundSyncing}
@@ -1977,7 +2009,7 @@ const HomeScreen: React.FC<{ onLogout: () => void }> = ({ onLogout }) => {
                   </Text>
                 </View>
               )}
-              <Text style={[styles.logo, { fontSize: layout.isTvProfile ? 11 : 22, letterSpacing: -1, opacity: 0.8 }]}>XANDEFLIX</Text>
+              <Text style={[styles.logo, { fontSize: homeLogoSize, letterSpacing: layout.isTvProfile ? -1.2 : -1, opacity: 0.92 }]}>XANDEFLIX</Text>
             </View>
           )}
         </View>
@@ -1985,9 +2017,8 @@ const HomeScreen: React.FC<{ onLogout: () => void }> = ({ onLogout }) => {
       </View>
      )}
 
-      {/* Overlays */}
       <AnimatePresence>
-        {isDetailsVisible && detailsMedia && (
+        {isDetailsPageMode && (
           <Suspense fallback={null}>
             <MediaDetailsPage
               key={detailsMedia.id}
@@ -1998,6 +2029,11 @@ const HomeScreen: React.FC<{ onLogout: () => void }> = ({ onLogout }) => {
               }}
               onPlay={handlePlay}
               onSelectMedia={setDetailsMedia}
+              sideMenuOffset={
+                shouldShowSideMenu
+                  ? (isSideMenuExpanded ? sideMenuExpandedWidth : sideMenuCollapsedWidth)
+                  : 0
+              }
             />
           </Suspense>
         )}
@@ -2052,6 +2088,7 @@ const HomeScreen: React.FC<{ onLogout: () => void }> = ({ onLogout }) => {
                 nextEpisode={nextEpisode}
                 onPlayNextEpisode={nextEpisode ? () => handlePlay(nextEpisode) : undefined}
                   onClose={closeActivePlayer}
+                  suppressNativePreviewExitOnUnmount={shouldKeepLiveSessionOnClose}
                   isMinimized={false}
                   isPreview={false}
                   isBrowseMode={videoType === 'live'}
