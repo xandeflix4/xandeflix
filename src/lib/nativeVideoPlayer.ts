@@ -80,12 +80,15 @@ export interface NativeVideoPlayerTracksChangedEvent {
 
 export interface NativeVideoPlayerPlugin {
   initPlayer(options: NativeVideoPlayerOptions): Promise<NativeVideoPlayerResult>;
+  switchSource?(options: NativeVideoPlayerOptions): Promise<NativeVideoPlayerResult>;
   play(): Promise<NativeVideoPlayerResult>;
   pause(): Promise<NativeVideoPlayerResult>;
   getDuration(): Promise<NativeVideoPlayerResult>;
   getCurrentTime(): Promise<NativeVideoPlayerResult>;
   setCurrentTime(options: { seektime: number }): Promise<NativeVideoPlayerResult>;
   exitPlayer(): Promise<NativeVideoPlayerResult>;
+  detachPlayer?(): Promise<NativeVideoPlayerResult>;
+  releasePlayer?(): Promise<NativeVideoPlayerResult>;
   stopAllPlayers(): Promise<NativeVideoPlayerResult>;
   addListener(
     eventName: 'playerReady' | 'playerPlay' | 'playerPause' | 'playerEnded',

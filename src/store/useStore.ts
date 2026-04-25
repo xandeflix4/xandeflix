@@ -471,15 +471,25 @@ export const useStore = create<XandeflixState>()(
     }),
     {
       name: 'xandeflix-app-storage',
-      version: 4,
+      version: 5,
       migrate: (persistedState) => {
         if (!persistedState || typeof persistedState !== 'object') {
           return persistedState as XandeflixState;
         }
 
         const safeState = persistedState as Partial<XandeflixState> & Record<string, unknown>;
+        const {
+          activeVideoUrl: _activeVideoUrl,
+          playingMedia: _playingMedia,
+          videoType: _videoType,
+          playerMode: _playerMode,
+          focusedId: _focusedId,
+          isChannelBrowserOpen: _isChannelBrowserOpen,
+          selectedMedia: _selectedMedia,
+          ...durableState
+        } = safeState;
         return {
-          ...safeState,
+          ...durableState,
           isTvMode: detectTvEnvironment(),
         } as XandeflixState;
       },
@@ -494,6 +504,8 @@ export const useStore = create<XandeflixState>()(
         };
       },
       partialize: (state) => ({
+        // Persistimos apenas dados duráveis; estados transitórios de player/foco
+        // ficam fora para evitar escrita síncrona frequente em Android TV.
         favorites: state.favorites,
         lastPlaylistUrl: state.lastPlaylistUrl,
         lastEpgUrl: state.lastEpgUrl,
@@ -505,11 +517,6 @@ export const useStore = create<XandeflixState>()(
         lastLiveChannel: state.lastLiveChannel,
         activeFilter: state.activeFilter,
         selectedCategoryName: state.selectedCategoryName,
-        selectedMedia: state.selectedMedia,
-        activeVideoUrl: state.activeVideoUrl,
-        playingMedia: state.playingMedia,
-        videoType: state.videoType,
-        playerMode: state.playerMode,
       }),
       storage: createJSONStorage(() => safeStateStorage),
     }

@@ -163,7 +163,15 @@ const getFocusedIdSnapshot = () => focusedNodeId;
 const getFocusedIdServerSnapshot = () => null;
 
 const emitFocusedId = (id: string | null) => {
+  if (focusedNodeId === id) {
+    return;
+  }
+
   focusedNodeId = id;
+  if (focusListeners.size === 0) {
+    return;
+  }
+
   focusListeners.forEach((listener) => listener());
 };
 
@@ -796,7 +804,7 @@ export const useTvNavigation = (options?: { onBack?: () => void; isActive?: bool
   );
 
   useEffect(() => {
-    if (!isActive || typeof window === 'undefined') {
+    if (!isActive || !subscribeFocused || typeof window === 'undefined') {
       return;
     }
 
@@ -808,7 +816,7 @@ export const useTvNavigation = (options?: { onBack?: () => void; isActive?: bool
 
     window.addEventListener('focusin', handleFocusIn);
     return () => window.removeEventListener('focusin', handleFocusIn);
-  }, [isActive]);
+  }, [isActive, subscribeFocused]);
 
   useEffect(() => {
     if (shouldHandleTvKeys) {

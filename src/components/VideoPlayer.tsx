@@ -229,6 +229,21 @@ function normalizeErrorMessage(error: unknown, fallback: string): string {
   return fallback;
 }
 
+function serializeNativeHeaders(headers: Record<string, string>): string {
+  return Object.entries(headers)
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([name, value]) => `${name}:${value}`)
+    .join('|');
+}
+
+function buildNativeSourceKey(input: {
+  url: string;
+  headers: Record<string, string>;
+  embedded: boolean;
+}): string {
+  return `${normalizePlayableUrl(input.url)}::${input.embedded ? 'embedded' : 'fullscreen'}::${serializeNativeHeaders(input.headers)}`;
+}
+
 function maskSensitiveUrl(rawUrl: string): string {
   const trimmed = String(rawUrl || '').trim();
   if (!trimmed) return '';
@@ -714,6 +729,15 @@ export const VideoPlayer = React.memo(
       (forceNativeFallback || (isAndroid && isLiveStream));
     const shouldUseEmbeddedNativePreview = isAndroid && isNativePlatform && isPreview && isLiveStream;
     const shouldUseNativeBridgePlayer = shouldUseNativePlayer || shouldUseEmbeddedNativePreview;
+    const desiredNativeSourceKey = useMemo(
+      () =>
+        buildNativeSourceKey({
+          url: playbackUrl || url,
+          headers: nativePlayerHeaders,
+          embedded: shouldUseEmbeddedNativePreview,
+        }),
+      [nativePlayerHeaders, playbackUrl, shouldUseEmbeddedNativePreview, url],
+    );
     const savePlaybackProgress = useStore((state) => state.savePlaybackProgress);
     const isChannelBrowserOpen = useStore((state) => state.isChannelBrowserOpen);
     const setIsChannelBrowserOpen = useStore((state) => state.setIsChannelBrowserOpen);
@@ -947,6 +971,12 @@ export const VideoPlayer = React.memo(
     const listenerHandlesRef = useRef<PluginListenerHandle[]>([]);
     const progressIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
     const openedPlayerRef = useRef(false);
+    const activeNativeSourceKeyRef = useRef('');
+    const nativeSourceSwitchingRef = useRef(false);
+    const shouldUseNativeBridgePlayerRef = useRef(shouldUseNativeBridgePlayer);
+    const shouldUseEmbeddedNativePreviewRef = useRef(shouldUseEmbeddedNativePreview);
+    const desiredNativeSourceKeyRef = useRef(desiredNativeSourceKey);
+    const latestNativeHandoffUrlRef = useRef(playbackUrl || url);
     const handledExitRef = useRef(false);
     const lastKnownTimeRef = useRef(0);
     const durationRef = useRef(0);
@@ -959,6 +989,22 @@ export const VideoPlayer = React.memo(
     const lastProgressSyncedTimeRef = useRef(0);
     const sessionResumePositionRef = useRef(0);
     const previewHostRef = useRef<HTMLDivElement>(null);
+
+    useEffect(() => {
+      shouldUseNativeBridgePlayerRef.current = shouldUseNativeBridgePlayer;
+    }, [shouldUseNativeBridgePlayer]);
+
+    useEffect(() => {
+      shouldUseEmbeddedNativePreviewRef.current = shouldUseEmbeddedNativePreview;
+    }, [shouldUseEmbeddedNativePreview]);
+
+    useEffect(() => {
+      desiredNativeSourceKeyRef.current = desiredNativeSourceKey;
+    }, [desiredNativeSourceKey]);
+
+    useEffect(() => {
+      latestNativeHandoffUrlRef.current = playbackUrl || url;
+    }, [playbackUrl, url]);
 
     useEffect(() => {
       previewFailureHandlerRef.current = onPreviewPlaybackFailed;
@@ -1016,6 +1062,32 @@ export const VideoPlayer = React.memo(
       handles.forEach((handle) => {
         void handle.remove();
       });
+    }, []);
+
+    const teardownNativeBridgeSession = useCallback(async () => {
+      try {
+        await NativeVideoPlayer.pause();
+      } catch (pauseError) {
+        console.warn('[NativePlayer] Falha ao pausar durante teardown:', pauseError);
+      }
+
+      try {
+        await NativeVideoPlayer.detachPlayer?.();
+      } catch (detachError) {
+        console.warn('[NativePlayer] Falha ao detach durante teardown:', detachError);
+      }
+
+      try {
+        await NativeVideoPlayer.releasePlayer?.();
+      } catch (releaseError) {
+        console.warn('[NativePlayer] Falha ao release durante teardown:', releaseError);
+      }
+
+      try {
+        await NativeVideoPlayer.exitPlayer();
+      } catch (exitError) {
+        console.warn('[NativePlayer] Falha ao finalizar sessão nativa:', exitError);
+      }
     }, []);
 
     const syncProgressToSupabase = useCallback(
@@ -1235,6 +1307,10 @@ export const VideoPlayer = React.memo(
 
     const handlePlayerExit = useCallback(
       async (event: NativeVideoPlayerExitEvent) => {
+        if (nativeSourceSwitchingRef.current) {
+          return;
+        }
+
         // Evita fechar o fullscreen por eventos residuais de saida da previa embutida.
         if (!openedPlayerRef.current) {
           return;
@@ -1248,6 +1324,7 @@ export const VideoPlayer = React.memo(
         openedPlayerRef.current = false;
         clearProgressPolling();
         removeListeners();
+        activeNativeSourceKeyRef.current = '';
 
         persistProgress(event.currentTime, durationRef.current);
         syncProgressToSupabase(event.currentTime, { force: true });
@@ -1266,6 +1343,7 @@ export const VideoPlayer = React.memo(
       [
         clearProgressPolling,
         flushTelemetry,
+        nativeSourceSwitchingRef,
         onClose,
         persistProgress,
         removeListeners,
@@ -1281,6 +1359,7 @@ export const VideoPlayer = React.memo(
         suppressNativePreviewExitOnUnmountRef.current;
 
       if (!openedPlayerRef.current) {
+        await teardownNativeBridgeSession();
         syncProgressToSupabase(lastKnownTimeRef.current, { force: true });
         onClose();
         return;
@@ -1296,18 +1375,21 @@ export const VideoPlayer = React.memo(
           embedded: shouldUseEmbeddedNativePreview,
           capturedAt: Date.now(),
         };
+        activeNativeSourceKeyRef.current = '';
         onClose();
         return;
       }
 
       try {
-        await NativeVideoPlayer.exitPlayer();
+        await teardownNativeBridgeSession();
       } catch (closeError) {
         console.warn('[NativePlayer] Falha ao fechar o player nativo:', closeError);
+      } finally {
         handledExitRef.current = true;
         openedPlayerRef.current = false;
         clearProgressPolling();
         removeListeners();
+        activeNativeSourceKeyRef.current = '';
         await syncProgressFromNativePlayer();
         syncProgressToSupabase(lastKnownTimeRef.current, { force: true });
         flushTelemetry('close');
@@ -1324,6 +1406,7 @@ export const VideoPlayer = React.memo(
       removeListeners,
       restoreSystemUi,
       shouldUseEmbeddedNativePreview,
+      teardownNativeBridgeSession,
       syncProgressFromNativePlayer,
       syncProgressToSupabase,
       url,
@@ -1704,60 +1787,82 @@ export const VideoPlayer = React.memo(
       return () => window.removeEventListener('keydown', handleWebLiveKey);
     }, [canShowChannelBrowser, isChannelBrowserOpen, isPreview, shouldUseNativePlayer, showControls]);
 
-    const setupNativePlayer = useCallback(async () => {
-      if (handledExitRef.current) return;
-      
+    const setupNativePlayer = useCallback(async (options?: { switchSource?: boolean }) => {
+      const isSourceSwitch = options?.switchSource === true;
+      if (!shouldUseNativeBridgePlayerRef.current) return;
+      if (handledExitRef.current && !isSourceSwitch) return;
+      if (isSourceSwitch && (!openedPlayerRef.current || nativeSourceSwitchingRef.current)) return;
+
       const sessionResumePosition = sessionResumePositionRef.current;
-      openedPlayerRef.current = false;
-      sessionStartedAtRef.current = Date.now();
-      lastKnownTimeRef.current = sessionResumePosition;
-      durationRef.current = 0;
-      lastProgressSyncAtRef.current = 0;
-      lastProgressSyncedTimeRef.current = sessionResumePosition;
+      const isEmbeddedPreviewMode = shouldUseEmbeddedNativePreviewRef.current;
+      const targetUrl = latestNativeHandoffUrlRef.current;
+
+      if (isSourceSwitch) {
+        nativeSourceSwitchingRef.current = true;
+        setInlineError('Trocando canal...');
+        touchBufferIndicator('Trocando canal', {
+          step: 6,
+          cap: 94,
+          attempt: 1,
+          total: 1,
+          forceResetTimer: true,
+        });
+      } else {
+        openedPlayerRef.current = false;
+        activeNativeSourceKeyRef.current = '';
+        sessionStartedAtRef.current = Date.now();
+        lastKnownTimeRef.current = sessionResumePosition;
+        durationRef.current = 0;
+        lastProgressSyncAtRef.current = 0;
+        lastProgressSyncedTimeRef.current = sessionResumePosition;
+        clearProgressPolling();
+        removeListeners();
+      }
+
       setError(null);
       setPlayerState('opening');
 
       try {
-        listenerHandlesRef.current = await Promise.all([
-          NativeVideoPlayer.addListener('playerReady', handlePlayerEvent),
-          NativeVideoPlayer.addListener('playerPlay', handlePlayerEvent),
-          NativeVideoPlayer.addListener('playerPause', handlePlayerEvent),
-          NativeVideoPlayer.addListener('playerEnded', handlePlayerEvent),
-          NativeVideoPlayer.addListener('playerError', handleNativePlayerError),
-          NativeVideoPlayer.addListener('playerExit', (event) => {
-            void handlePlayerExit(event);
-          }),
-        ]);
+        if (!isSourceSwitch) {
+          listenerHandlesRef.current = await Promise.all([
+            NativeVideoPlayer.addListener('playerReady', handlePlayerEvent),
+            NativeVideoPlayer.addListener('playerPlay', handlePlayerEvent),
+            NativeVideoPlayer.addListener('playerPause', handlePlayerEvent),
+            NativeVideoPlayer.addListener('playerEnded', handlePlayerEvent),
+            NativeVideoPlayer.addListener('playerError', handleNativePlayerError),
+            NativeVideoPlayer.addListener('playerExit', (event) => {
+              void handlePlayerExit(event);
+            }),
+          ]);
 
-        const isEmbeddedPreviewMode = shouldUseEmbeddedNativePreview;
-
-        if (!isEmbeddedPreviewMode) {
-          await prepareSystemUi();
-        }
-
-        // Ensure no other player is lingering before starting
-        const handoffUrl = playbackUrl || url;
-        const handoffAgeMs = nativeSessionHandoff ? Date.now() - nativeSessionHandoff.capturedAt : Number.POSITIVE_INFINITY;
-        const canReuseNativeSession =
-          Boolean(nativeSessionHandoff) &&
-          handoffAgeMs <= NATIVE_SESSION_HANDOFF_WINDOW_MS &&
-          nativeSessionHandoff?.url === handoffUrl;
-
-        if (!canReuseNativeSession) {
-          try {
-            await NativeVideoPlayer.stopAllPlayers().catch(() => {});
-          } catch (error) {
-            console.warn('[VideoPlayer] Falha ao garantir stopAllPlayers antes de init:', error);
+          if (!isEmbeddedPreviewMode) {
+            await prepareSystemUi();
           }
-        } else {
-          console.log('[NativePlayer] Reutilizando sessão ativa para handoff preview/fullscreen');
+
+          const handoffAgeMs = nativeSessionHandoff
+            ? Date.now() - nativeSessionHandoff.capturedAt
+            : Number.POSITIVE_INFINITY;
+          const canReuseNativeSession =
+            Boolean(nativeSessionHandoff) &&
+            handoffAgeMs <= NATIVE_SESSION_HANDOFF_WINDOW_MS &&
+            nativeSessionHandoff?.url === targetUrl;
+
+          if (!canReuseNativeSession) {
+            try {
+              await NativeVideoPlayer.stopAllPlayers().catch(() => {});
+            } catch (error) {
+              console.warn('[VideoPlayer] Falha ao garantir stopAllPlayers antes de init:', error);
+            }
+          } else {
+            console.log('[NativePlayer] Reutilizando sessão ativa para handoff preview/fullscreen');
+          }
+          nativeSessionHandoff = null;
         }
-        nativeSessionHandoff = null;
 
         const isLive = isLiveStream || mediaType === 'live';
         const secureStreamUrl = isLive
-          ? normalizePlayableUrl(playbackUrl || url)
-          : loadMediaStream(playbackUrl || url, media?.type === 'series' ? 'mp4' : 'hls', true);
+          ? normalizePlayableUrl(targetUrl)
+          : loadMediaStream(targetUrl, media?.type === 'series' ? 'mp4' : 'hls', true);
 
         const readEmbeddedBounds = () => {
           const host = previewHostRef.current;
@@ -1788,18 +1893,22 @@ export const VideoPlayer = React.memo(
           throw new Error('Falha ao medir a area do preview para iniciar o player nativo embutido.');
         }
 
-        console.log(`[NativePlayer] Iniciando stream nativo (${isEmbeddedPreviewMode ? 'embedded' : 'fullscreen'}): ${secureStreamUrl}`);
-        touchBufferIndicator(isEmbeddedPreviewMode ? 'Conectando prévia nativa' : 'Conectando player nativo', {
-          step: 8,
-          cap: 90,
+        console.log(
+          `[NativePlayer] ${isSourceSwitch ? 'Trocando' : 'Iniciando'} stream nativo (${isEmbeddedPreviewMode ? 'embedded' : 'fullscreen'}): ${secureStreamUrl}`,
+        );
+        touchBufferIndicator(isSourceSwitch ? 'Trocando canal' : (isEmbeddedPreviewMode ? 'Conectando prévia nativa' : 'Conectando player nativo'), {
+          step: isSourceSwitch ? 6 : 8,
+          cap: 94,
           attempt: 1,
           total: 1,
           forceResetTimer: true,
         });
         setInlineError(
-          isEmbeddedPreviewMode
-            ? 'Iniciando prévia nativa...'
-            : `Iniciando Player Nativo...\nURL: ${secureStreamUrl.substring(0, 50)}...`,
+          isSourceSwitch
+            ? 'Trocando canal...'
+            : (isEmbeddedPreviewMode
+              ? 'Iniciando prévia nativa...'
+              : `Iniciando Player Nativo...\nURL: ${secureStreamUrl.substring(0, 50)}...`),
         );
 
         const initOptions: Parameters<typeof NativeVideoPlayer.initPlayer>[0] = {
@@ -1824,113 +1933,164 @@ export const VideoPlayer = React.memo(
           initOptions.smallTitle = '';
         }
 
-        const result = await NativeVideoPlayer.initPlayer(initOptions);
+        let result: NativeVideoPlayerResult | null = null;
+        if (isSourceSwitch) {
+          const switchSourceFn = NativeVideoPlayer.switchSource;
+          if (typeof switchSourceFn === 'function') {
+            try {
+              result = await switchSourceFn(initOptions);
+            } catch (switchError) {
+              console.warn('[NativePlayer] switchSource indisponivel/falhou, tentando init direto:', switchError);
+            }
+          }
 
-        if (handledExitRef.current) {
-          // Se o unmount aconteceu enquanto o player estava abrindo
-          if (result.result) {
-            void NativeVideoPlayer.exitPlayer().catch(() => {});
+          if (!result?.result) {
+            try {
+              result = await NativeVideoPlayer.initPlayer(initOptions);
+            } catch (initSwitchError) {
+              console.warn('[NativePlayer] init direto na troca falhou:', initSwitchError);
+            }
+          }
+
+          if (!result?.result) {
+            await teardownNativeBridgeSession();
+            result = await NativeVideoPlayer.initPlayer(initOptions);
+          }
+        } else {
+          result = await NativeVideoPlayer.initPlayer(initOptions);
+        }
+
+        if (handledExitRef.current && !isSourceSwitch) {
+          if (result?.result) {
+            await teardownNativeBridgeSession();
           }
           return;
         }
 
-        if (!result.result) {
-          throw new Error(result.message || 'Falha ao abrir o player nativo.');
+        if (!result?.result) {
+          throw new Error(result?.message || (isSourceSwitch ? 'Falha ao trocar a fonte nativa.' : 'Falha ao abrir o player nativo.'));
         }
 
         openedPlayerRef.current = true;
+        activeNativeSourceKeyRef.current = buildNativeSourceKey({
+          url: targetUrl,
+          headers: nativePlayerHeaders,
+          embedded: isEmbeddedPreviewMode,
+        });
         setPlayerState('ready');
-        
+        setInlineError(null);
+        setPlaybackDiagnostic(null);
+        completeBufferIndicator();
+
         if (!isLiveStream) {
+          clearProgressPolling();
           progressIntervalRef.current = setInterval(() => {
             void syncProgressFromNativePlayer();
           }, 5000);
         }
       } catch (playerError) {
-        if (handledExitRef.current) {
-          void NativeVideoPlayer.exitPlayer().catch(() => {});
+        if (handledExitRef.current && !isSourceSwitch) {
+          await teardownNativeBridgeSession();
           return;
         }
 
-        console.error('[NativePlayer] Erro fatal ao iniciar:', playerError);
-        removeListeners();
-        clearProgressPolling();
-        if (!shouldUseEmbeddedNativePreview) {
-          await restoreSystemUi();
+        console.error(`[NativePlayer] Erro ${isSourceSwitch ? 'ao trocar fonte' : 'fatal ao iniciar'}:`, playerError);
+        if (!isSourceSwitch) {
+          removeListeners();
+          clearProgressPolling();
+          activeNativeSourceKeyRef.current = '';
+          if (!isEmbeddedPreviewMode) {
+            await restoreSystemUi();
+          }
         }
         hideBufferIndicator();
-        const reason = normalizeErrorMessage(playerError, 'Falha ao iniciar player nativo.');
+        const reason = normalizeErrorMessage(
+          playerError,
+          isSourceSwitch ? 'Falha ao trocar fonte do player nativo.' : 'Falha ao iniciar player nativo.',
+        );
         setError(reason);
         applyPlaybackDiagnostic({
           stage: 'native',
           reason,
-          detail: 'Falha durante initPlayer.',
-          url: maskSensitiveUrl(playbackUrl || url),
+          detail: isSourceSwitch ? 'Falha durante switch source.' : 'Falha durante initPlayer.',
+          url: maskSensitiveUrl(targetUrl),
         });
         setPlayerState('error');
-        flushTelemetry('fatal_error');
+        if (!isSourceSwitch) {
+          flushTelemetry('fatal_error');
+        }
+      } finally {
+        if (isSourceSwitch) {
+          nativeSourceSwitchingRef.current = false;
+        }
       }
-    }, [applyPlaybackDiagnostic, clearProgressPolling, flushTelemetry, handleNativePlayerError, handlePlayerEvent, handlePlayerExit, hideBufferIndicator, isLiveStream, media?.backdrop, media?.category, media?.thumbnail, media?.title, media?.type, mediaType, nativePlayerHeaders, playbackUrl, prepareSystemUi, removeListeners, restoreSystemUi, shouldUseEmbeddedNativePreview, syncProgressFromNativePlayer, touchBufferIndicator, url]);
+    }, [applyPlaybackDiagnostic, clearProgressPolling, completeBufferIndicator, flushTelemetry, handleNativePlayerError, handlePlayerEvent, handlePlayerExit, hideBufferIndicator, isLiveStream, media?.backdrop, media?.category, media?.thumbnail, media?.title, media?.type, mediaType, nativePlayerHeaders, prepareSystemUi, removeListeners, restoreSystemUi, syncProgressFromNativePlayer, teardownNativeBridgeSession, touchBufferIndicator]);
+
+    const setupNativePlayerRef = useRef(setupNativePlayer);
+    useEffect(() => {
+      setupNativePlayerRef.current = setupNativePlayer;
+    }, [setupNativePlayer]);
 
     useEffect(() => {
       let appStateListener: Promise<PluginListenerHandle> | null = null;
       if (Capacitor.getPlatform() === 'android' && !isPreview && !isMinimized) {
         appStateListener = (async () => {
-           return await CapacitorApp.addListener('appStateChange', ({ isActive }: { isActive: boolean }) => {
-             if (isActive && !openedPlayerRef.current && !handledExitRef.current) {
-               console.log('[VideoPlayer] App voltou para foreground. Retomando player nativo...');
-               void setupNativePlayer();
-             }
-           });
+          return CapacitorApp.addListener('appStateChange', ({ isActive }: { isActive: boolean }) => {
+            if (isActive && !openedPlayerRef.current && !handledExitRef.current) {
+              console.log('[VideoPlayer] App voltou para foreground. Retomando player nativo...');
+              void setupNativePlayerRef.current();
+            }
+          });
         })();
       }
 
       return () => {
         if (appStateListener) {
-          appStateListener.then(h => h.remove());
+          appStateListener.then((h) => h.remove());
         }
       };
-    }, [isPreview, isMinimized, setupNativePlayer]);
+    }, [isPreview, isMinimized]);
 
     useEffect(() => {
       if (!shouldUseNativeBridgePlayer) {
         return;
       }
 
-      void setupNativePlayer();
+      handledExitRef.current = false;
+      if (!openedPlayerRef.current && !nativeSourceSwitchingRef.current) {
+        void setupNativePlayerRef.current();
+      }
 
       return () => {
         handledExitRef.current = true;
         clearProgressPolling();
         removeListeners();
-        if (openedPlayerRef.current) {
-          const shouldKeepNativeSessionAlive =
-            isNativePlatform &&
-            isLiveStream &&
-            suppressNativePreviewExitOnUnmountRef.current;
+        activeNativeSourceKeyRef.current = '';
+        const shouldKeepNativeSessionAlive =
+          isNativePlatform &&
+          isLiveStream &&
+          suppressNativePreviewExitOnUnmountRef.current;
 
-          if (shouldKeepNativeSessionAlive) {
-            nativeSessionHandoff = {
-              url: playbackUrl || url,
-              embedded: shouldUseEmbeddedNativePreview,
-              capturedAt: Date.now(),
-            };
-          } else {
-            NativeVideoPlayer.exitPlayer().catch(() => {});
-          }
+        if (shouldKeepNativeSessionAlive && openedPlayerRef.current) {
+          nativeSessionHandoff = {
+            url: latestNativeHandoffUrlRef.current,
+            embedded: shouldUseEmbeddedNativePreviewRef.current,
+            capturedAt: Date.now(),
+          };
+          return;
         }
+
+        void teardownNativeBridgeSession();
       };
-    }, [
-      shouldUseNativeBridgePlayer,
-      url,
-      setupNativePlayer,
-      clearProgressPolling,
-      isLiveStream,
-      isNativePlatform,
-      playbackUrl,
-      removeListeners,
-      shouldUseEmbeddedNativePreview,
-    ]);
+    }, [shouldUseNativeBridgePlayer, clearProgressPolling, isLiveStream, isNativePlatform, removeListeners, teardownNativeBridgeSession]);
+
+    useEffect(() => {
+      if (!shouldUseNativeBridgePlayer) return;
+      if (!openedPlayerRef.current) return;
+      if (nativeSourceSwitchingRef.current) return;
+      if (activeNativeSourceKeyRef.current === desiredNativeSourceKeyRef.current) return;
+      void setupNativePlayerRef.current({ switchSource: true });
+    }, [desiredNativeSourceKey, shouldUseNativeBridgePlayer]);
 
     const previewVideoRef = useRef<HTMLVideoElement>(null);
     const latestPreviewUrlRef = useRef(url);
@@ -1974,7 +2134,7 @@ export const VideoPlayer = React.memo(
 
       // Fase 2.1: Debounce de inicialização para evitar colapso de memória em trocas rápidas
       const initDelay = isPreview ? 250 : 50;
-      let initTimer: ReturnType<typeof setTimeout> | null = setTimeout(() => {
+      const initTimer: ReturnType<typeof setTimeout> | null = setTimeout(() => {
         playCurrentSource();
       }, initDelay);
 
@@ -2266,21 +2426,30 @@ export const VideoPlayer = React.memo(
         }
       };
 
-      const releaseHtml5Video = () => {
-        // STRICT HTML5 CLEANUP: pause -> remove src -> flush internal buffers -> load
+      const detachHtml5VideoForSwitch = () => {
+        // Source-switch rápido: pausa + detach sem flush completo da tag.
         video.pause();
-        video.removeAttribute('src');
         video.srcObject = null;
+        video.removeAttribute('src');
+      };
+
+      const releaseHtml5Video = () => {
+        // STRICT HTML5 CLEANUP: pause -> detach -> flush interno -> load
+        detachHtml5VideoForSwitch();
         video.load();
       };
 
-      const teardownCurrentSource = () => {
+      const teardownCurrentSource = (options?: { releaseElement?: boolean }) => {
         clearStartupTimeout();
         clearStallWatchdog();
         removeVideoEventListeners();
         destroyMpegtsInstance();
         destroyHlsInstance();
-        releaseHtml5Video();
+        if (options?.releaseElement) {
+          releaseHtml5Video();
+        } else {
+          detachHtml5VideoForSwitch();
+        }
         
         // Garantir que refs de erro e estados de falha sejam resetados para nova tentativa
         setInlineError(null);
@@ -2340,7 +2509,7 @@ export const VideoPlayer = React.memo(
         setPreviewTerminalFailure(false);
         setInlineError(null);
 
-        teardownCurrentSource();
+        teardownCurrentSource({ releaseElement: false });
         const currentUrl = candidates[candidateIndex];
         touchBufferIndicator(`Carregando buffer (${candidateIndex + 1}/${candidates.length})`, {
           step: candidateIndex === 0 ? 7 : 4,
@@ -2626,17 +2795,7 @@ export const VideoPlayer = React.memo(
           syncProgressToSupabase(lastKnownTimeRef.current, { force: true });
         }
         
-        clearStartupTimeout();
-        clearStallWatchdog();
-        removeVideoEventListeners();
-
-        // Se estivermos saindo da tela, fazemos a limpeza pesada.
-        // Caso contrário, deixamos o vídeo anterior visível até o próximo play.
-        if (isUnmountingRef.current) {
-          destroyMpegtsInstance();
-          destroyHlsInstance();
-          releaseHtml5Video();
-        }
+        teardownCurrentSource({ releaseElement: isUnmountingRef.current });
       };
     }, [
       canUseNativeFallback,
