@@ -37,7 +37,7 @@ const navNodes: Map<string, NavNode> = new Map();
 let focusedNodeId: string | null = null;
 const focusListeners = new Set<() => void>();
 let globalLastKeyTime = 0; // Module-level debounce shared across ALL hook instances
-const TV_KEY_DEBOUNCE_MS = 105;
+const TV_KEY_DEBOUNCE_MS = 60;
 
 const DPAD_KEY_MAP: Record<number, string> = {
   4: 'Back',

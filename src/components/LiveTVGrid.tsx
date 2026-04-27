@@ -69,7 +69,7 @@ type LivePreviewPoolEntry = {
 };
 
 const GROUP_SELECTION_THROTTLE_MS = 180;
-const LIVE_CHANNEL_ROW_ESTIMATE = 146;
+const LIVE_CHANNEL_ROW_ESTIMATE = 88;
 
 interface GroupItemProps {
   category: Category;
@@ -87,31 +87,57 @@ const GroupItem = React.memo(({
   isFocused,
   isSelected,
   onPress,
-}: GroupItemProps) => (
-  <TouchableHighlight
-    id={`tv-group-${category.id}`}
-    data-nav-id={`tv-group-${category.id}`}
-    onPress={() => onPress(category, index)}
-    underlayColor="rgba(255,255,255,0.05)"
-    style={[
-      styles.groupItem,
-      isFocused && styles.groupItemFocused,
-      isSelected && styles.groupItemActive,
-    ]}
-  >
-    <View style={styles.groupItemInner}>
-      <Text style={[styles.groupText, isSelected && styles.groupTextActive]}>
-        {category.title}
-      </Text>
-      <Text style={styles.itemCount}>
-        {itemCount}
-      </Text>
-      {isSelected && <ChevronRight size={16} color="#E50914" />}
-    </View>
-  </TouchableHighlight>
-), (prev, next) => (
+  registerNode,
+  setFocusedId,
+  applyCategorySelection,
+  setFocusColumn,
+  setIsDiagnosticFocused,
+  setFocusedGroupIndex,
+}: GroupItemProps & { 
+  registerNode: any, 
+  setFocusedId: any, 
+  applyCategorySelection: any,
+  setFocusColumn: any,
+  setIsDiagnosticFocused: any,
+  setFocusedGroupIndex: any 
+}) => {
+  useEffect(() => {
+    return registerNode(`tv-group-${category.id}`, null, 'body', {
+      onFocus: () => {
+        setFocusColumn('groups');
+        setFocusedGroupIndex?.(index);
+        setIsDiagnosticFocused(false);
+        applyCategorySelection(category.id);
+      },
+      onEnter: () => {
+        applyCategorySelection(category.id, { immediate: true, resetChannelIndex: true });
+        setFocusColumn('channels');
+      },
+    });
+  }, [category.id, index, registerNode, setFocusColumn, setIsDiagnosticFocused, applyCategorySelection]);
+
+  return (
+    <TouchableHighlight
+      id={`tv-group-${category.id}`}
+      data-nav-id={`tv-group-${category.id}`}
+      onPress={() => onPress(category, index)}
+      underlayColor="rgba(255,255,255,0.05)"
+      style={[
+        styles.groupItem,
+        isFocused && styles.groupItemFocused,
+        isSelected && styles.groupItemActive,
+      ]}
+    >
+      <View style={styles.groupItemInner}>
+        <Text style={[styles.groupText, isSelected && styles.groupTextActive]}>
+          {category.title.replace(/CANAIS\s*\|\s*/i, '').trim()}
+        </Text>
+        {isSelected && <ChevronRight size={16} color="#E50914" />}
+      </View>
+    </TouchableHighlight>
+  );
+}, (prev, next) => (
   prev.category.id === next.category.id
-  && prev.itemCount === next.itemCount
   && prev.isFocused === next.isFocused
   && prev.isSelected === next.isSelected
 ));
@@ -136,41 +162,93 @@ const ChannelItem = React.memo(({
   now,
   programs,
   onPress,
-}: ChannelItemProps) => (
-  <TouchableHighlight
-    id={`tv-channel-${media.id}`}
-    data-nav-id={`tv-channel-${media.id}`}
-    onPress={() => onPress(media, index)}
-    underlayColor="rgba(255,255,255,0.05)"
-    style={[
-      styles.channelItem,
-      isSelected && styles.channelItemActive,
-      isFocused && styles.channelItemFocused,
-    ]}
-  >
-    <View style={styles.channelItemInner}>
-      <View style={styles.itemThumbnailContainer}>
-        <LiveItemThumbnail uri={media.thumbnail} />
-        {isFavorite && (
-          <View style={styles.favoriteBadge}>
-            <Heart size={11} color="#ffffff" fill="#E50914" />
-          </View>
-        )}
-        {isSelected && (
-          <View style={styles.playingIndicator}>
-            <View style={styles.pulse} />
-          </View>
-        )}
+  registerNode,
+  setFocusedId,
+  setFocusColumn,
+  setIsDiagnosticFocused,
+  setFocusedChannelIndex,
+  focusChannelByIndex,
+  handleMediaClick,
+  previewMedia,
+  selectedCatId,
+  liveCategories,
+}: ChannelItemProps & {
+  registerNode: any,
+  setFocusedId: any,
+  setFocusColumn: any,
+  setIsDiagnosticFocused: any,
+  setFocusedChannelIndex: any,
+  focusChannelByIndex: any,
+  handleMediaClick: any,
+  previewMedia: any,
+  selectedCatId: any,
+  liveCategories: any[],
+}) => {
+  useEffect(() => {
+    return registerNode(`tv-channel-${media.id}`, null, 'body', {
+      onFocus: () => {
+        setFocusColumn('channels');
+        setFocusedChannelIndex?.(index);
+        setIsDiagnosticFocused(false);
+      },
+      onEnter: () => {
+        setFocusColumn('channels');
+        handleMediaClick(media);
+      },
+      onUp: () => focusChannelByIndex(index - 1),
+      onDown: () => focusChannelByIndex(index + 1),
+      onLeft: () => {
+        const targetGroupId = selectedCatId || liveCategories[0]?.id;
+        if (!targetGroupId) return;
+        setFocusColumn('groups');
+        setIsDiagnosticFocused(false);
+        setFocusedId(`tv-group-${targetGroupId}`);
+      },
+      onRight: () => {
+        if (!previewMedia) return;
+        setFocusColumn('preview');
+        setIsDiagnosticFocused(false);
+        setFocusedId('tv-preview-player');
+      },
+    });
+  }, [media.id, index, registerNode, setFocusColumn, setIsDiagnosticFocused, handleMediaClick, media, focusChannelByIndex, selectedCatId, liveCategories, previewMedia, setFocusedId]);
+
+  return (
+    <TouchableHighlight
+      id={`tv-channel-${media.id}`}
+      data-nav-id={`tv-channel-${media.id}`}
+      onPress={() => onPress(media, index)}
+      underlayColor="rgba(255,255,255,0.05)"
+      style={[
+        styles.channelItem,
+        isSelected && styles.channelItemActive,
+        isFocused && styles.channelItemFocused,
+      ]}
+    >
+      <View style={styles.channelItemInner}>
+        <View style={styles.itemThumbnailContainer}>
+          <LiveItemThumbnail uri={media.thumbnail} />
+          {isFavorite && (
+            <View style={styles.favoriteBadge}>
+              <Heart size={11} color="#ffffff" fill="#E50914" />
+            </View>
+          )}
+          {isSelected && (
+            <View style={styles.playingIndicator}>
+              <View style={styles.pulse} />
+            </View>
+          )}
+        </View>
+        <View style={styles.channelInfo}>
+          <Text style={[styles.channelTitle, isSelected && styles.channelTitleActive]} numberOfLines={1}>
+            {media.title}
+          </Text>
+          <ChannelProgramDisplay programs={programs} now={now} />
+        </View>
       </View>
-      <View style={styles.channelInfo}>
-        <Text style={[styles.channelTitle, isSelected && styles.channelTitleActive]} numberOfLines={1}>
-          {media.title}
-        </Text>
-        <ChannelProgramDisplay programs={programs} now={now} />
-      </View>
-    </View>
-  </TouchableHighlight>
-), (prev, next) => (
+    </TouchableHighlight>
+  );
+}, (prev, next) => (
   prev.media.id === next.media.id
   && prev.isFocused === next.isFocused
   && prev.isSelected === next.isSelected
@@ -232,6 +310,26 @@ export const LiveTVGrid: React.FC<LiveTVGridProps> = ({
   const [diskReloadToken, setDiskReloadToken] = useState(0);
   const [categoryCounts, setCategoryCounts] = useState<Record<string, number>>({});
   const previewFailureCountRef = useRef(0);
+
+  // Sincronizar estado interno quando a seção muda sem unmount (Live <-> Sports)
+  useEffect(() => {
+    if (initialSavedEntry) {
+      setSelectedCatId(initialSavedEntry.categoryId);
+      setSelectedMediaId(initialSavedEntry.media.id);
+      if (!previewMedia) {
+        setPreviewMedia(initialSavedEntry.media);
+      }
+    } else if (liveCategories.length > 0) {
+      const firstCat = liveCategories[0];
+      setSelectedCatId(firstCat.id);
+      setSelectedMediaId(null);
+    }
+    
+    setFocusedGroupIndex(0);
+    setFocusedChannelIndex(0);
+    setFocusColumn('groups');
+    hasAppliedInitialFocusRef.current = false;
+  }, [section]);
   const previewTriedKeysRef = useRef<Set<string>>(new Set());
   const previewArmRef = useRef<{ mediaId: string | null; armedAt: number }>({ mediaId: null, armedAt: 0 });
   const previewActivationGuardRef = useRef<{ mediaId: string | null; at: number }>({ mediaId: null, at: 0 });
@@ -489,6 +587,7 @@ export const LiveTVGrid: React.FC<LiveTVGridProps> = ({
   }, [diskReloadToken, liveCategories]);
 
   const globalPreviewPool = useMemo<LivePreviewPoolEntry[]>(() => {
+    // OTIMIZAÇÃO: Limitar o tamanho do pool de preview para evitar travamentos em listas massivas
     const seen = new Set<string>();
     const pool: LivePreviewPoolEntry[] = [];
 
@@ -500,16 +599,25 @@ export const LiveTVGrid: React.FC<LiveTVGridProps> = ({
       pool.push({ media: item, categoryId });
     };
 
-    for (const category of liveCategories) {
-      for (const item of category.items) {
-        addItem(item, category.id);
-      }
-    }
-
+    // Prioridade 1: Itens já carregados na página atual (disco)
     if (selectedCatId && categoryItems.length > 0) {
       for (const item of categoryItems) {
         addItem(item, selectedCatId);
       }
+    }
+
+    // Prioridade 2: Primeiros itens das categorias passadas
+    // Limitamos a iteração para evitar O(N) pesado em cada re-render
+    const MAX_POOL_CATEGORIES = 15;
+    const MAX_ITEMS_PER_CAT = 10;
+    
+    for (let i = 0; i < Math.min(liveCategories.length, MAX_POOL_CATEGORIES); i++) {
+      const category = liveCategories[i];
+      const itemsToIterate = category.items || [];
+      for (let j = 0; j < Math.min(itemsToIterate.length, MAX_ITEMS_PER_CAT); j++) {
+        addItem(itemsToIterate[j], category.id);
+      }
+      if (pool.length > 100) break; // Já temos o suficiente para o auto-preview
     }
 
     return pool;
@@ -865,56 +973,10 @@ export const LiveTVGrid: React.FC<LiveTVGridProps> = ({
     setFocusedId(`tv-channel-${media.id}`);
   }, [handleMediaClick, layout.isTvMode, layout.isTvProfile, setFocusedId]);
 
-  // Register Groups and Channels
+  // Register Global/Static UI Nodes
   useEffect(() => {
     const unregisterList: (() => void)[] = [];
     
-    // Groups registration
-    liveCategories.forEach((cat, index) => {
-      unregisterList.push(registerNode(`tv-group-${cat.id}`, null, 'body', {
-        onFocus: () => {
-          setFocusColumn('groups');
-          setFocusedGroupIndex(index);
-          setIsDiagnosticFocused(false);
-          applyCategorySelection(cat.id);
-        },
-        onEnter: () => {
-          applyCategorySelection(cat.id, { immediate: true, resetChannelIndex: true });
-          setFocusColumn('channels');
-        },
-      }));
-    });
-
-    // Channels registration
-    filteredItems.forEach((media, index) => {
-      unregisterList.push(registerNode(`tv-channel-${media.id}`, null, 'body', {
-        onFocus: () => {
-          setFocusColumn('channels');
-          setFocusedChannelIndex(index);
-          setIsDiagnosticFocused(false);
-        },
-        onEnter: () => {
-          setFocusColumn('channels');
-          handleMediaClick(media);
-        },
-        onUp: () => focusChannelByIndex(index - 1),
-        onDown: () => focusChannelByIndex(index + 1),
-        onLeft: () => {
-          const targetGroupId = selectedCatId || liveCategories[0]?.id;
-          if (!targetGroupId) return;
-          setFocusColumn('groups');
-          setIsDiagnosticFocused(false);
-          setFocusedId(`tv-group-${targetGroupId}`);
-        },
-        onRight: () => {
-          if (!previewMedia) return;
-          setFocusColumn('preview');
-          setIsDiagnosticFocused(false);
-          setFocusedId('tv-preview-player');
-        },
-      }));
-    });
-
     // Preview Player registration
     if (previewMedia) {
       unregisterList.push(registerNode('tv-preview-player', null, 'body', {
@@ -937,15 +999,9 @@ export const LiveTVGrid: React.FC<LiveTVGridProps> = ({
 
     return () => unregisterList.forEach((unregister) => unregister());
   }, [
-    applyCategorySelection,
-    filteredItems,
-    focusChannelByIndex,
-    handleMediaClick,
-    liveCategories,
     openFullScreen,
     previewMedia,
     registerNode,
-    selectedCatId,
     setFocusedId,
   ]);
 
@@ -1019,10 +1075,16 @@ export const LiveTVGrid: React.FC<LiveTVGridProps> = ({
               key={cat.id}
               category={cat}
               index={index}
-              itemCount={categoryCounts[cat.id] ?? cat.items.length}
+              itemCount={categoryCounts[cat.id] || 0}
               isFocused={focusColumn === 'groups' && focusedGroupIndex === index}
               isSelected={selectedCatId === cat.id}
               onPress={handleGroupPress}
+              registerNode={registerNode}
+              setFocusedId={setFocusedId}
+              applyCategorySelection={applyCategorySelection}
+              setFocusColumn={setFocusColumn}
+              setIsDiagnosticFocused={setIsDiagnosticFocused}
+              setFocusedGroupIndex={setFocusedGroupIndex}
             />
           ))}
         </div>
@@ -1076,11 +1138,6 @@ export const LiveTVGrid: React.FC<LiveTVGridProps> = ({
                 const media = filteredItems[virtualChannel.index];
                 if (!media) return null;
 
-                const channelPrograms = resolveProgramsForMedia(media);
-                const isFavorite =
-                  favoriteSet.has(media.videoUrl || `media:${media.id}`)
-                  || favoriteSet.has(media.id);
-
                 return (
                   <div
                     key={virtualChannel.key}
@@ -1093,14 +1150,25 @@ export const LiveTVGrid: React.FC<LiveTVGridProps> = ({
                     }}
                   >
                     <ChannelItem
+                      key={`${media.id}-${virtualChannel.index}`}
                       media={media}
                       index={virtualChannel.index}
-                      isFocused={focusColumn === 'channels' && focusedChannelIndex === virtualChannel.index}
+                      isFocused={focusColumn === 'channels' && focusedChannelIndex === virtualChannel.index && !isDiagnosticFocused}
                       isSelected={selectedMediaId === media.id}
-                      isFavorite={isFavorite}
-                      programs={channelPrograms}
+                      isFavorite={favoriteSet.has(media.id)}
                       now={now}
+                      programs={resolveProgramsForMedia(media)}
                       onPress={handleChannelPress}
+                      registerNode={registerNode}
+                      setFocusedId={setFocusedId}
+                      setFocusColumn={setFocusColumn}
+                      setIsDiagnosticFocused={setIsDiagnosticFocused}
+                      setFocusedChannelIndex={setFocusedChannelIndex}
+                      focusChannelByIndex={focusChannelByIndex}
+                      handleMediaClick={handleMediaClick}
+                      previewMedia={previewMedia}
+                      selectedCatId={selectedCatId}
+                      liveCategories={liveCategories}
                     />
                   </div>
                 );
@@ -1148,26 +1216,6 @@ export const LiveTVGrid: React.FC<LiveTVGridProps> = ({
                    <View style={{ flex: 1 }}>
                      <Text style={styles.previewTitleSmall}>{previewMedia.title}</Text>
                    </View>
-                   <TouchableHighlight
-                     onPress={() => {
-                       if (lastEpgUrl) {
-                          fetchEPG(lastEpgUrl);
-                       }
-                     }}
-                     underlayColor="#B80710"
-                     style={[styles.fullScreenBtnSmall, { backgroundColor: '#E50914' }]}
-                   >
-                     <View style={styles.fullScreenBtnInner}>
-                       {isLoadingEPG ? (
-                          <Activity size={16} color="white" className="animate-spin" />
-                       ) : (
-                          <RotateCcw size={16} color="white" />
-                       )}
-                       <Text style={styles.fullScreenTextSmall}>
-                          {isLoadingEPG ? 'CARREGANDO...' : 'CARREGAR GUIA'}
-                       </Text>
-                     </View>
-                   </TouchableHighlight>
                 </View>
                 <View style={styles.previewEpgPanel}>
                   <Text style={styles.previewEpgTitle}>Guia de Programação</Text>
@@ -1229,22 +1277,23 @@ const styles = StyleSheet.create({
     height: '100%',
   },
   groupsColumn: {
-    flex: 0.22,
+    flex: 0.16,
     height: '100%',
     backgroundColor: 'rgba(255,255,255,0.02)',
     borderRightWidth: 1,
     borderRightColor: 'rgba(255,255,255,0.06)',
   },
   channelsColumn: {
-    flex: 0.28,
+    flex: 0.24,
     height: '100%',
     backgroundColor: 'rgba(255,255,255,0.015)',
     borderRightWidth: 1,
     borderRightColor: 'rgba(255,255,255,0.06)',
   },
   playerSection: {
-    flex: 0.50,
-    padding: 0,
+    flex: 0.60,
+    padding: 16,
+    paddingLeft: 0,
     justifyContent: 'flex-start',
     alignItems: 'stretch',
     backgroundColor: '#000',
@@ -1268,7 +1317,7 @@ const styles = StyleSheet.create({
     textTransform: 'uppercase',
   },
   groupItem: {
-    paddingHorizontal: 16,
+    paddingHorizontal: 10,
     paddingTop: 6,
     paddingBottom: 10,
     marginHorizontal: 8,
@@ -1288,6 +1337,8 @@ const styles = StyleSheet.create({
   groupItemInner: {
     flexDirection: 'row',
     alignItems: 'center',
+    paddingLeft: 24,
+    paddingRight: 8,
     paddingTop: 4,
     paddingBottom: 6,
     gap: 14,
@@ -1295,7 +1346,7 @@ const styles = StyleSheet.create({
   groupText: {
     flex: 1,
     color: 'rgba(255,255,255,0.55)',
-    fontSize: 16,
+    fontSize: 14,
     fontWeight: '700',
     fontFamily: 'Outfit',
     letterSpacing: 0.3,
@@ -1376,10 +1427,10 @@ const styles = StyleSheet.create({
     fontFamily: 'Outfit',
   },
   channelItem: {
-    paddingHorizontal: 20,
-    paddingVertical: 20,
+    paddingHorizontal: 8,
+    paddingVertical: 6,
     marginHorizontal: 8,
-    marginVertical: 15,
+    marginVertical: 2,
     borderRadius: 14,
     borderWidth: 1,
     borderColor: 'transparent',
@@ -1402,8 +1453,10 @@ const styles = StyleSheet.create({
   channelItemInner: {
     flexDirection: 'row',
     alignItems: 'center',
-    paddingVertical: 12,
-    gap: 14,
+    paddingLeft: 24,
+    paddingRight: 8,
+    paddingVertical: 2,
+    gap: 20,
   },
   itemThumbnailContainer: {
     width: 52,
@@ -1440,7 +1493,7 @@ const styles = StyleSheet.create({
   },
   channelTitle: {
     color: 'rgba(255,255,255,0.85)',
-    fontSize: 18,
+    fontSize: 16,
     fontWeight: '700',
     fontFamily: 'Outfit',
     letterSpacing: 0.2,
@@ -1486,14 +1539,18 @@ const styles = StyleSheet.create({
   },
   playerWrapper: {
     width: '100%',
-    height: '58%',
-    minHeight: 260,
-    maxHeight: SCREEN_HEIGHT * 0.64,
+    aspectRatio: 16 / 9,
+    maxHeight: SCREEN_HEIGHT * 0.70,
+    backgroundColor: '#000',
     zIndex: 1,
+    borderWidth: 3,
+    borderColor: 'transparent',
   },
   playerWrapperFocused: {
-    borderWidth: 3,
     borderColor: '#E50914',
+    shadowColor: '#E50914',
+    shadowOpacity: 0.8,
+    shadowRadius: 10,
   },
   playerPlaceholder: {
     flex: 1,
@@ -1531,8 +1588,10 @@ const styles = StyleSheet.create({
   previewInfoPanel: {
     marginTop: 14,
     marginHorizontal: 20,
-    paddingVertical: 16,
-    paddingHorizontal: 18,
+    paddingTop: 16,
+    paddingBottom: 16,
+    paddingLeft: 42,
+    paddingRight: 42,
     backgroundColor: 'rgba(0, 0, 0, 0.85)',
     borderRadius: 16,
     flexDirection: 'row',
@@ -1545,8 +1604,10 @@ const styles = StyleSheet.create({
     marginTop: 10,
     marginHorizontal: 20,
     marginBottom: 12,
-    paddingVertical: 14,
-    paddingHorizontal: 16,
+    paddingTop: 14,
+    paddingBottom: 14,
+    paddingLeft: 42,
+    paddingRight: 42,
     backgroundColor: 'rgba(0, 0, 0, 0.75)',
     borderRadius: 14,
     borderWidth: 1,
@@ -1566,8 +1627,10 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: 'rgba(255,255,255,0.08)',
     borderRadius: 10,
-    paddingVertical: 9,
-    paddingHorizontal: 11,
+    paddingTop: 9,
+    paddingBottom: 9,
+    paddingLeft: 20,
+    paddingRight: 20,
     gap: 4,
   },
   previewEpgCurrentLabel: {
@@ -1597,7 +1660,10 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 10,
-    paddingVertical: 6,
+    paddingTop: 6,
+    paddingBottom: 6,
+    paddingLeft: 20,
+    paddingRight: 20,
     borderBottomWidth: 1,
     borderBottomColor: 'rgba(255,255,255,0.06)',
   },

@@ -1639,7 +1639,7 @@ export const VideoPlayer = React.memo(
 
     // Internal TV key listener
     useEffect(() => {
-      if (isPreview || shouldUseNativePlayer) return;
+      if (isPreview) return;
 
       const handleTvKey = (e: KeyboardEvent) => {
         const key = e.key;
@@ -1689,47 +1689,65 @@ export const VideoPlayer = React.memo(
         ) {
           void togglePlayPause();
           e.preventDefault();
+          e.stopPropagation();
         } else if (key === 'ArrowUp' || keyCode === 19) {
           if (isLiveStream && !isChannelBrowserOpen) {
             handleZap('prev');
             e.preventDefault();
+            e.stopPropagation();
           } else {
              showControls();
              e.preventDefault();
+             e.stopPropagation();
           }
         } else if (key === 'ArrowDown' || keyCode === 20) {
           if (isLiveStream && !isChannelBrowserOpen) {
             handleZap('next');
             e.preventDefault();
+            e.stopPropagation();
           } else {
              showControls();
              e.preventDefault();
+             e.stopPropagation();
           }
         } else if (key === 'ArrowLeft' || keyCode === 21) {
-           if (!isLiveStream) {
+           if (isLiveStream) {
+             if (canShowChannelBrowser && !isChannelBrowserOpen) {
+               setIsChannelBrowserOpen(true);
+               showControls();
+               e.preventDefault();
+               e.stopPropagation();
+             }
+           } else {
              seek(-10);
              e.preventDefault();
+             e.stopPropagation();
            }
         } else if (key === 'ArrowRight' || keyCode === 22) {
            if (!isLiveStream) {
              seek(10);
              e.preventDefault();
+             e.stopPropagation();
            }
         } else if (key === 'Escape' || key === 'Back' || keyCode === 4 || keyCode === 27) {
           if (isChannelBrowserOpen) {
             setIsChannelBrowserOpen(false);
             showControls();
+            e.preventDefault();
+            e.stopPropagation();
+            e.stopImmediatePropagation();
           } else {
             void closeNativePlayer();
+            e.preventDefault();
+            e.stopPropagation();
+            e.stopImmediatePropagation();
           }
-          e.preventDefault();
-          e.stopImmediatePropagation();
         }
       };
 
-      window.addEventListener('keydown', handleTvKey);
-      return () => window.removeEventListener('keydown', handleTvKey);
-    }, [closeNativePlayer, isLiveStream, isPreview, isChannelBrowserOpen, handleZap, seek, shouldUseNativePlayer, showControls, togglePlayPause]);
+      window.addEventListener('keydown', handleTvKey, true);
+      return () => window.removeEventListener('keydown', handleTvKey, true);
+    }, [closeNativePlayer, isLiveStream, isPreview, isChannelBrowserOpen, canShowChannelBrowser, handleZap, seek, shouldUseNativePlayer, showControls, togglePlayPause]);
 
     // CRITICAL: Listener de alta prioridade para fechar o navegador de canais com Back/Escape.
     // Funciona em QUALQUER modo de player (web ou nativo) e usa capture:true para
@@ -1960,7 +1978,7 @@ export const VideoPlayer = React.memo(
           result = await NativeVideoPlayer.initPlayer(initOptions);
         }
 
-        if (handledExitRef.current && !isSourceSwitch) {
+        if ((handledExitRef.current || isUnmountingRef.current) && !isSourceSwitch) {
           if (result?.result) {
             await teardownNativeBridgeSession();
           }
@@ -1989,7 +2007,7 @@ export const VideoPlayer = React.memo(
           }, 5000);
         }
       } catch (playerError) {
-        if (handledExitRef.current && !isSourceSwitch) {
+        if ((handledExitRef.current || isUnmountingRef.current) && !isSourceSwitch) {
           await teardownNativeBridgeSession();
           return;
         }

@@ -196,7 +196,7 @@ interface CategoryGridViewProps {
 export const CategoryGridView: React.FC<CategoryGridViewProps> = ({ category, onClose, onSelectMedia }) => {
   const [search, setSearch] = useState('');
   const layout = useResponsiveLayout();
-  const { registerNode } = useTvNavigation({ isActive: false, subscribeFocused: false });
+  const { registerNode, setFocusedId } = useTvNavigation({ isActive: false, subscribeFocused: false });
   const scrollParentRef = useRef<HTMLDivElement | null>(null);
   const setSelectedCategoryName = useStore((state) => state.setSelectedCategoryName);
   const setVisibleItems = useStore((state) => state.setVisibleItems);
@@ -233,8 +233,16 @@ export const CategoryGridView: React.FC<CategoryGridViewProps> = ({ category, on
       onBack: onClose,
     }));
 
-    return () => unregisterList.forEach((unregister) => unregister());
-  }, [onClose, registerNode]);
+    // Focus on the first element (search or close) when grid mounts
+    const timer = setTimeout(() => {
+      setFocusedId('grid-search');
+    }, 150);
+
+    return () => {
+      clearTimeout(timer);
+      unregisterList.forEach((unregister) => unregister());
+    };
+  }, [onClose, registerNode, setFocusedId]);
 
   useEffect(() => {
     setSearch('');

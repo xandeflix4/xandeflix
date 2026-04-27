@@ -301,14 +301,17 @@ export const useStore = create<XandeflixState>()(
       appendEpgData: (newData) => 
         set((state) => {
           const updated = { ...(state.epgData || {}) };
+          const MAX_PROGRAMS_PER_CHANNEL = 8; // Limite drastico para evitar OOM em listas de 60k+
+          
           Object.entries(newData).forEach(([channelId, programs]) => {
             if (updated[channelId]) {
-              // Merge programs and sort
               const seenIds = new Set(updated[channelId].map(p => p.id));
               const uniqueNew = programs.filter(p => !seenIds.has(p.id));
-              updated[channelId] = [...updated[channelId], ...uniqueNew].sort((a, b) => a.start - b.start);
+              updated[channelId] = [...updated[channelId], ...uniqueNew]
+                .sort((a, b) => a.start - b.start)
+                .slice(-MAX_PROGRAMS_PER_CHANNEL); // Mantem apenas os mais recentes/proximos
             } else {
-              updated[channelId] = programs;
+              updated[channelId] = programs.slice(0, MAX_PROGRAMS_PER_CHANNEL);
             }
           });
           return { epgData: updated };
@@ -379,63 +382,58 @@ export const useStore = create<XandeflixState>()(
             void get().fetchEPG(epgUrl);
           }
 
-          // 3. Agrupamento e Consolidação de Séries (Etapa 20)
-          const grouped: Record<string, PlaylistItem[]> = {};
-          const seriesData: Record<string, { main: PlaylistItem, episodes: any[] }> = {};
+          // OTIMIZAÇÃO CRÍTICA: Limpar catálogo anterior antes de processar nova lista massiva
+          const { insertChannels, clearAllChannels } = await import('../lib/db');
+          await clearAllChannels();
 
-          flatItems.forEach(item => {
-            const category = item.group || 'OUTROS';
-            const { cleanTitle, season, episode } = cleanMediaTitle(item.title);
-            
-            // Se for identificado como episódio de série (tem SxxExx no título)
-            if (season !== undefined && episode !== undefined) {
-              const seriesKey = `${cleanTitle}-${category}`.toLowerCase();
-              if (!seriesData[seriesKey]) {
-                seriesData[seriesKey] = {
-                  main: { 
-                    ...item, 
-                    title: cleanTitle, 
-                    id: `series-${seriesKey}`
-                  },
-                  episodes: []
-                };
-              }
-              seriesData[seriesKey].episodes.push({
-                id: item.id,
-                title: item.title,
-                seasonNumber: season,
-                episodeNumber: episode,
-                videoUrl: item.url
-              });
-            } else {
-              if (!grouped[category]) grouped[category] = [];
-              const mediaItem = { ...item };
-              // Determina se é live ou movie baseado no grupo ou metadados
+          // Agrupamento por categorias (Record de nomes para counts)
+          const groupedCount: Record<string, number> = {};
+          const CHUNK_SIZE = 2500;
+          
+          console.log(`[Store] Iniciando processamento de ${flatItems.length} canais em chunks de ${CHUNK_SIZE}...`);
+
+          for (let i = 0; i < flatItems.length; i += CHUNK_SIZE) {
+            const chunk = flatItems.slice(i, i + CHUNK_SIZE);
+            const mediaItems = chunk.map(item => {
+              const category = item.group || 'OUTROS';
+              groupedCount[category] = (groupedCount[category] || 0) + 1;
+              
               const isLive = category.toLowerCase().includes('canais') || 
                              category.toLowerCase().includes('live') || 
                              category.toLowerCase().includes('radio');
-              mediaItem.type = isLive ? 'live' : 'movie';
-              grouped[category].push(mediaItem);
-            }
-          });
 
-          // Injetar as séries agrupadas de volta nas categorias
-          Object.values(seriesData).forEach(group => {
-            const item = group.main;
-            const category = item.group || 'OUTROS';
-            if (!grouped[category]) grouped[category] = [];
+              return {
+                id: item.id,
+                title: item.title,
+                category: category,
+                groupTitle: category,
+                thumbnail: item.logo,
+                videoUrl: item.url,
+                type: isLive ? 'live' : 'movie' as any,
+              };
+            });
+
+            await insertChannels(mediaItems);
             
-            // Anexa os episódios encontrados ao item principal
-            (item as any).seasons = organizeSeasons(group.episodes);
-            (item as any).type = 'series';
+            // Ceder tempo para a UI não travar
+            await new Promise(r => setTimeout(r, 0));
             
-            grouped[category].push(item);
-          });
+            if (i % 10000 === 0) {
+              console.log(`[Store] [Fatiador] ${i} canais processados...`);
+            }
+          }
+
+          // Obter as categorias finais do DB para atualizar o seletor
+          const { getCategories } = await import('../lib/db');
+          const finalCategories = await getCategories();
 
           set({
-            playlistCategories: grouped,
-            selectedCategoryName: Object.keys(grouped)[0] || null
+            playlistCategories: {}, // Limpamos a memória pesada! O db.ts cuidará disso agora
+            selectedCategoryName: finalCategories[0] || null,
+            playlistError: null
           });
+          
+          console.log(`[Store] Processamento concluído. ${finalCategories.length} grupos mapeados.`);
         } catch (error: any) {
           const isCorsError = error.message?.toLowerCase().includes('fetch') || error.name === 'AbortError';
           const errorMessage = isCorsError

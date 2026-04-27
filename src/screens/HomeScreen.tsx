@@ -408,7 +408,12 @@ const HomeScreen: React.FC<{ onLogout: () => void }> = ({ onLogout }) => {
   const [gridCategory, setGridCategory] = useState<Category | null>(null);
   const [heroMedia, setHeroMedia] = useState<Media | null>(null);
   const [isHeroVisibleInList, setIsHeroVisibleInList] = useState(true);
-  const [isSideMenuExpanded, setIsSideMenuExpanded] = useState(false);
+  const isSideMenuExpandedRef = useRef(false);
+  const handleSideMenuExpandedChange = useCallback((expanded: boolean) => {
+    isSideMenuExpandedRef.current = expanded;
+    // No state update — the sidebar CSS transition handles the visual change.
+    // This ref is read only by the back-handler and the MediaDetailsPage offset.
+  }, []);
   const [lastClosedLiveMedia, setLastClosedLiveMedia] = useState<Media | null>(null);
   const [heroPreloadedTMDB, setHeroPreloadedTMDB] = useState<Record<string, TMDBData>>({});
   const [cardPreloadedTMDB, setCardPreloadedTMDB] = useState<Record<string, TMDBData>>({});
@@ -429,7 +434,7 @@ const HomeScreen: React.FC<{ onLogout: () => void }> = ({ onLogout }) => {
   // CRITICAL: Must disable when activeFilter is 'live' because LiveTVGrid has its own useTvNavigation
   const isHomeNavActive = isTvMode && !isDetailsVisible && !gridCategory && !isSettingsVisible && !playingMedia && activeFilter !== 'live' && activeFilter !== 'sports';
   const isChannelBrowserOpen = useStore((state) => state.isChannelBrowserOpen);
-  const { setFocusedId, focusedId } = useTvNavigation({ isActive: isHomeNavActive, subscribeFocused: true });
+  const { registerNode, setFocusedId, focusedId } = useTvNavigation({ isActive: isHomeNavActive, subscribeFocused: true });
 
   // Global Back Handler
   useEffect(() => {
@@ -475,8 +480,8 @@ const HomeScreen: React.FC<{ onLogout: () => void }> = ({ onLogout }) => {
         return;
       }
 
-      if (isSideMenuExpanded) {
-        setIsSideMenuExpanded(false);
+      if (isSideMenuExpandedRef.current) {
+        handleSideMenuExpandedChange(false);
         e.preventDefault();
         return;
       }
@@ -503,7 +508,7 @@ const HomeScreen: React.FC<{ onLogout: () => void }> = ({ onLogout }) => {
 
     window.addEventListener('keydown', handleGlobalBack);
     return () => window.removeEventListener('keydown', handleGlobalBack);
-  }, [playingMedia, isDetailsVisible, gridCategory, isSettingsVisible, setPlayerMode, setIsSettingsVisible, activeFilter, setActiveFilter, isSideMenuExpanded, setIsSideMenuExpanded, isTvMode, setFocusedId, isChannelBrowserOpen]);
+  }, [playingMedia, isDetailsVisible, gridCategory, isSettingsVisible, setPlayerMode, setIsSettingsVisible, activeFilter, setActiveFilter, handleSideMenuExpandedChange, isTvMode, setFocusedId, isChannelBrowserOpen]);
 
   const {
     fetchPlaylist,
@@ -571,13 +576,10 @@ const HomeScreen: React.FC<{ onLogout: () => void }> = ({ onLogout }) => {
   const layout = useResponsiveLayout();
   const { isTvProfile } = layout;
   const sideMenuCollapsedWidth = layout.sideRailCollapsedWidth || SIDEMENU_COLLAPSED_WIDTH;
-  const sideMenuExpandedWidth = layout.sideRailExpandedWidth || SIDEMENU_EXPANDED_WIDTH;
-  const sideMenuPushOffset = sideMenuExpandedWidth - sideMenuCollapsedWidth;
   const shouldRenderSideMenu = !layout.isMobile || layout.isTvProfile;
   const isFullscreenPlayerActive = Boolean(activeVideoUrl && playerMode === 'fullscreen');
   const shouldKeepLiveSessionOnClose = false;
   const shouldShowSideMenu = shouldRenderSideMenu && !isFullscreenPlayerActive;
-  const mainContentShift = shouldRenderSideMenu && isSideMenuExpanded ? sideMenuPushOffset : 0;
 
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const activePlayerRef = useRef<VideoPlayerHandle | null>(null);
@@ -1665,7 +1667,7 @@ const HomeScreen: React.FC<{ onLogout: () => void }> = ({ onLogout }) => {
             onSelect={handleCategorySelect} 
             activeId={activeFilter} 
             onLogout={onLogout}
-            onExpandedChange={setIsSideMenuExpanded}
+            onExpandedChange={handleSideMenuExpandedChange}
           />
         </div>
       )}
@@ -1684,7 +1686,7 @@ const HomeScreen: React.FC<{ onLogout: () => void }> = ({ onLogout }) => {
               onSelect={handleCategorySelect} 
               activeId={activeFilter} 
               onLogout={onLogout}
-              onExpandedChange={setIsSideMenuExpanded}
+              onExpandedChange={handleSideMenuExpandedChange}
             />
           </div>
         )}
@@ -1707,7 +1709,6 @@ const HomeScreen: React.FC<{ onLogout: () => void }> = ({ onLogout }) => {
           {activeFilter === 'live' || activeFilter === 'sports' ? (
             <Suspense fallback={<LoadingScreen />}>
               <LiveTVGrid 
-                key={activeFilter}
                 categories={filteredCategories}
                 onPlayFull={handlePlay} 
                 layout={layout}
@@ -1799,6 +1800,10 @@ const HomeScreen: React.FC<{ onLogout: () => void }> = ({ onLogout }) => {
                           {row.map((keyLabel) => (
                             <button
                               key={`vk-key-${rowIndex}-${keyLabel}`}
+                              ref={(el) => registerNode(`search-key-${keyLabel}`, el, 'body', {
+                                onEnter: () => appendSearchCharacter(keyLabel)
+                              })}
+                              data-nav-id={`search-key-${keyLabel}`}
                               onClick={() => appendSearchCharacter(keyLabel)}
                               style={{
                                 height: 34,
@@ -1820,6 +1825,8 @@ const HomeScreen: React.FC<{ onLogout: () => void }> = ({ onLogout }) => {
 
                     <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, marginTop: 10 }}>
                       <button
+                        ref={(el) => registerNode(`search-key-backspace`, el, 'body', { onEnter: removeLastSearchCharacter })}
+                        data-nav-id="search-key-backspace"
                         onClick={removeLastSearchCharacter}
                         style={{
                           height: 36,
@@ -1834,6 +1841,8 @@ const HomeScreen: React.FC<{ onLogout: () => void }> = ({ onLogout }) => {
                         Apagar
                       </button>
                       <button
+                        ref={(el) => registerNode(`search-key-clear`, el, 'body', { onEnter: () => setSearchQuery('') })}
+                        data-nav-id="search-key-clear"
                         onClick={() => setSearchQuery('')}
                         style={{
                           height: 36,
@@ -1875,6 +1884,10 @@ const HomeScreen: React.FC<{ onLogout: () => void }> = ({ onLogout }) => {
                         {searchDisplayItems.map((item, index) => (
                           <div
                             key={`search-grid-${item.id}-${index}`}
+                            ref={(el) => registerNode(`search-grid-${item.id}-${index}`, el, 'body', {
+                              onEnter: () => handleMediaPress(item)
+                            })}
+                            data-nav-id={`search-grid-${item.id}-${index}`}
                             role="button"
                             tabIndex={0}
                             onClick={() => handleMediaPress(item)}
@@ -2042,7 +2055,7 @@ const HomeScreen: React.FC<{ onLogout: () => void }> = ({ onLogout }) => {
               onSelectMedia={setDetailsMedia}
               sideMenuOffset={
                 shouldShowSideMenu
-                  ? (isSideMenuExpanded ? sideMenuExpandedWidth : sideMenuCollapsedWidth)
+                  ? sideMenuCollapsedWidth
                   : 0
               }
             />

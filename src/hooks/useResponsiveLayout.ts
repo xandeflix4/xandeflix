@@ -68,7 +68,7 @@ export const useResponsiveLayout = () => {
     const rowCardGap = isTvProfile ? 12 : null;
     const gridCardMaxWidth = isTvProfile ? 152 : null;
     const menuLabelSize = isTvProfile ? 14 : 18;
-    const menuIconSize = isTvProfile ? 20 : 22;
+    const menuIconSize = isTvProfile ? 18 : 22;
 
     return {
       width,
