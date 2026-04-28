@@ -1369,6 +1369,17 @@ export const VideoPlayer = React.memo(
         suppressNativePreviewExitOnUnmountRef.current;
 
       if (!openedPlayerRef.current) {
+        // Fullscreen web live does not own a native bridge session.
+        // If we tear down here, we can accidentally kill the preserved live preview
+        // session that is meant to survive the handoff.
+        if (!shouldUseNativeBridgePlayerRef.current) {
+          handledExitRef.current = true;
+          activeNativeSourceKeyRef.current = '';
+          syncProgressToSupabase(lastKnownTimeRef.current, { force: true });
+          onClose();
+          return;
+        }
+
         await teardownNativeBridgeSession();
         syncProgressToSupabase(lastKnownTimeRef.current, { force: true });
         onClose();

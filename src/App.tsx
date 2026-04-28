@@ -130,6 +130,8 @@ export default function App() {
 
         // Se o player estiver aberto, fecha o player primeiro
         if (currentPlayer === 'fullscreen' || currentPlayer === 'minimized') {
+          currentState.setIsChannelBrowserOpen(false);
+          currentState.setFocusedId(null);
           currentState.setPlayerMode('closed');
           currentState.setActiveVideoUrl(null);
           currentState.setPlayingMedia(null);
@@ -488,4 +490,3 @@ export default function App() {
     </>
   );
 }
-

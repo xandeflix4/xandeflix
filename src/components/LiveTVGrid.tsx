@@ -3,7 +3,6 @@ import { View, Text, StyleSheet, TouchableHighlight, Image, Dimensions } from 'r
 import { Radio, ChevronRight, Search, Heart, Activity, RotateCcw } from 'lucide-react';
 import { Category, Media } from '../types';
 import { VideoPlayer } from './VideoPlayer';
-import { NativeVideoPlayer } from '../lib/nativeVideoPlayer';
 import { useStore } from '../store/useStore';
 import { useTvNavigation } from '../hooks/useTvNavigation';
 import { NetworkDiagnostic } from './NetworkDiagnostic';
@@ -159,7 +158,6 @@ const ChannelItem = React.memo(({
   registerNode,
   setFocusedId,
   focusChannelByIndex,
-  handleMediaClick,
   previewMedia,
   selectedCatId,
   liveCategories,
@@ -169,7 +167,6 @@ const ChannelItem = React.memo(({
   registerNode: any,
   setFocusedId: any,
   focusChannelByIndex: any,
-  handleMediaClick: any,
   previewMedia: any,
   selectedCatId: any,
   liveCategories: any[],
@@ -183,7 +180,7 @@ const ChannelItem = React.memo(({
         focusedChannelIndexRef.current = index;
       },
       onEnter: () => {
-        handleMediaClick(media);
+        onPress(media, index);
       },
       onUp: () => focusChannelByIndex(index - 1),
       onDown: () => focusChannelByIndex(index + 1),
@@ -198,7 +195,7 @@ const ChannelItem = React.memo(({
         setFocusedId('tv-preview-player');
       },
     });
-  }, [media.id, index, registerNode, handleMediaClick, media, focusChannelByIndex, selectedCatId, liveCategories, previewMedia, setFocusedId, focusedChannelIndexRef, focusGroupByIndex]);
+  }, [focusChannelByIndex, focusGroupByIndex, focusedChannelIndexRef, index, liveCategories, media, onPress, previewMedia, registerNode, selectedCatId, setFocusedId]);
 
   return (
     <TouchableHighlight
@@ -298,6 +295,9 @@ export const LiveTVGrid: React.FC<LiveTVGridProps> = ({
   const [activeTab, setActiveTab] = useState<'epg' | 'info'>('epg');
   const [categoryCounts, setCategoryCounts] = useState<Record<string, number>>({});
   const previewFailureCountRef = useRef(0);
+  const previousGlobalPlayerActiveRef = useRef(Boolean(isGlobalPlayerActive));
+  const lastSyncedExternalMediaIdRef = useRef<string | null>(null);
+  const lastSyncedExternalCategoryMediaIdRef = useRef<string | null>(null);
 
   // Sincronizar estado interno quando a seção muda sem unmount (Live <-> Sports)
   useEffect(() => {
@@ -316,6 +316,8 @@ export const LiveTVGrid: React.FC<LiveTVGridProps> = ({
     setFocusedGroupIndex(0);
     setFocusedChannelIndex(0);
     setFocusColumn('groups');
+    lastSyncedExternalMediaIdRef.current = null;
+    lastSyncedExternalCategoryMediaIdRef.current = null;
     hasAppliedInitialFocusRef.current = false;
   }, [section]);
   const previewTriedKeysRef = useRef<Set<string>>(new Set());
@@ -463,18 +465,33 @@ export const LiveTVGrid: React.FC<LiveTVGridProps> = ({
 
   // Sincronizar com media externa (vindo de "minimizar" o player global)
   useEffect(() => {
-    if (externalMedia) {
+    if (!externalMedia) {
+      lastSyncedExternalMediaIdRef.current = null;
+      lastSyncedExternalCategoryMediaIdRef.current = null;
+      return;
+    }
+
+    if (lastSyncedExternalMediaIdRef.current !== externalMedia.id) {
       setPreviewMedia(externalMedia);
       setSelectedMediaId(externalMedia.id);
       activePreviewChannelIdRef.current = externalMedia.id;
+      lastSyncedExternalMediaIdRef.current = externalMedia.id;
+      lastSyncedExternalCategoryMediaIdRef.current = null;
+    }
 
-      // Auto selecionar a categoria
-      const catId = liveCategories.find(
-        (c) =>
-          c.title === externalMedia.category
-          || c.items.some((i) => i.id === externalMedia.id),
-      )?.id;
-      if (catId) setSelectedCatId(catId);
+    if (lastSyncedExternalCategoryMediaIdRef.current === externalMedia.id) {
+      return;
+    }
+
+    // Auto selecionar a categoria apenas uma vez por media externa.
+    const catId = liveCategories.find(
+      (c) =>
+        c.title === externalMedia.category
+        || c.items.some((i) => i.id === externalMedia.id),
+    )?.id;
+    if (catId) {
+      setSelectedCatId(catId);
+      lastSyncedExternalCategoryMediaIdRef.current = externalMedia.id;
     }
   }, [externalMedia, liveCategories]);
 
@@ -783,7 +800,7 @@ export const LiveTVGrid: React.FC<LiveTVGridProps> = ({
     autoPreviewActiveRef.current = true;
     setSelectedMediaId(nextMedia.id);
     setPreviewMedia(nextMedia);
-  }, [globalPreviewPool, isGlobalPlayerActive, previewMedia]); // Removido selectedCatId para estabilizar a referência
+  }, [globalPreviewPool, isGlobalPlayerActive, previewMedia, selectedCatId]); // Mantém a categoria atual no filtro de fallback
 
   useEffect(() => {
     if (!selectedCatId) {
@@ -839,46 +856,28 @@ export const LiveTVGrid: React.FC<LiveTVGridProps> = ({
     previewArmRef.current = { mediaId: null, armedAt: 0 };
     openingFullscreenRef.current = true;
     activePreviewChannelIdRef.current = media.id;
+    setSelectedMediaId(media.id);
 
-    console.warn('[LiveTVGrid] openFullScreen: Chamando setLayout(fullscreen: true)');
-    if (NativeVideoPlayer.setLayout) {
-      void NativeVideoPlayer.setLayout({ fullscreen: true }).then(() => {
-        console.warn('[LiveTVGrid] openFullScreen: setLayout nativo CONCLUÍDO');
-      }).catch((err) => {
-        console.warn('[LiveTVGrid] openFullScreen: Erro ao expandir layout nativo:', err);
-      });
-    }
+    console.warn('[LiveTVGrid] openFullScreen: Disparando onPlayFull imediatamente');
+    onPlayFull(media);
+  }, [onPlayFull, setSelectedMediaId]);
 
-    console.warn('[LiveTVGrid] openFullScreen: Chamando setPreviewMedia(null)');
-    setPreviewMedia(null);
-
-    window.setTimeout(() => {
-      console.warn('[LiveTVGrid] openFullScreen: Disparando onPlayFull (timeout 30ms)');
-      onPlayFull(media);
-      window.setTimeout(() => {
-        console.warn('[LiveTVGrid] openFullScreen: Resetando lock openingFullscreenRef (timeout 500ms)');
-        openingFullscreenRef.current = false;
-      }, 500);
-    }, 30);
-  }, [onPlayFull]);
-
-  const handlePreviewClose = useCallback(() => {}, []);
+  const handlePreviewClose = useCallback(() => {
+    openingFullscreenRef.current = false;
+    previewArmRef.current = { mediaId: null, armedAt: 0 };
+    previewActivationGuardRef.current = { mediaId: null, at: 0 };
+  }, []);
   const handlePreviewFullscreen = useCallback(() => {
     if (previewMedia) {
       void openFullScreen(previewMedia);
     }
   }, [openFullScreen, previewMedia]);
 
-  useEffect(() => {
-    // Reset the lock when the global player state changes
-    openingFullscreenRef.current = false;
-  }, [isGlobalPlayerActive]);
-
   const handleMediaClick = useCallback((media: Media) => {
-    const duplicateActivationWindowMs = 650;
-    const minDelayForFullscreenMs = 900;
+    // Evita disparos duplicados do MESMO pressionamento físico (onEnter + onPress).
+    // Mantemos a janela mínima possível para não engolir o 2º clique intencional.
+    const duplicateActivationWindowMs = 120;
     const isSameChannel = activePreviewChannelIdRef.current === media.id;
-    const isSamePreviewMedia = previewMedia?.id === media.id;
     const now = Date.now();
     const isDuplicatedPhysicalActivation =
       previewActivationGuardRef.current.mediaId === media.id
@@ -899,9 +898,8 @@ export const LiveTVGrid: React.FC<LiveTVGridProps> = ({
     
     const isSecondIntentionalActivation =
       isSameChannel
-      && isSamePreviewMedia
       && isArmedForThisChannel
-      && armElapsedMs > minDelayForFullscreenMs;
+      && armElapsedMs >= duplicateActivationWindowMs;
 
     console.warn(`[LiveTVGrid] handleMediaClick: ${media.id} - ${media.title}. isGlobalPlayerActive=${isGlobalPlayerActive}. isSameChannel=${isSameChannel}. armElapsedMs=${armElapsedMs}. 2nd=${isSecondIntentionalActivation}`);
 
@@ -940,7 +938,7 @@ export const LiveTVGrid: React.FC<LiveTVGridProps> = ({
       section,
       timestamp: Date.now(),
     });
-  }, [openFullScreen, previewMedia?.id, setLastLiveChannel, selectedCatId, section]);
+  }, [isGlobalPlayerActive, openFullScreen, selectedCatId, section, setLastLiveChannel]);
 
   const { registerNode, setFocusedId } = useTvNavigation({
     isActive: !showDiagnostic && !isGlobalPlayerActive,
@@ -973,6 +971,82 @@ export const LiveTVGrid: React.FC<LiveTVGridProps> = ({
 
     window.requestAnimationFrame(tryFocus);
   }, [setFocusedId]);
+
+  useEffect(() => {
+    const wasGlobalPlayerActive = previousGlobalPlayerActiveRef.current;
+    previousGlobalPlayerActiveRef.current = Boolean(isGlobalPlayerActive);
+
+    if (isGlobalPlayerActive) {
+      return;
+    }
+
+    // Só resetar estado de "abertura em andamento" quando houve transição
+    // real de fullscreen -> grade. Se resetarmos em TODO render da grade,
+    // o segundo clique nunca encontra o canal "armado".
+    if (!wasGlobalPlayerActive) {
+      return;
+    }
+
+    openingFullscreenRef.current = false;
+    previewArmRef.current = { mediaId: null, armedAt: 0 };
+    previewActivationGuardRef.current = { mediaId: null, at: 0 };
+
+    hasAppliedInitialFocusRef.current = false;
+    setIsDiagnosticFocused(false);
+
+    // Ao voltar do fullscreen, manter o foco no MESMO botão de canal que abriu o player.
+    const targetChannelId =
+      selectedMediaId
+      || previewMedia?.id
+      || activePreviewChannelIdRef.current;
+    if (targetChannelId) {
+      setFocusColumn('channels');
+      setSelectedMediaId(targetChannelId);
+      activePreviewChannelIdRef.current = targetChannelId;
+
+      const targetChannelIndex = filteredItems.findIndex((item) => item.id === targetChannelId);
+      if (targetChannelIndex >= 0) {
+        focusedChannelIndexRef.current = targetChannelIndex;
+        setFocusedChannelIndex(targetChannelIndex);
+        channelVirtualizer.scrollToIndex(targetChannelIndex, { align: 'center' });
+      } else {
+        const targetCategoryId = liveCategories.find((category) =>
+          category.items.some((item) => item.id === targetChannelId),
+        )?.id;
+        if (targetCategoryId && targetCategoryId !== selectedCatId) {
+          setSelectedCatId(targetCategoryId);
+        }
+      }
+
+      hasAppliedInitialFocusRef.current = true;
+      window.requestAnimationFrame(() => {
+        focusNavIdWhenMounted(`tv-channel-${targetChannelId}`, 20);
+      });
+      return;
+    }
+
+    if (selectedCatId) {
+      setFocusColumn('groups');
+      hasAppliedInitialFocusRef.current = true;
+      window.requestAnimationFrame(() => {
+        focusNavIdWhenMounted(`tv-group-${selectedCatId}`);
+      });
+    }
+  }, [
+    focusNavIdWhenMounted,
+    filteredItems,
+    channelVirtualizer,
+    isGlobalPlayerActive,
+    liveCategories,
+    previewMedia?.id,
+    selectedCatId,
+    selectedMediaId,
+    setFocusedChannelIndex,
+    setFocusColumn,
+    setIsDiagnosticFocused,
+    setSelectedCatId,
+    setSelectedMediaId,
+  ]);
 
   const focusChannelByIndex = useCallback((targetIndex: number) => {
     if (filteredItems.length === 0) {
@@ -1242,7 +1316,6 @@ export const LiveTVGrid: React.FC<LiveTVGridProps> = ({
                       registerNode={registerNode}
                       setFocusedId={setFocusedId}
                       focusChannelByIndex={focusChannelByIndex}
-                      handleMediaClick={handleMediaClick}
                       previewMedia={previewMedia}
                       selectedCatId={selectedCatId}
                       liveCategories={liveCategories}
@@ -1272,7 +1345,6 @@ export const LiveTVGrid: React.FC<LiveTVGridProps> = ({
             <View style={styles.previewContainer}>
                 <TouchableHighlight
                   onPress={() => {
-                    setPreviewMedia(null);
                     openFullScreen(previewMedia);
                   }}
                   id="tv-preview-player"
@@ -1289,7 +1361,7 @@ export const LiveTVGrid: React.FC<LiveTVGridProps> = ({
                       onPreviewPlaybackFailed={handlePreviewPlaybackFailed}
                       onClose={handlePreviewClose}
                       onPreviewRequestFullscreen={handlePreviewFullscreen}
-                      suppressNativePreviewExitOnUnmount={true}
+                      suppressNativePreviewExitOnUnmount={false}
                       isMinimized={false}
                       isPreview={true}
                     />

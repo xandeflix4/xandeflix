@@ -391,6 +391,7 @@ const HomeScreen: React.FC<{ onLogout: () => void }> = ({ onLogout }) => {
   const favorites = useStore((state) => state.favorites);
   const lastPlaylistUrl = useStore((state) => state.lastPlaylistUrl);
   const fetchPlaylistAction = useStore((state) => state.fetchPlaylist);
+  const setIsChannelBrowserOpen = useStore((state) => state.setIsChannelBrowserOpen);
 
   // Video Player Global State
   const activeVideoUrl = useStore((state) => state.activeVideoUrl);
@@ -454,6 +455,8 @@ const HomeScreen: React.FC<{ onLogout: () => void }> = ({ onLogout }) => {
         if (isChannelBrowserOpen) {
           return;
         }
+        setIsChannelBrowserOpen(false);
+        setFocusedId(null);
         setPlayingMedia(null);
         setActiveVideoUrl(null);
         setPlayerMode('closed');
@@ -508,7 +511,7 @@ const HomeScreen: React.FC<{ onLogout: () => void }> = ({ onLogout }) => {
 
     window.addEventListener('keydown', handleGlobalBack);
     return () => window.removeEventListener('keydown', handleGlobalBack);
-  }, [playingMedia, isDetailsVisible, gridCategory, isSettingsVisible, setPlayerMode, setIsSettingsVisible, activeFilter, setActiveFilter, handleSideMenuExpandedChange, isTvMode, setFocusedId, isChannelBrowserOpen]);
+  }, [playingMedia, isDetailsVisible, gridCategory, isSettingsVisible, setPlayerMode, setIsSettingsVisible, activeFilter, setActiveFilter, handleSideMenuExpandedChange, isTvMode, setFocusedId, isChannelBrowserOpen, setIsChannelBrowserOpen]);
 
   const {
     fetchPlaylist,
@@ -780,6 +783,8 @@ const HomeScreen: React.FC<{ onLogout: () => void }> = ({ onLogout }) => {
 
   const handlePlay = useCallback((media: Media) => {
     clearAutoRotateResumeTimer();
+    setIsChannelBrowserOpen(false);
+    setFocusedId(null);
     if (media.type === 'live') {
       setLastClosedLiveMedia(media);
     } else {
@@ -791,10 +796,12 @@ const HomeScreen: React.FC<{ onLogout: () => void }> = ({ onLogout }) => {
     setIsAutoRotating(false);
     setIsDetailsVisible(false);
     setPlayerMode('fullscreen');
-  }, [clearAutoRotateResumeTimer, setPlayerMode]);
+  }, [clearAutoRotateResumeTimer, setFocusedId, setIsChannelBrowserOpen, setPlayerMode]);
 
   const closeActivePlayer = useCallback(() => {
     const closedLiveMedia = videoType === 'live' ? playingMedia : null;
+    setIsChannelBrowserOpen(false);
+    setFocusedId(null);
     setActiveVideoUrl(null);
     setPlayingMedia(null);
     setVideoType(null);
@@ -803,7 +810,7 @@ const HomeScreen: React.FC<{ onLogout: () => void }> = ({ onLogout }) => {
     }
     setPlayerMode('closed');
     scheduleHeroAutoRotateResume(layout.isTvProfile ? 9000 : 6000);
-  }, [layout.isTvProfile, playingMedia, scheduleHeroAutoRotateResume, setPlayerMode, videoType]);
+  }, [layout.isTvProfile, playingMedia, scheduleHeroAutoRotateResume, setFocusedId, setIsChannelBrowserOpen, setPlayerMode, videoType]);
 
   const handleMediaPress = useCallback((media: Media) => {
     if (media.type === 'live') {
@@ -1655,6 +1662,7 @@ const HomeScreen: React.FC<{ onLogout: () => void }> = ({ onLogout }) => {
   const homeLogoSize = layout.isTvProfile
     ? Math.max(24, Math.min(34, Math.round(layout.width * 0.021)))
     : 22;
+  const shouldHideBaseContent = isFullscreenPlayerActive;
 
   return (
     <View style={styles.container}>
@@ -1693,7 +1701,7 @@ const HomeScreen: React.FC<{ onLogout: () => void }> = ({ onLogout }) => {
 
         {/* Main Content Area */}
         <div
-          aria-hidden={shouldBlockBaseInteractions}
+          aria-hidden={shouldBlockBaseInteractions || shouldHideBaseContent}
           style={{
             flex: 1,
             minWidth: 0,
@@ -1702,7 +1710,8 @@ const HomeScreen: React.FC<{ onLogout: () => void }> = ({ onLogout }) => {
             width: '100%',
             height: '100%',
             marginLeft: 0,
-            pointerEvents: shouldBlockBaseInteractions ? 'none' : 'auto',
+            pointerEvents: shouldBlockBaseInteractions || shouldHideBaseContent ? 'none' : 'auto',
+            visibility: shouldHideBaseContent ? 'hidden' : 'visible',
           }}
         >
         <View style={{ flex: 1 }}>
@@ -2104,6 +2113,20 @@ const HomeScreen: React.FC<{ onLogout: () => void }> = ({ onLogout }) => {
                 />
               </motion.div>
             ) : (
+              <motion.div
+                key={`fullscreen-${activeVideoUrl}`}
+                initial={{ opacity: 0, scale: 0.99 }}
+                animate={{ opacity: 1, scale: 1 }}
+                exit={{ opacity: 0, scale: 0.99 }}
+                transition={{ duration: 0.18, ease: 'easeOut' }}
+                style={{
+                  position: 'fixed',
+                  inset: 0,
+                  zIndex: 1600,
+                  backgroundColor: '#000',
+                  overflow: 'hidden',
+                }}
+              >
                 <VideoPlayer
                   ref={activePlayerRef}
                   url={activeVideoUrl}
@@ -2120,6 +2143,7 @@ const HomeScreen: React.FC<{ onLogout: () => void }> = ({ onLogout }) => {
                   channelBrowserCategories={filteredCategories}
                   onZap={handlePlay}
                 />
+              </motion.div>
             )}
           </Suspense>
         )}

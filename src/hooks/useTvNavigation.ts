@@ -175,6 +175,28 @@ const emitFocusedId = (id: string | null) => {
   focusListeners.forEach((listener) => listener());
 };
 
+const clearFocusedIdIfNeeded = (id: string, localRef?: { current: string | null }) => {
+  if (focusedNodeId !== id) {
+    return;
+  }
+
+  focusedNodeId = null;
+  if (localRef && localRef.current === id) {
+    localRef.current = null;
+  }
+
+  if (typeof document !== 'undefined') {
+    const activeElement = document.activeElement as HTMLElement | null;
+    if (activeElement && getNavIdFromElement(activeElement) === id) {
+      activeElement.blur();
+    }
+  }
+
+  if (focusListeners.size > 0) {
+    focusListeners.forEach((listener) => listener());
+  }
+};
+
 const getFirstNavigableNode = (): NavNode | null => {
   const allNodes = Array.from(navNodes.values());
   const validNodes = allNodes.filter((node) => {
@@ -321,8 +343,12 @@ export const useTvNavigation = (options?: { onBack?: () => void; isActive?: bool
             delete existingNode.ref.dataset.navSection;
           }
         }
+        clearFocusedIdIfNeeded(id, focusedIdRef);
         navNodes.delete(id);
-        return () => navNodes.delete(id);
+        return () => {
+          clearFocusedIdIfNeeded(id, focusedIdRef);
+          navNodes.delete(id);
+        };
       }
 
       const existingNode = navNodes.get(id);
@@ -337,6 +363,7 @@ export const useTvNavigation = (options?: { onBack?: () => void; isActive?: bool
       });
 
       return () => {
+        clearFocusedIdIfNeeded(id, focusedIdRef);
         navNodes.delete(id);
       };
     },
@@ -606,28 +633,55 @@ export const useTvNavigation = (options?: { onBack?: () => void; isActive?: bool
         const prefix = currentFocusedId.startsWith('tv-sidebar-channel-') ? 'tv-sidebar-channel-' : 'tv-channel-';
         const groupPrefix = prefix === 'tv-sidebar-channel-' ? 'tv-sidebar-group-' : 'tv-group-';
 
-        // P1: Otimizacao de performance - evitar Array.from
+        // Ordem de navegação precisa seguir o DOM visível para não "saltar" ao topo.
+        // Em virtualização, a ordem do Map pode não refletir os itens em tela.
         const channelIds: string[] = [];
-        for (const key of navNodes.keys()) {
-          if (key.startsWith(prefix)) channelIds.push(key);
+        if (typeof document !== 'undefined') {
+          const visibleChannelNodes = Array.from(
+            document.querySelectorAll<HTMLElement>(`[data-nav-id^="${prefix}"]`),
+          )
+            .filter((node) => Boolean(node.dataset.navId))
+            .sort((left, right) => {
+              const leftRect = left.getBoundingClientRect();
+              const rightRect = right.getBoundingClientRect();
+              const topDiff = leftRect.top - rightRect.top;
+              if (Math.abs(topDiff) > 1) return topDiff;
+              return leftRect.left - rightRect.left;
+            });
+
+          for (const node of visibleChannelNodes) {
+            const navId = node.dataset.navId;
+            if (!navId) continue;
+            channelIds.push(navId);
+          }
+        }
+
+        if (channelIds.length === 0) {
+          for (const key of navNodes.keys()) {
+            if (key.startsWith(prefix)) channelIds.push(key);
+          }
         }
         const currentIdx = channelIds.indexOf(currentFocusedId);
 
         if (key === 'ArrowDown' || key === 'ArrowUp') {
-          const nextIdx = key === 'ArrowDown'
-            ? Math.min(channelIds.length - 1, currentIdx + 1)
-            : Math.max(0, currentIdx - 1);
-          const targetId = channelIds[nextIdx];
-          if (targetId && targetId !== currentFocusedId) {
-            const target = navNodes.get(targetId);
-            if (target && focusNode(target, () => e.preventDefault(), !isTvMode)) {
-              focusedIdRef.current = target.id;
-              emitFocusedId(target.id);
-              return;
+          if (currentIdx >= 0) {
+            const nextIdx = key === 'ArrowDown'
+              ? Math.min(channelIds.length - 1, currentIdx + 1)
+              : Math.max(0, currentIdx - 1);
+            const targetId = channelIds[nextIdx];
+            if (targetId && targetId !== currentFocusedId) {
+              const target = navNodes.get(targetId);
+              if (target && focusNode(target, () => e.preventDefault(), !isTvMode)) {
+                focusedIdRef.current = target.id;
+                emitFocusedId(target.id);
+                return;
+              }
             }
+            e.preventDefault();
+            return; // block scroll even if at boundary
           }
-          e.preventDefault();
-          return; // block scroll even if at boundary
+          // Se o foco atual ainda não foi mapeado nesta lista visível (timing de virtualização),
+          // deixamos o fallback geométrico abaixo escolher o vizinho correto, em vez de forçar topo.
         }
 
         if (key === 'Enter') {
