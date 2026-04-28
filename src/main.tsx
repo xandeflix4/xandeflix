@@ -1,9 +1,20 @@
-if (typeof globalThis === 'undefined') {
+// P5: Limpeza de Logs em Producao para economia de recursos na WebView
+if (import.meta.env.PROD || !import.meta.env.DEV) {
+  const noop = () => {};
+  console.log = noop;
+  console.info = noop;
+  console.debug = noop;
+  // Mantemos warn e error para diagnosticos criticos
+}
+
+if (typeof (window as any).globalThis === 'undefined') {
   (window as any).globalThis = window;
 }
-// Protecao contra quebra por promessas nao tratadas no WebView
+
 window.addEventListener('unhandledrejection', (event) => {
-  console.warn('Unhandled promise rejection capturado:', event.reason);
+  // Usamos console.warn original para reportar falhas assincronas
+  const originalWarn = console.warn || (() => {});
+  originalWarn('Unhandled promise rejection capturado:', event.reason);
   event.preventDefault();
 });
 

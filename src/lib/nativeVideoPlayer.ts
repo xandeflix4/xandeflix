@@ -87,6 +87,7 @@ export interface NativeVideoPlayerPlugin {
   getCurrentTime(): Promise<NativeVideoPlayerResult>;
   setCurrentTime(options: { seektime: number }): Promise<NativeVideoPlayerResult>;
   exitPlayer(): Promise<NativeVideoPlayerResult>;
+  setLayout?(options: { fullscreen?: boolean; x?: number; y?: number; width?: number; height?: number }): Promise<NativeVideoPlayerResult>;
   detachPlayer?(): Promise<NativeVideoPlayerResult>;
   releasePlayer?(): Promise<NativeVideoPlayerResult>;
   stopAllPlayers(): Promise<NativeVideoPlayerResult>;

@@ -970,6 +970,7 @@ export const VideoPlayer = React.memo(
 
     const listenerHandlesRef = useRef<PluginListenerHandle[]>([]);
     const progressIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+    const nativeSessionHandoffReusedRef = useRef<boolean>(false);
     const openedPlayerRef = useRef(false);
     const activeNativeSourceKeyRef = useRef('');
     const nativeSourceSwitchingRef = useRef(false);
@@ -1065,6 +1066,7 @@ export const VideoPlayer = React.memo(
     }, []);
 
     const teardownNativeBridgeSession = useCallback(async () => {
+      console.warn('[VideoPlayer] teardownNativeBridgeSession iniciado');
       try {
         await NativeVideoPlayer.pause();
       } catch (pauseError) {
@@ -1072,19 +1074,27 @@ export const VideoPlayer = React.memo(
       }
 
       try {
-        await NativeVideoPlayer.detachPlayer?.();
+        if (NativeVideoPlayer.detachPlayer) {
+          console.warn('[VideoPlayer] Chamando NativeVideoPlayer.detachPlayer...');
+          await NativeVideoPlayer.detachPlayer();
+        }
       } catch (detachError) {
         console.warn('[NativePlayer] Falha ao detach durante teardown:', detachError);
       }
 
       try {
-        await NativeVideoPlayer.releasePlayer?.();
+        if (NativeVideoPlayer.releasePlayer) {
+          console.warn('[VideoPlayer] Chamando NativeVideoPlayer.releasePlayer...');
+          await NativeVideoPlayer.releasePlayer();
+        }
       } catch (releaseError) {
         console.warn('[NativePlayer] Falha ao release durante teardown:', releaseError);
       }
 
       try {
+        console.warn('[VideoPlayer] Chamando NativeVideoPlayer.exitPlayer...');
         await NativeVideoPlayer.exitPlayer();
+        console.warn('[VideoPlayer] teardownNativeBridgeSession concluido com sucesso');
       } catch (exitError) {
         console.warn('[NativePlayer] Falha ao finalizar sessão nativa:', exitError);
       }
@@ -1807,13 +1817,19 @@ export const VideoPlayer = React.memo(
 
     const setupNativePlayer = useCallback(async (options?: { switchSource?: boolean }) => {
       const isSourceSwitch = options?.switchSource === true;
-      if (!shouldUseNativeBridgePlayerRef.current) return;
+      const isEmbeddedPreviewMode = shouldUseEmbeddedNativePreviewRef.current;
+      console.warn(`[VideoPlayer] setupNativePlayer: isSourceSwitch=${isSourceSwitch}. isEmbedded=${isEmbeddedPreviewMode}. platform=${Capacitor.getPlatform()}. isNative=${Capacitor.isNativePlatform()}`);
+      
+      if (!shouldUseNativeBridgePlayerRef.current) {
+        console.warn('[VideoPlayer] setupNativePlayer abortado: shouldUseNativeBridgePlayerRef is false');
+        return;
+      }
       if (handledExitRef.current && !isSourceSwitch) return;
       if (isSourceSwitch && (!openedPlayerRef.current || nativeSourceSwitchingRef.current)) return;
 
       const sessionResumePosition = sessionResumePositionRef.current;
-      const isEmbeddedPreviewMode = shouldUseEmbeddedNativePreviewRef.current;
       const targetUrl = latestNativeHandoffUrlRef.current;
+      console.warn(`[VideoPlayer] setupNativePlayer targetUrl: ${targetUrl}`);
 
       if (isSourceSwitch) {
         nativeSourceSwitchingRef.current = true;
@@ -1873,6 +1889,7 @@ export const VideoPlayer = React.memo(
             }
           } else {
             console.log('[NativePlayer] Reutilizando sessão ativa para handoff preview/fullscreen');
+            nativeSessionHandoffReusedRef.current = true;
           }
           nativeSessionHandoff = null;
         }
@@ -1952,7 +1969,22 @@ export const VideoPlayer = React.memo(
         }
 
         let result: NativeVideoPlayerResult | null = null;
-        if (isSourceSwitch) {
+        
+        if (nativeSessionHandoffReusedRef.current) {
+          console.log('[NativePlayer] HANDOFF DETECTADO: Sessão já está tocando. Pulando switchSource/initPlayer!');
+          result = { result: true, method: 'handoff' };
+          
+          if (!isEmbeddedPreviewMode && NativeVideoPlayer.setLayout) {
+            await NativeVideoPlayer.setLayout({ fullscreen: true }).catch(() => {});
+          }
+          
+          // CRITICAL: Mark as opened so the component doesn't try to initialize again or teardown incorrectly
+          openedPlayerRef.current = true;
+          activeNativeSourceKeyRef.current = targetUrl;
+          
+          // Trigger UI showing
+          showControls();
+        } else if (isSourceSwitch) {
           const switchSourceFn = NativeVideoPlayer.switchSource;
           if (typeof switchSourceFn === 'function') {
             try {
@@ -1975,7 +2007,9 @@ export const VideoPlayer = React.memo(
             result = await NativeVideoPlayer.initPlayer(initOptions);
           }
         } else {
+          console.warn('[VideoPlayer] Chamando NativeVideoPlayer.initPlayer...');
           result = await NativeVideoPlayer.initPlayer(initOptions);
+          console.warn(`[VideoPlayer] NativeVideoPlayer.initPlayer result: ${result?.result}. message: ${result?.message}`);
         }
 
         if ((handledExitRef.current || isUnmountingRef.current) && !isSourceSwitch) {
@@ -2076,6 +2110,7 @@ export const VideoPlayer = React.memo(
 
       handledExitRef.current = false;
       if (!openedPlayerRef.current && !nativeSourceSwitchingRef.current) {
+        console.warn('[VideoPlayer] useEffect (mount/shouldUseNative): Disparando setupNativePlayer');
         void setupNativePlayerRef.current();
       }
 

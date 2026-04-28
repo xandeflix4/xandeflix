@@ -121,7 +121,7 @@ html, body {
 }
 
 /* Force smooth scrolling for ALL carousel containers and components */
-div[class*="carousel-flatlist"], 
+div[class*="carousel-flatlist"],
 .carousel-flatlist,
 .smooth-scroll-container div,
 div[style*="overflow-x: scroll"] {
@@ -134,7 +134,7 @@ div[style*="overflow-x: scroll"] {
 }
 
 /* Card scaling and displacement transition */
-div[class*="cardContainer"], 
+div[class*="cardContainer"],
 .media-card-transition {
   transition: transform 150ms cubic-bezier(0.2, 0, 0.2, 1) !important;
   transform: translate3d(0, 0, 0);
@@ -216,8 +216,8 @@ div[class*="cardFocused"] {
 
 div[class*="cardFocused"]::after {
   opacity: 1;
-  box-shadow: 
-    0 25px 50px rgba(0,0,0,0.85), 
+  box-shadow:
+    0 25px 50px rgba(0,0,0,0.85),
     0 0 30px rgba(229,9,20,0.6) !important;
 }
 
@@ -231,6 +231,48 @@ div[class*="cardFocused"]::after {
   box-shadow: 0 0 25px rgba(229, 9, 20, 0.7) !important;
   transform: scale(1.08) !important;
   z-index: 110 !important;
+}
+
+/* ================================================
+   LIVE TV GRID OPTIMIZATIONS (P0/P2)
+   ================================================ */
+
+/* Reduzir custo de GPU para itens da grade de canais */
+[data-nav-id^="tv-group-"],
+[data-nav-id^="tv-channel-"],
+[data-nav-id^="tv-sidebar-group-"],
+[data-nav-id^="tv-sidebar-channel-"] {
+  transition: background-color 0.15s ease-out, outline-color 0.15s ease-out !important;
+  will-change: background-color;
+}
+
+/* Foco Zero-Render: Estilo via CSS nativo em vez de React State */
+[data-nav-id^="tv-group-"]:focus,
+[data-nav-id^="tv-group-"]:focus-visible,
+[data-nav-id^="tv-channel-"]:focus,
+[data-nav-id^="tv-channel-"]:focus-visible,
+[data-nav-id^="tv-sidebar-group-"]:focus,
+[data-nav-id^="tv-sidebar-group-"]:focus-visible,
+[data-nav-id^="tv-sidebar-channel-"]:focus,
+[data-nav-id^="tv-sidebar-channel-"]:focus-visible {
+  background-color: rgba(229, 9, 20, 0.2) !important;
+  outline: 3px solid #E50914 !important;
+  outline-offset: -3px; /* Outline interna para no mexer no layout */
+  box-shadow: none !important; /* Remover glow para performance */
+  transform: none !important; /* Evitar escala em TV para reduzir jitter */
+  z-index: 10 !important;
+}
+
+/* Canais focado: destacar levemente sem escala agressiva */
+[data-nav-id^="tv-channel-"]:focus,
+[data-nav-id^="tv-sidebar-channel-"]:focus {
+  background-color: rgba(255, 255, 255, 0.08) !important;
+}
+
+/* Grupos focado */
+[data-nav-id^="tv-group-"]:focus,
+[data-nav-id^="tv-sidebar-group-"]:focus {
+  background-color: rgba(255, 255, 255, 0.1) !important;
 }
 /* ================================================
    SKELETON & LOADING EFFECTS

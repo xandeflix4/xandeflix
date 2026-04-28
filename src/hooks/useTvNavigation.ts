@@ -525,19 +525,13 @@ export const useTvNavigation = (options?: { onBack?: () => void; isActive?: bool
       if (currentFocusedId.startsWith('tv-group-') || currentFocusedId.startsWith('tv-sidebar-group-')) {
         const prefix = currentFocusedId.startsWith('tv-sidebar-group-') ? 'tv-sidebar-group-' : 'tv-group-';
         const channelPrefix = prefix === 'tv-sidebar-group-' ? 'tv-sidebar-channel-' : 'tv-channel-';
-        
-        const groupIds = Array.from(navNodes.keys())
-          .filter(k => k.startsWith(prefix))
-          .sort((a, b) => {
-            const aEl = findElementByNavId(a);
-            const bEl = findElementByNavId(b);
-            if (!aEl || !bEl) return 0;
-            const aTop = aEl.getBoundingClientRect().top;
-            const bTop = bEl.getBoundingClientRect().top;
-            // For items at same approximate Y, fall back to DOM order
-            if (Math.abs(aTop - bTop) < 5) return 0;
-            return aTop - bTop;
-          });
+
+        // P1: Otimizacao de performance - evitar Array.from e sort geometrico
+        const groupIds: string[] = [];
+        for (const key of navNodes.keys()) {
+          if (key.startsWith(prefix)) groupIds.push(key);
+        }
+
         const currentIdx = groupIds.indexOf(currentFocusedId);
 
         if (key === 'ArrowDown' || key === 'ArrowUp') {
@@ -612,9 +606,11 @@ export const useTvNavigation = (options?: { onBack?: () => void; isActive?: bool
         const prefix = currentFocusedId.startsWith('tv-sidebar-channel-') ? 'tv-sidebar-channel-' : 'tv-channel-';
         const groupPrefix = prefix === 'tv-sidebar-channel-' ? 'tv-sidebar-group-' : 'tv-group-';
 
-        const channelIds = Array.from(navNodes.keys())
-          .filter(k => k.startsWith(prefix));
-        // channelIds are in insertion order which matches the list order
+        // P1: Otimizacao de performance - evitar Array.from
+        const channelIds: string[] = [];
+        for (const key of navNodes.keys()) {
+          if (key.startsWith(prefix)) channelIds.push(key);
+        }
         const currentIdx = channelIds.indexOf(currentFocusedId);
 
         if (key === 'ArrowDown' || key === 'ArrowUp') {
@@ -755,7 +751,7 @@ export const useTvNavigation = (options?: { onBack?: () => void; isActive?: bool
         const isModalTransition =
           isCurrentModalSection
           && String(node.section || '').startsWith('modal');
-        
+
         if (node.section !== currentSection && !isMenuTransition && !isHeroTransition && !isModalTransition) {
           continue;
         }

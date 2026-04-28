@@ -37,9 +37,9 @@ const normalizeArtworkUrl = (value: string | null | undefined): string => {
   }
 };
 
-export const MediaDetailsPage: React.FC<MediaDetailsPageProps> = ({ 
-  media, 
-  onClose, 
+export const MediaDetailsPage: React.FC<MediaDetailsPageProps> = ({
+  media,
+  onClose,
   onPlay,
   onSelectMedia,
   sideMenuOffset = 0,
@@ -337,7 +337,7 @@ export const MediaDetailsPage: React.FC<MediaDetailsPageProps> = ({
   const relatedCategory = useMemo(() => {
     // Busca a categoria que contém o conteúdo atual
     if (!relatedDiskItems.length) return null;
-    
+
     // Remove o filme/série selecionado da lista e prioriza itens que já têm capa válida.
     const relatedItems = relatedDiskItems.filter(item => item.id !== media.id);
     const withArtwork = relatedItems.filter((item: any) =>
@@ -356,7 +356,7 @@ export const MediaDetailsPage: React.FC<MediaDetailsPageProps> = ({
       [withoutArtwork[i], withoutArtwork[j]] = [withoutArtwork[j], withoutArtwork[i]];
     }
     const prioritizedRelatedItems = [...withArtwork, ...withoutArtwork];
-    
+
     return {
       id: `related-${media.id}`,
       type: media.type,
@@ -724,7 +724,7 @@ export const MediaDetailsPage: React.FC<MediaDetailsPageProps> = ({
       >
         {/* Main Content using Tailwind Flow */}
         <div className="flex flex-col gap-10 w-full max-w-[1380px] mx-auto z-10 relative">
-          
+
           {/* Top Frame: Poster + Info */}
           <motion.div
             ref={detailsTopFrameRef as any}
@@ -884,7 +884,7 @@ export const MediaDetailsPage: React.FC<MediaDetailsPageProps> = ({
                   className={`flex items-center justify-center gap-2 font-bold rounded-full outline-none cursor-pointer border ${isFavorite ? 'bg-red-500/10 border-red-500/50 text-[#E50914]' : 'bg-white/5 border-white/20 text-white'}`}
                   style={{ padding: isTv ? '8px 20px' : '12px 24px', fontSize: isTv ? 14 : 16, fontFamily: 'Outfit' }}
                 >
-                  <Heart size={isTv ? 16 : 20} fill={isFavorite ? 'currentColor' : 'transparent'} /> 
+                  <Heart size={isTv ? 16 : 20} fill={isFavorite ? 'currentColor' : 'transparent'} />
                   {isFavorite ? 'Salvo' : 'Favoritar'}
                 </button>
               </div>
@@ -903,7 +903,7 @@ export const MediaDetailsPage: React.FC<MediaDetailsPageProps> = ({
                     {tmdbLoading && (
                       <div className="absolute inset-0 flex items-center justify-center bg-black/20 backdrop-blur-[1px] rounded">
                          <div className="flex items-center gap-3 bg-black/60 px-4 py-2 rounded-full border border-white/10">
-                            <Loader2 size={16} color="#E50914" className="animate-spin" /> 
+                            <Loader2 size={16} color="#E50914" className="animate-spin" />
                             <span className="text-xs text-white/70 font-bold uppercase tracking-wider">Atualizando...</span>
                          </div>
                       </div>
@@ -911,7 +911,7 @@ export const MediaDetailsPage: React.FC<MediaDetailsPageProps> = ({
                   </div>
                 ) : tmdbLoading ? (
                   <div className="flex items-center gap-3 py-2 text-white/60">
-                    <Loader2 size={20} color="#E50914" className="animate-spin" /> 
+                    <Loader2 size={20} color="#E50914" className="animate-spin" />
                     <span className="text-sm">Buscando informações...</span>
                   </div>
                 ) : (
@@ -1052,7 +1052,7 @@ export const MediaDetailsPage: React.FC<MediaDetailsPageProps> = ({
                  </div>
                )}
              </div>
-             
+
              <div style={styles.episodesGrid as any}>
                {selectedSeasonEpisodes.map((ep, idx) => {
                  const currentPos = watchHistory[ep.videoUrl];
@@ -1067,7 +1067,7 @@ export const MediaDetailsPage: React.FC<MediaDetailsPageProps> = ({
                    ref={(el) => { if (el) registerNode(`details-episode-${ep.id}`, el, 'modal-episodes', {
                      onFocus: () => {},
                      disableAutoScroll: true,
-                     onEnter: () => onPlay({ 
+                     onEnter: () => onPlay({
                        ...media,
                        videoUrl: ep.videoUrl,
                        title: `${media.title} - ${ep.title}`,
@@ -1075,7 +1075,7 @@ export const MediaDetailsPage: React.FC<MediaDetailsPageProps> = ({
                        currentSeasonNumber: selectedSeason,
                       }),
                     }); } }
-                   onClick={() => onPlay({ 
+                   onClick={() => onPlay({
                      ...media,
                      videoUrl: ep.videoUrl,
                      title: `${media.title} - ${ep.title}`,
@@ -1107,22 +1107,22 @@ export const MediaDetailsPage: React.FC<MediaDetailsPageProps> = ({
                             if (!pData || !pData.duration || pData.currentTime < 10) return null;
                             const pct = Math.min(100, Math.max(0, (pData.currentTime / pData.duration) * 100));
                             return (
-                              <View 
-                                style={{ 
-                                  position: 'absolute', 
-                                  bottom: 0, 
-                                  left: 0, 
-                                  right: 0, 
-                                  height: 3, 
-                                  backgroundColor: 'rgba(255,255,255,0.1)' 
+                              <View
+                                style={{
+                                  position: 'absolute',
+                                  bottom: 0,
+                                  left: 0,
+                                  right: 0,
+                                  height: 3,
+                                  backgroundColor: 'rgba(255,255,255,0.1)'
                                 }}
                               >
-                                <View 
-                                  style={{ 
-                                    width: `${pct}%`, 
-                                    height: '100%', 
+                                <View
+                                  style={{
+                                    width: `${pct}%`,
+                                    height: '100%',
                                     backgroundColor: '#E50914'
-                                  }} 
+                                  }}
                                 />
                               </View>
                             );
@@ -1139,7 +1139,7 @@ export const MediaDetailsPage: React.FC<MediaDetailsPageProps> = ({
         {/* Related Content */}
         {relatedCategory && relatedCategory.items.length > 0 && (
           <div className="w-full mt-12 mb-8 pt-8 border-t border-white/10 z-10 relative">
-            <CategoryRow 
+            <CategoryRow
               category={relatedCategory}
               rowIndex={999}
               navSection="modal-related"

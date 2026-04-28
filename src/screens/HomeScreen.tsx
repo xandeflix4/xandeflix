@@ -273,7 +273,7 @@ const RowsVirtualList = React.memo(({
     >
       {rowVirtualizer.getVirtualItems().map((virtualRow) => {
         const isHero = virtualRow.index === 0;
-        
+
         if (isHero) {
           return (
             <div
@@ -288,8 +288,8 @@ const RowsVirtualList = React.memo(({
                 transform: `translateY(${virtualRow.start}px)`,
               }}
             >
-              <HeroSection 
-                media={heroMedia} 
+              <HeroSection
+                media={heroMedia}
                 onPlay={handlePlay}
                 isAutoRotating={isHeroAutoRotating}
                 onFocus={handleHeroFocus}
@@ -422,7 +422,7 @@ const HomeScreen: React.FC<{ onLogout: () => void }> = ({ onLogout }) => {
   const [failedTrailerIds, setFailedTrailerIds] = useState<Record<string, true>>({});
   const heroPreloadedTMDBRef = useRef<Record<string, TMDBData>>({});
   const cardPreloadScopeRef = useRef<string>('');
-  
+
   const handleTrailerError = useCallback((media: Media) => {
     console.warn(`[Trailer] Video indisponivel para ${media.title}. Removendo do Hero.`);
     setFailedTrailerIds(prev => ({ ...prev, [media.id]: true }));
@@ -441,11 +441,11 @@ const HomeScreen: React.FC<{ onLogout: () => void }> = ({ onLogout }) => {
     const handleGlobalBack = (e: KeyboardEvent) => {
       const key = e.key;
       const isBack = key === 'Escape' || key === 'Back' || (e as any).keyCode === 4;
-      
+
       if (import.meta.env.DEV && isBack) {
         console.log(`[HomeScreen] Comando de Back detectado: ${key}`);
       }
-      
+
       if (!isBack) return;
 
       if (playingMedia) {
@@ -528,7 +528,7 @@ const HomeScreen: React.FC<{ onLogout: () => void }> = ({ onLogout }) => {
     if (favorites.length === 0) return [];
     const seenIds = new Set<string>();
     const items: Media[] = [];
-    
+
     for (const cat of filteredCategories) {
       for (const item of cat.items) {
         if (seenIds.has(item.id)) continue;
@@ -539,13 +539,13 @@ const HomeScreen: React.FC<{ onLogout: () => void }> = ({ onLogout }) => {
         }
       }
     }
-    
+
     return items;
   }, [favorites, filteredCategories]);
 
   // Controle de foco inicial seguro contra Race Conditions
   const initialFocusSetRef = useRef(false);
-  
+
   // A interface está pronta para foco assim que o catálogo existir; prefetch roda em background.
   const isInterfaceReadyForFocus = catalogPreviewCategories.length > 0;
 
@@ -567,7 +567,7 @@ const HomeScreen: React.FC<{ onLogout: () => void }> = ({ onLogout }) => {
           setFocusedId('hero-play');
         }
       }, 150);
-      
+
       initialFocusSetRef.current = true;
       return () => clearTimeout(timeoutId);
     }
@@ -613,7 +613,7 @@ const HomeScreen: React.FC<{ onLogout: () => void }> = ({ onLogout }) => {
     isSettingsVisible,
     layout.isTvProfile,
   ]);
-  
+
   // Initial Data Fetch (Auto-Load Etapa 12)
   useEffect(() => {
     if (!hasRequestedInitialPlaylistRef.current) {
@@ -687,13 +687,13 @@ const HomeScreen: React.FC<{ onLogout: () => void }> = ({ onLogout }) => {
         if (failedTrailerIds[key]) return false;
 
         const metadata = key ? heroPreloadedTMDB[key] : null;
-        
+
         // ESTRATEGIA: Para estar no Hero, precisa ter BACKDROP e TRAILER confirmados.
         const hasTMDBBackdrop = Boolean(metadata?.backdrop);
         const hasTrailer = Boolean(metadata?.trailerKey);
         const hasDistinctLocalBackdrop = Boolean(
-          item.backdrop && 
-          item.backdrop !== item.thumbnail && 
+          item.backdrop &&
+          item.backdrop !== item.thumbnail &&
           item.backdrop.trim().length > 0
         );
 
@@ -847,7 +847,7 @@ const HomeScreen: React.FC<{ onLogout: () => void }> = ({ onLogout }) => {
   const handleHeroFocus = useCallback((_id: string) => {
     setIsAutoRotating(false);
     scheduleHeroAutoRotateResume(layout.isTvProfile ? 12000 : 9000);
-    
+
     // Garantir que o Hero apareca inteiramente no topo ao ganhar foco
     if (layout.isTvProfile && scrollRef.current) {
       scrollRef.current.scrollTo({ top: 0, behavior: 'auto' });
@@ -858,7 +858,7 @@ const HomeScreen: React.FC<{ onLogout: () => void }> = ({ onLogout }) => {
     (event: any) => {
       const offsetY = Number(event?.nativeEvent?.contentOffset?.y ?? event?.currentTarget?.scrollTop ?? 0);
       // Lax visibility threshold for TV to prevent Hero unmounting
-      const shouldKeepHeroPlaying = isTvProfile ? (offsetY <= 500) : (offsetY <= 32); 
+      const shouldKeepHeroPlaying = isTvProfile ? (offsetY <= 500) : (offsetY <= 32);
       setIsHeroVisibleInList((prev) =>
         prev === shouldKeepHeroPlaying ? prev : shouldKeepHeroPlaying,
       );
@@ -1450,7 +1450,7 @@ const HomeScreen: React.FC<{ onLogout: () => void }> = ({ onLogout }) => {
     if (!playingMedia || playingMedia.type !== 'series' || !playingMedia.currentEpisode) return null;
     const currentSeason = playingMedia.seasons?.find(s => s.seasonNumber === playingMedia.currentSeasonNumber);
     if (!currentSeason) return null;
-    
+
     const currentIndex = currentSeason.episodes.findIndex(e => e.id === playingMedia.currentEpisode?.id);
     if (currentIndex !== -1 && currentIndex < currentSeason.episodes.length - 1) {
       const nextEp = currentSeason.episodes[currentIndex + 1];
@@ -1663,9 +1663,9 @@ const HomeScreen: React.FC<{ onLogout: () => void }> = ({ onLogout }) => {
           aria-hidden={shouldDisableSideMenu}
           style={{ pointerEvents: shouldDisableSideMenu ? 'none' : 'auto' }}
         >
-          <SideMenu 
-            onSelect={handleCategorySelect} 
-            activeId={activeFilter} 
+          <SideMenu
+            onSelect={handleCategorySelect}
+            activeId={activeFilter}
             onLogout={onLogout}
             onExpandedChange={handleSideMenuExpandedChange}
           />
@@ -1673,7 +1673,7 @@ const HomeScreen: React.FC<{ onLogout: () => void }> = ({ onLogout }) => {
       )}
 
       {!hasBlockingPlaylistError && !isDetailsPageMode && (
-      <View 
+      <View
         style={{ flex: 1, flexDirection: 'row', width: '100%', height: '100%' }}
       >
         {/* Sidebar Navigation - Fixed Rail */}
@@ -1682,9 +1682,9 @@ const HomeScreen: React.FC<{ onLogout: () => void }> = ({ onLogout }) => {
             aria-hidden={shouldDisableSideMenu}
             style={{ pointerEvents: shouldDisableSideMenu ? 'none' : 'auto' }}
           >
-            <SideMenu 
-              onSelect={handleCategorySelect} 
-              activeId={activeFilter} 
+            <SideMenu
+              onSelect={handleCategorySelect}
+              activeId={activeFilter}
               onLogout={onLogout}
               onExpandedChange={handleSideMenuExpandedChange}
             />
@@ -1694,10 +1694,10 @@ const HomeScreen: React.FC<{ onLogout: () => void }> = ({ onLogout }) => {
         {/* Main Content Area */}
         <div
           aria-hidden={shouldBlockBaseInteractions}
-          style={{ 
-            flex: 1, 
-            minWidth: 0, 
-            display: 'flex', 
+          style={{
+            flex: 1,
+            minWidth: 0,
+            display: 'flex',
             flexDirection: 'column',
             width: '100%',
             height: '100%',
@@ -1708,9 +1708,9 @@ const HomeScreen: React.FC<{ onLogout: () => void }> = ({ onLogout }) => {
         <View style={{ flex: 1 }}>
           {activeFilter === 'live' || activeFilter === 'sports' ? (
             <Suspense fallback={<LoadingScreen />}>
-              <LiveTVGrid 
+              <LiveTVGrid
                 categories={filteredCategories}
-                onPlayFull={handlePlay} 
+                onPlayFull={handlePlay}
                 layout={layout}
                 externalMedia={playingMedia?.type === 'live' ? playingMedia : lastClosedLiveMedia}
                 isGlobalPlayerActive={!!activeVideoUrl}
@@ -1968,13 +1968,13 @@ const HomeScreen: React.FC<{ onLogout: () => void }> = ({ onLogout }) => {
                   paddingTop: 0,
                   }}
                 >
-                {/* 
-                  Otimização de Performance: 
-                  Utilizamos o useVirtualizer para a lista de linhas de categorias. 
-                  Isso evita que o navegador tente gerenciar milhares de nós de DOM (capas) 
+                {/*
+                  Otimização de Performance:
+                  Utilizamos o useVirtualizer para a lista de linhas de categorias.
+                  Isso evita que o navegador tente gerenciar milhares de nós de DOM (capas)
                   simultaneamente, focando apenas no que está na tela.
                 */}
-                <RowsVirtualList 
+                <RowsVirtualList
                   categories={categoriesForRows}
                   cardPreloadedTMDB={cardPreloadedTMDB}
                   cardTMDBMissedByKey={cardTMDBMissedByKey}
@@ -2005,7 +2005,7 @@ const HomeScreen: React.FC<{ onLogout: () => void }> = ({ onLogout }) => {
 
           {/* Header Overlay Branding */}
           {!activeVideoUrl && (
-            <View style={[styles.header, { 
+            <View style={[styles.header, {
               top: layout.isTvProfile ? 24 : 16,
               right: layout.isTvProfile ? 40 : 24,
               left: 'auto',
@@ -2013,18 +2013,18 @@ const HomeScreen: React.FC<{ onLogout: () => void }> = ({ onLogout }) => {
               zIndex: 50,
             }]}>
               {isBackgroundSyncing && (
-                <View 
-                  style={{ 
-                    marginRight: 16, 
-                    flexDirection: 'row', 
-                    alignItems: 'center', 
-                    gap: 8, 
-                    backgroundColor: 'rgba(0,0,0,0.6)', 
+                <View
+                  style={{
+                    marginRight: 16,
+                    flexDirection: 'row',
+                    alignItems: 'center',
+                    gap: 8,
+                    backgroundColor: 'rgba(0,0,0,0.6)',
                     paddingVertical: 6,
-                    paddingHorizontal: 14, 
-                    borderRadius: 24, 
+                    paddingHorizontal: 14,
+                    borderRadius: 24,
                     borderWidth: 1,
-                    borderColor: 'rgba(255,255,255,0.08)' 
+                    borderColor: 'rgba(255,255,255,0.08)'
                   }}
                 >
                   <View style={{ width: 8, height: 8, borderRadius: 4, backgroundColor: '#E50914' }} />
@@ -2042,7 +2042,7 @@ const HomeScreen: React.FC<{ onLogout: () => void }> = ({ onLogout }) => {
      )}
 
       <AnimatePresence>
-        {isDetailsPageMode && (
+        {isDetailsPageMode && detailsMedia && (
           <Suspense fallback={null}>
             <MediaDetailsPage
               key={detailsMedia.id}
@@ -2127,7 +2127,7 @@ const HomeScreen: React.FC<{ onLogout: () => void }> = ({ onLogout }) => {
 
       <Suspense fallback={null}>
         {gridCategory && (
-          <CategoryGridView 
+          <CategoryGridView
             category={gridCategory}
             onClose={() => setGridCategory(null)}
             onSelectMedia={(media) => {
@@ -2174,7 +2174,7 @@ const styles = StyleSheet.create({
     paddingLeft: 0,
     paddingRight: 0,
     paddingBottom: 100,
-    paddingTop: 0, 
+    paddingTop: 0,
     width: '100%',
   },
   header: {
@@ -2198,12 +2198,12 @@ const styles = StyleSheet.create({
     fontFamily: 'Outfit',
   },
   emptyContainer: {
-    padding: 100, 
+    padding: 100,
     alignItems: 'center',
   },
   emptyText: {
-    color: 'rgba(255,255,255,0.4)', 
-    fontSize: 24, 
+    color: 'rgba(255,255,255,0.4)',
+    fontSize: 24,
     fontWeight: 'bold',
     fontFamily: 'Outfit',
   },

@@ -2,7 +2,7 @@ import { create } from 'zustand';
 import { persist, createJSONStorage, type StateStorage } from 'zustand/middleware';
 import { detectTvEnvironment } from '../lib/deviceProfile';
 import type { ManagedUser } from '../lib/adminSupabase';
-import { EPGProgram, Media, PlaylistItem } from '../types';
+import { EPGProgram, Media, MediaType, PlaylistItem } from '../types';
 import { fetchRemoteText } from '../lib/api';
 import { parseM3U } from '../lib/m3uParser';
 import { parseXMLTV } from '../lib/epgParser';
@@ -97,10 +97,10 @@ interface XandeflixState {
   // New persistent states
   favorites: string[];
   toggleFavorite: (key: string) => void;
-  
+
   lastPlaylistUrl: string | null;
   lastEpgUrl: string | null;
-  
+
   watchHistory: Record<string, number>; // url -> timeInSeconds
   updateWatchHistory: (url: string, timeInSeconds: number, duration?: number) => void;
   savePlaybackProgress: (input: SavePlaybackProgressInput) => void;
@@ -242,7 +242,7 @@ export const useStore = create<XandeflixState>()(
       setVideoType: (type) => set({ videoType: type }),
       isChannelBrowserOpen: false,
       setIsChannelBrowserOpen: (open) => set({ isChannelBrowserOpen: open }),
-      
+
       setHiddenCategoryIds: (ids) => set({ hiddenCategoryIds: ids }),
 
       toggleFavorite: (key) =>
@@ -298,11 +298,11 @@ export const useStore = create<XandeflixState>()(
         }),
 
       setEpgData: (epgData) => set({ epgData }),
-      appendEpgData: (newData) => 
+      appendEpgData: (newData) =>
         set((state) => {
           const updated = { ...(state.epgData || {}) };
           const MAX_PROGRAMS_PER_CHANNEL = 8; // Limite drastico para evitar OOM em listas de 60k+
-          
+
           Object.entries(newData).forEach(([channelId, programs]) => {
             if (updated[channelId]) {
               const seenIds = new Set(updated[channelId].map(p => p.id));
@@ -389,7 +389,7 @@ export const useStore = create<XandeflixState>()(
           // Agrupamento por categorias (Record de nomes para counts)
           const groupedCount: Record<string, number> = {};
           const CHUNK_SIZE = 2500;
-          
+
           console.log(`[Store] Iniciando processamento de ${flatItems.length} canais em chunks de ${CHUNK_SIZE}...`);
 
           for (let i = 0; i < flatItems.length; i += CHUNK_SIZE) {
@@ -397,27 +397,31 @@ export const useStore = create<XandeflixState>()(
             const mediaItems = chunk.map(item => {
               const category = item.group || 'OUTROS';
               groupedCount[category] = (groupedCount[category] || 0) + 1;
-              
-              const isLive = category.toLowerCase().includes('canais') || 
-                             category.toLowerCase().includes('live') || 
+
+              const isLive = category.toLowerCase().includes('canais') ||
+                             category.toLowerCase().includes('live') ||
                              category.toLowerCase().includes('radio');
 
               return {
                 id: item.id,
                 title: item.title,
+                description: '',
                 category: category,
                 groupTitle: category,
                 thumbnail: item.logo,
+                backdrop: item.logo,
                 videoUrl: item.url,
-                type: isLive ? 'live' : 'movie' as any,
+                type: isLive ? MediaType.LIVE : MediaType.MOVIE,
+                year: new Date().getFullYear(),
+                rating: 'N/A',
               };
             });
 
             await insertChannels(mediaItems);
-            
+
             // Ceder tempo para a UI não travar
             await new Promise(r => setTimeout(r, 0));
-            
+
             if (i % 10000 === 0) {
               console.log(`[Store] [Fatiador] ${i} canais processados...`);
             }
@@ -432,7 +436,7 @@ export const useStore = create<XandeflixState>()(
             selectedCategoryName: finalCategories[0] || null,
             playlistError: null
           });
-          
+
           console.log(`[Store] Processamento concluído. ${finalCategories.length} grupos mapeados.`);
         } catch (error: any) {
           const isCorsError = error.message?.toLowerCase().includes('fetch') || error.name === 'AbortError';
@@ -457,7 +461,7 @@ export const useStore = create<XandeflixState>()(
         try {
           const isNative = detectTvEnvironment() || (typeof window !== 'undefined' && (window as any).Capacitor);
           const finalUrl = isNative ? url : `/api/proxy?url=${encodeURIComponent(url)}`;
-          
+
           const xmlContent = await fetchRemoteText(finalUrl, { timeoutMs: 15000 });
           const groupedData = parseXMLTV(xmlContent);
           set({ epgData: groupedData, isLoadingEPG: false });
