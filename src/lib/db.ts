@@ -19,6 +19,14 @@ const MEDIA_TO_TYPE_FLAG: Record<string, number> = {
   episode: TYPE_FLAG_SERIES,
 };
 
+const SEARCH_DIACRITICS_REGEX = /[\u0300-\u036f]/g;
+
+const normalizeSearchValue = (value: string | null | undefined): string =>
+  String(value || '')
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(SEARCH_DIACRITICS_REGEX, '');
+
 export type MediaItem = Media & {
   groupTitle?: string;
 };
@@ -35,6 +43,14 @@ export interface CompressedCatalogChunk {
   tupleWidth?: number;
   dictionaries?: CompressedDictionariesDelta;
   reset?: boolean;
+}
+
+export interface CatalogSearchOptions {
+  limit?: number;
+  offset?: number;
+  types?: Array<MediaType | 'live' | 'movie' | 'series' | 'episode'>;
+  yieldEveryRows?: number;
+  shouldAbort?: () => boolean;
 }
 
 type GroupScanCursor = {
@@ -80,6 +96,8 @@ function createEmptyState(): CatalogState {
 
 let catalog = createEmptyState();
 let legacyQuotaCleanupAttempted = false;
+const normalizedTitleSearchCache = new Map<number, string>();
+const normalizedGroupSearchCache = new Map<number, string>();
 
 async function cleanupLegacyIndexedDb(): Promise<void> {
   if (legacyQuotaCleanupAttempted) return;
@@ -107,6 +125,27 @@ function normalizeGroupTitle(rawValue: string | null | undefined): string {
 function normalizeTypeFlag(rawType: string | MediaType | null | undefined): number {
   const key = String(rawType || '').toLowerCase();
   return MEDIA_TO_TYPE_FLAG[key] ?? TYPE_FLAG_LIVE;
+}
+
+function resolveAllowedTypeFlags(
+  requestedTypes?: Array<MediaType | 'live' | 'movie' | 'series' | 'episode'>,
+): Set<number> {
+  if (!requestedTypes || requestedTypes.length === 0) {
+    return new Set([TYPE_FLAG_LIVE, TYPE_FLAG_MOVIE, TYPE_FLAG_SERIES]);
+  }
+
+  const flags = new Set<number>();
+  for (const rawType of requestedTypes) {
+    flags.add(normalizeTypeFlag(rawType));
+  }
+
+  if (flags.size === 0) {
+    flags.add(TYPE_FLAG_LIVE);
+    flags.add(TYPE_FLAG_MOVIE);
+    flags.add(TYPE_FLAG_SERIES);
+  }
+
+  return flags;
 }
 
 function decodeTypeFlag(flag: number): MediaType {
@@ -319,6 +358,8 @@ function getCursorStart(
 export async function clearAllChannels(): Promise<void> {
   await cleanupLegacyIndexedDb();
   catalog = createEmptyState();
+  normalizedTitleSearchCache.clear();
+  normalizedGroupSearchCache.clear();
 }
 
 export async function appendCompressedChannelsChunk(chunk: CompressedCatalogChunk): Promise<void> {
@@ -423,6 +464,100 @@ export async function getCategories(): Promise<string[]> {
     categories.push(normalizeGroupTitle(catalog.groups[groupIndex]));
   }
   return categories;
+}
+
+function getCachedNormalizedSearchValue(
+  dictionaryIndex: number,
+  dictionary: string[],
+  cache: Map<number, string>,
+): string {
+  const cached = cache.get(dictionaryIndex);
+  if (typeof cached === 'string') return cached;
+
+  const normalized = normalizeSearchValue(dictionary[dictionaryIndex] || '');
+  cache.set(dictionaryIndex, normalized);
+  return normalized;
+}
+
+export async function searchChannelsByQuery(
+  query: string,
+  options: CatalogSearchOptions = {},
+): Promise<MediaItem[]> {
+  const normalizedQuery = normalizeSearchValue(query).trim();
+  if (!normalizedQuery) return [];
+
+  const safeLimit = Number.isFinite(options.limit) ? Math.max(1, Math.floor(options.limit as number)) : 400;
+  const safeOffset = Number.isFinite(options.offset) ? Math.max(0, Math.floor(options.offset as number)) : 0;
+  const safeYieldEveryRows = Number.isFinite(options.yieldEveryRows)
+    ? Math.max(300, Math.floor(options.yieldEveryRows as number))
+    : 0;
+  const shouldAbort = typeof options.shouldAbort === 'function'
+    ? options.shouldAbort
+    : null;
+  const allowedTypeFlags = resolveAllowedTypeFlags(options.types);
+
+  const results: MediaItem[] = [];
+  let matchedCount = 0;
+  let globalRow = 0;
+  let scannedRows = 0;
+
+  for (let chunkIndex = 0; chunkIndex < catalog.tupleChunks.length; chunkIndex += 1) {
+    if (shouldAbort?.()) return results;
+    const chunk = catalog.tupleChunks[chunkIndex];
+    const rowCount = Math.floor(chunk.length / TUPLE_WIDTH);
+
+    for (let row = 0; row < rowCount; row += 1) {
+      if (shouldAbort?.()) return results;
+      const base = row * TUPLE_WIDTH;
+      const titleIdx = chunk[base] ?? 0;
+      const groupIdx = chunk[base + 1] ?? 0;
+      const urlIdx = chunk[base + 2] ?? 0;
+      const logoIdx = chunk[base + 3] ?? 0;
+      const typeFlag = chunk[base + 4] ?? TYPE_FLAG_LIVE;
+
+      if (!allowedTypeFlags.has(typeFlag)) {
+        globalRow += 1;
+        continue;
+      }
+
+      const normalizedTitle = getCachedNormalizedSearchValue(
+        titleIdx,
+        catalog.titles,
+        normalizedTitleSearchCache,
+      );
+      const normalizedGroup = getCachedNormalizedSearchValue(
+        groupIdx,
+        catalog.groups,
+        normalizedGroupSearchCache,
+      );
+      const searchableContent = `${normalizedTitle} ${normalizedGroup}`;
+      if (!searchableContent.includes(normalizedQuery)) {
+        globalRow += 1;
+        scannedRows += 1;
+        if (safeYieldEveryRows > 0 && scannedRows % safeYieldEveryRows === 0) {
+          await new Promise<void>((resolve) => setTimeout(resolve, 0));
+        }
+        continue;
+      }
+
+      if (matchedCount >= safeOffset) {
+        results.push(buildMediaFromTuple(globalRow, titleIdx, groupIdx, urlIdx, logoIdx, typeFlag));
+        if (results.length >= safeLimit) {
+          return results;
+        }
+      }
+
+      matchedCount += 1;
+      globalRow += 1;
+      scannedRows += 1;
+
+      if (safeYieldEveryRows > 0 && scannedRows % safeYieldEveryRows === 0) {
+        await new Promise<void>((resolve) => setTimeout(resolve, 0));
+      }
+    }
+  }
+
+  return results;
 }
 
 export function getChannelsCatalogStats(): { totalChannels: number; totalCategories: number } {

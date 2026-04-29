@@ -17,6 +17,12 @@ const KIDS_KEYWORDS = [
   'mundial kids', 'family', 'família'
 ];
 
+const normalizeSearchText = (value: string | null | undefined): string =>
+  String(value || '')
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '');
+
 const isSportsItem = (item: Media, categoryTitle: string = ''): boolean => {
   if (item.type !== 'live') return false;
   const searchContent = `${item.title} ${categoryTitle} ${item.category || ''}`.toLowerCase()
@@ -153,16 +159,32 @@ export const useMediaFilter = (allCategories: Category[]) => {
 
     // 3. Search Mode
     if (activeFilter === 'search') {
-      const query = searchQuery.trim().toLowerCase();
+      const query = normalizeSearchText(searchQuery.trim());
       if (!query) return [];
+      const allowedSearchTypes = new Set(['movie', 'series']);
       return baseCategories
-        .map((cat) => ({
-          ...cat,
-          items: consolidateItems(cat.items.filter((item) =>
-            item.title.toLowerCase().includes(query) ||
-            cat.title.toLowerCase().includes(query)
-          ), cat.title)
-        }))
+        .map((cat) => {
+          const normalizedCategory = normalizeSearchText(cat.title);
+          const matchingItems = cat.items.filter((item) => {
+            const itemType = String(item.type || '').toLowerCase();
+            if (!allowedSearchTypes.has(itemType)) return false;
+
+            const searchableContent = normalizeSearchText([
+              item.title,
+              item.description,
+              item.category,
+              item.tvgName || '',
+              item.tvgId || '',
+            ].join(' '));
+
+            return searchableContent.includes(query) || normalizedCategory.includes(query);
+          });
+
+          return {
+            ...cat,
+            items: consolidateItems(matchingItems, cat.title),
+          };
+        })
         .filter((cat) => cat.items.length > 0);
     }
 

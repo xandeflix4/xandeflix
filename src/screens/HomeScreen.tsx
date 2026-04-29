@@ -21,6 +21,7 @@ import { useResponsiveLayout } from '../hooks/useResponsiveLayout';
 import { useTvNavigation } from '../hooks/useTvNavigation';
 import { fetchTMDBMetadata, isTMDBConfigured, type TMDBData } from '../lib/tmdb';
 import { detectTvEnvironment } from '../lib/deviceProfile';
+import { searchChannelsByQuery } from '../lib/db';
 
 // Components
 import { SideMenu } from '../components/SideMenu';
@@ -95,6 +96,13 @@ const normalizeCategoryLabel = (value: string | undefined): string =>
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, ' ')
     .trim();
+
+const normalizeSearchCacheKey = (value: string): string =>
+  String(value || '')
+    .trim()
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '');
 
 const isHeroFeaturedCategory = (categoryTitle: string | undefined): boolean => {
   const normalized = normalizeCategoryLabel(categoryTitle);
@@ -421,8 +429,14 @@ const HomeScreen: React.FC<{ onLogout: () => void }> = ({ onLogout }) => {
   const [cardTMDBMissedByKey, setCardTMDBMissedByKey] = useState<Record<string, true>>({});
   const [isPreparingInitialArtwork, setIsPreparingInitialArtwork] = useState(true);
   const [failedTrailerIds, setFailedTrailerIds] = useState<Record<string, true>>({});
+  const [searchKeyboardMode, setSearchKeyboardMode] = useState<'abnt2' | 'special'>('abnt2');
+  const [searchKeyboardShift, setSearchKeyboardShift] = useState(true);
+  const [searchCatalogItems, setSearchCatalogItems] = useState<Media[]>([]);
+  const [isSearchCatalogLoading, setIsSearchCatalogLoading] = useState(false);
   const heroPreloadedTMDBRef = useRef<Record<string, TMDBData>>({});
   const cardPreloadScopeRef = useRef<string>('');
+  const searchCatalogRequestRef = useRef(0);
+  const searchResultsCacheRef = useRef<Map<string, Media[]>>(new Map());
 
   const handleTrailerError = useCallback((media: Media) => {
     console.warn(`[Trailer] Video indisponivel para ${media.title}. Removendo do Hero.`);
@@ -638,6 +652,10 @@ const HomeScreen: React.FC<{ onLogout: () => void }> = ({ onLogout }) => {
     () => catalogPreviewCategories.reduce((sum, category) => sum + category.items.length, 0),
     [catalogPreviewCategories],
   );
+
+  useEffect(() => {
+    searchResultsCacheRef.current.clear();
+  }, [catalogPreviewCategories.length]);
 
   const heroCandidates = useMemo(() => {
     if (!isHeroRandomFilter) return [];
@@ -1279,7 +1297,7 @@ const HomeScreen: React.FC<{ onLogout: () => void }> = ({ onLogout }) => {
   );
 
   const categoriesWithCoverCards = useMemo(() => {
-    if (activeFilter === 'live') {
+    if (activeFilter === 'live' || activeFilter === 'search') {
       return filteredCategories;
     }
 
@@ -1410,13 +1428,31 @@ const HomeScreen: React.FC<{ onLogout: () => void }> = ({ onLogout }) => {
   const searchInsetLeft = (shouldRenderSideMenu ? sideMenuCollapsedWidth : 0) + (layout.isTvProfile ? 24 : 20);
   const searchInsetRight = layout.isTvProfile ? 28 : 20;
   const virtualKeyboardRows = useMemo(
-    () => [
-      ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J'],
-      ['K', 'L', 'M', 'N', 'O', 'P', 'Q', 'R', 'S', 'T'],
-      ['U', 'V', 'W', 'X', 'Y', 'Z', '0', '1', '2', '3'],
-      ['4', '5', '6', '7', '8', '9', ' ', '-', "'"],
-    ],
-    [],
+    () => {
+      const rows =
+        searchKeyboardMode === 'abnt2'
+          ? [
+              ['q', 'w', 'e', 'r', 't', 'y', 'u', 'i', 'o', 'p'],
+              ['a', 's', 'd', 'f', 'g', 'h', 'j', 'k', 'l', 'ç'],
+              ['z', 'x', 'c', 'v', 'b', 'n', 'm', ',', '.', '?'],
+              ['1', '2', '3', '4', '5', '6', '7', '8', '9', '0'],
+            ]
+          : [
+              ['á', 'à', 'â', 'ã', 'é', 'ê', 'í', 'ó', 'ô', 'õ'],
+              ['ú', 'ü', 'ç', '!', '?', '@', '#', '$', '%', '&'],
+              ['(', ')', '[', ']', '{', '}', '/', '\\', '+', '='],
+              ['-', '_', '"', '\'', ';', ':', ',', '.', '~', '`'],
+            ];
+
+      if (searchKeyboardMode !== 'abnt2' || !searchKeyboardShift) {
+        return rows;
+      }
+
+      return rows.map((row) =>
+        row.map((keyLabel) => (/^[a-zç]$/.test(keyLabel) ? keyLabel.toLocaleUpperCase('pt-BR') : keyLabel)),
+      );
+    },
+    [searchKeyboardMode, searchKeyboardShift],
   );
 
   const appendSearchCharacter = useCallback((character: string) => {
@@ -1426,17 +1462,88 @@ const HomeScreen: React.FC<{ onLogout: () => void }> = ({ onLogout }) => {
   const removeLastSearchCharacter = useCallback(() => {
     setSearchQuery(searchQuery.slice(0, -1));
   }, [searchQuery, setSearchQuery]);
+  const toggleSearchKeyboardMode = useCallback(() => {
+    setSearchKeyboardMode((previousMode) => (previousMode === 'abnt2' ? 'special' : 'abnt2'));
+  }, []);
+  const toggleSearchKeyboardShift = useCallback(() => {
+    if (searchKeyboardMode !== 'abnt2') return;
+    setSearchKeyboardShift((previousShift) => !previousShift);
+  }, [searchKeyboardMode]);
   const searchQueryNormalized = searchQuery.trim();
+  const searchCacheKey = useMemo(
+    () => normalizeSearchCacheKey(searchQueryNormalized),
+    [searchQueryNormalized],
+  );
+
+  useEffect(() => {
+    if (activeFilter !== 'search') {
+      setSearchCatalogItems([]);
+      setIsSearchCatalogLoading(false);
+      return;
+    }
+
+    if (!searchCacheKey) {
+      setSearchCatalogItems([]);
+      setIsSearchCatalogLoading(false);
+      return;
+    }
+
+    const cached = searchResultsCacheRef.current.get(searchCacheKey);
+    if (cached) {
+      setSearchCatalogItems(cached);
+      setIsSearchCatalogLoading(false);
+      return;
+    }
+
+    const requestId = searchCatalogRequestRef.current + 1;
+    searchCatalogRequestRef.current = requestId;
+    setIsSearchCatalogLoading(true);
+
+    const timeoutId = window.setTimeout(() => {
+      void (async () => {
+        try {
+          const isTvProfile = layout.isTvProfile;
+          const results = await searchChannelsByQuery(searchQueryNormalized, {
+            limit: isTvProfile ? 1200 : 4000,
+            types: ['movie', 'series'],
+            yieldEveryRows: isTvProfile ? 700 : 2600,
+            shouldAbort: () => searchCatalogRequestRef.current !== requestId,
+          });
+          if (searchCatalogRequestRef.current !== requestId) return;
+
+          const nextCache = searchResultsCacheRef.current;
+          nextCache.set(searchCacheKey, results);
+          if (nextCache.size > 24) {
+            const oldestKey = nextCache.keys().next().value;
+            if (oldestKey) nextCache.delete(oldestKey);
+          }
+          setSearchCatalogItems(results);
+        } catch (error) {
+          if (searchCatalogRequestRef.current !== requestId) return;
+          console.warn('[Search] Falha ao consultar catalogo completo:', error);
+          setSearchCatalogItems([]);
+        } finally {
+          if (searchCatalogRequestRef.current === requestId) {
+            setIsSearchCatalogLoading(false);
+          }
+        }
+      })();
+    }, layout.isTvProfile ? 210 : 130);
+
+    return () => window.clearTimeout(timeoutId);
+  }, [
+    activeFilter,
+    isBackgroundSyncing,
+    isWritingDatabase,
+    layout.isTvProfile,
+    searchCacheKey,
+    searchQueryNormalized,
+  ]);
+
   const searchFilteredItems = useMemo(() => {
-    const seen = new Set<string>();
-    const flat = categoriesForRows.flatMap((category) => category.items);
-    return flat.filter((item) => {
-      const key = item.id || item.videoUrl;
-      if (!key || seen.has(key)) return false;
-      seen.add(key);
-      return true;
-    });
-  }, [categoriesForRows]);
+    if (!searchQueryNormalized) return [];
+    return searchCatalogItems;
+  }, [searchCatalogItems, searchQueryNormalized]);
   const searchPreviewItems = useMemo(() => {
     const seen = new Set<string>();
     return catalogPreviewCategories
@@ -1450,8 +1557,14 @@ const HomeScreen: React.FC<{ onLogout: () => void }> = ({ onLogout }) => {
       })
       .slice(0, 60);
   }, [catalogPreviewCategories]);
-  const searchDisplayItems = searchQueryNormalized.length > 0 ? searchFilteredItems : searchPreviewItems;
-  const searchDisplayCount = searchDisplayItems.length;
+  const searchRawItems = searchQueryNormalized.length > 0 ? searchFilteredItems : searchPreviewItems;
+  const searchRenderLimit = layout.isTvProfile ? 220 : 520;
+  const searchDisplayItems = useMemo(
+    () => searchRawItems.slice(0, searchRenderLimit),
+    [searchRawItems, searchRenderLimit],
+  );
+  const searchDisplayCount = searchRawItems.length;
+  const isSearchDisplayTruncated = searchDisplayItems.length < searchDisplayCount;
 
   const nextEpisode = useMemo(() => {
     if (!playingMedia || playingMedia.type !== 'series' || !playingMedia.currentEpisode) return null;
@@ -1806,13 +1919,13 @@ const HomeScreen: React.FC<{ onLogout: () => void }> = ({ onLogout }) => {
                     <div style={{ marginTop: 10, display: 'flex', flexDirection: 'column', gap: 7 }}>
                       {virtualKeyboardRows.map((row, rowIndex) => (
                         <div key={`vk-row-${rowIndex}`} style={{ display: 'grid', gridTemplateColumns: 'repeat(10, minmax(0, 1fr))', gap: 6 }}>
-                          {row.map((keyLabel) => (
+                          {row.map((keyLabel, keyIndex) => (
                             <button
-                              key={`vk-key-${rowIndex}-${keyLabel}`}
-                              ref={(el) => registerNode(`search-key-${keyLabel}`, el, 'body', {
+                              key={`vk-key-${rowIndex}-${keyIndex}-${keyLabel}`}
+                              ref={(el) => registerNode(`search-key-${rowIndex}-${keyIndex}`, el, 'body', {
                                 onEnter: () => appendSearchCharacter(keyLabel)
                               })}
-                              data-nav-id={`search-key-${keyLabel}`}
+                              data-nav-id={`search-key-${rowIndex}-${keyIndex}`}
                               onClick={() => appendSearchCharacter(keyLabel)}
                               style={{
                                 height: 34,
@@ -1825,14 +1938,49 @@ const HomeScreen: React.FC<{ onLogout: () => void }> = ({ onLogout }) => {
                                 cursor: 'pointer',
                               }}
                             >
-                              {keyLabel === ' ' ? '_' : keyLabel}
+                              {keyLabel}
                             </button>
                           ))}
                         </div>
                       ))}
                     </div>
 
-                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, marginTop: 10 }}>
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 8, marginTop: 10 }}>
+                      <button
+                        ref={(el) => registerNode(`search-key-mode`, el, 'body', { onEnter: toggleSearchKeyboardMode })}
+                        data-nav-id="search-key-mode"
+                        onClick={toggleSearchKeyboardMode}
+                        style={{
+                          height: 36,
+                          borderRadius: 8,
+                          border: '1px solid rgba(255,255,255,0.15)',
+                          background: 'rgba(255,255,255,0.1)',
+                          color: 'white',
+                          fontWeight: 800,
+                          cursor: 'pointer',
+                        }}
+                      >
+                        {searchKeyboardMode === 'abnt2' ? '#+=' : 'ABC'}
+                      </button>
+                      <button
+                        ref={(el) => registerNode(`search-key-shift`, el, 'body', { onEnter: toggleSearchKeyboardShift })}
+                        data-nav-id="search-key-shift"
+                        onClick={toggleSearchKeyboardShift}
+                        style={{
+                          height: 36,
+                          borderRadius: 8,
+                          border: '1px solid rgba(255,255,255,0.15)',
+                          background: searchKeyboardMode === 'abnt2' && searchKeyboardShift
+                            ? 'rgba(229,9,20,0.22)'
+                            : 'rgba(255,255,255,0.1)',
+                          color: 'white',
+                          fontWeight: 800,
+                          cursor: searchKeyboardMode === 'abnt2' ? 'pointer' : 'not-allowed',
+                          opacity: searchKeyboardMode === 'abnt2' ? 1 : 0.55,
+                        }}
+                      >
+                        Shift
+                      </button>
                       <button
                         ref={(el) => registerNode(`search-key-backspace`, el, 'body', { onEnter: removeLastSearchCharacter })}
                         data-nav-id="search-key-backspace"
@@ -1848,6 +1996,25 @@ const HomeScreen: React.FC<{ onLogout: () => void }> = ({ onLogout }) => {
                         }}
                       >
                         Apagar
+                      </button>
+                    </div>
+
+                    <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr', gap: 8, marginTop: 8 }}>
+                      <button
+                        ref={(el) => registerNode(`search-key-space`, el, 'body', { onEnter: () => appendSearchCharacter(' ') })}
+                        data-nav-id="search-key-space"
+                        onClick={() => appendSearchCharacter(' ')}
+                        style={{
+                          height: 36,
+                          borderRadius: 8,
+                          border: '1px solid rgba(255,255,255,0.15)',
+                          background: 'rgba(255,255,255,0.1)',
+                          color: 'white',
+                          fontWeight: 800,
+                          cursor: 'pointer',
+                        }}
+                      >
+                        Espaço
                       </button>
                       <button
                         ref={(el) => registerNode(`search-key-clear`, el, 'body', { onEnter: () => setSearchQuery('') })}
@@ -1874,77 +2041,88 @@ const HomeScreen: React.FC<{ onLogout: () => void }> = ({ onLogout }) => {
                         {searchQueryNormalized.length > 0 ? `"${searchQueryNormalized}"` : 'Sugestões para você'}
                       </h1>
                       <span style={{ color: 'rgba(255,255,255,0.7)', fontSize: 12, fontWeight: 800, letterSpacing: 1, textTransform: 'uppercase' }}>
-                        {searchDisplayCount} itens
+                        {isSearchDisplayTruncated
+                          ? `${searchDisplayItems.length} de ${searchDisplayCount} itens`
+                          : `${searchDisplayCount} itens`}
                       </span>
                     </div>
 
                     {searchDisplayCount === 0 ? (
                       <div style={{ color: 'rgba(255,255,255,0.6)', fontSize: 15 }}>
-                        Nenhum conteúdo encontrado.
+                        {searchQueryNormalized.length > 0 && isSearchCatalogLoading
+                          ? 'Buscando em todo o acervo de filmes e séries...'
+                          : 'Nenhum conteúdo encontrado.'}
                       </div>
                     ) : (
-                      <div
-                        style={{
-                          display: 'grid',
-                          gridTemplateColumns: 'repeat(auto-fill, minmax(190px, 1fr))',
-                          gap: 12,
-                        }}
-                      >
-                        {searchDisplayItems.map((item, index) => (
-                          <div
-                            key={`search-grid-${item.id}-${index}`}
-                            ref={(el) => registerNode(`search-grid-${item.id}-${index}`, el, 'body', {
-                              onEnter: () => handleMediaPress(item)
-                            })}
-                            data-nav-id={`search-grid-${item.id}-${index}`}
-                            role="button"
-                            tabIndex={0}
-                            onClick={() => handleMediaPress(item)}
-                            onKeyDown={(event) => {
-                              if (event.key === 'Enter') handleMediaPress(item);
-                            }}
-                            style={{
-                              cursor: 'pointer',
-                              borderRadius: 12,
-                              overflow: 'hidden',
-                              background: '#101827',
-                              border: '1px solid rgba(255,255,255,0.1)',
-                              position: 'relative',
-                              minHeight: 280,
-                            }}
-                          >
-                            <img
-                              src={item.thumbnail || item.backdrop || ''}
-                              alt={item.title}
-                              style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }}
-                            />
+                      <>
+                        <div
+                          style={{
+                            display: 'grid',
+                            gridTemplateColumns: 'repeat(auto-fill, minmax(190px, 1fr))',
+                            gap: 12,
+                          }}
+                        >
+                          {searchDisplayItems.map((item, index) => (
                             <div
+                              key={`search-grid-${item.id}-${index}`}
+                              ref={(el) => registerNode(`search-grid-${item.id}-${index}`, el, 'body', {
+                                onEnter: () => handleMediaPress(item)
+                              })}
+                              data-nav-id={`search-grid-${item.id}-${index}`}
+                              role="button"
+                              tabIndex={0}
+                              onClick={() => handleMediaPress(item)}
+                              onKeyDown={(event) => {
+                                if (event.key === 'Enter') handleMediaPress(item);
+                              }}
                               style={{
-                                position: 'absolute',
-                                left: 0,
-                                right: 0,
-                                bottom: 0,
-                                padding: '12px 10px',
-                                background: 'linear-gradient(to top, rgba(0,0,0,0.95), rgba(0,0,0,0.05))',
+                                cursor: 'pointer',
+                                borderRadius: 12,
+                                overflow: 'hidden',
+                                background: '#101827',
+                                border: '1px solid rgba(255,255,255,0.1)',
+                                position: 'relative',
+                                minHeight: 280,
                               }}
                             >
+                              <img
+                                src={item.thumbnail || item.backdrop || ''}
+                                alt={item.title}
+                                style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }}
+                              />
                               <div
                                 style={{
-                                  color: '#fff',
-                                  fontSize: 14,
-                                  fontWeight: 800,
-                                  lineHeight: 1.2,
-                                  whiteSpace: 'nowrap',
-                                  overflow: 'hidden',
-                                  textOverflow: 'ellipsis',
+                                  position: 'absolute',
+                                  left: 0,
+                                  right: 0,
+                                  bottom: 0,
+                                  padding: '12px 10px',
+                                  background: 'linear-gradient(to top, rgba(0,0,0,0.95), rgba(0,0,0,0.05))',
                                 }}
                               >
-                                {item.title}
+                                <div
+                                  style={{
+                                    color: '#fff',
+                                    fontSize: 14,
+                                    fontWeight: 800,
+                                    lineHeight: 1.2,
+                                    whiteSpace: 'nowrap',
+                                    overflow: 'hidden',
+                                    textOverflow: 'ellipsis',
+                                  }}
+                                >
+                                  {item.title}
+                                </div>
                               </div>
                             </div>
+                          ))}
+                        </div>
+                        {isSearchDisplayTruncated && (
+                          <div style={{ color: 'rgba(255,255,255,0.52)', fontSize: 12, marginTop: 12 }}>
+                            Mostrando os primeiros resultados para manter a navegacao fluida neste dispositivo.
                           </div>
-                        ))}
-                      </div>
+                        )}
+                      </>
                     )}
                   </div>
                 </div>
