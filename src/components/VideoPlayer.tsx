@@ -2630,6 +2630,29 @@ export const VideoPlayer = React.memo(
           media?.title?.toLowerCase().includes('espn') ||
           media?.title?.toLowerCase().includes('combate')
         );
+        const liveBufferProfile = isLiveStream
+          ? (isSportsChannel
+            ? {
+                targetDelaySeconds: 30,
+                maxLatencySeconds: 45,
+                maxBufferLengthSeconds: 60,
+                maxMaxBufferLengthSeconds: 120,
+                maxBufferSizeBytes: 80 * 1024 * 1024,
+                mpegtsMinRemainSeconds: 12,
+                lazyLoadMaxDurationSeconds: 90,
+                lazyLoadRecoverDurationSeconds: 30,
+              }
+            : {
+                targetDelaySeconds: 10,
+                maxLatencySeconds: 20,
+                maxBufferLengthSeconds: 20,
+                maxMaxBufferLengthSeconds: 40,
+                maxBufferSizeBytes: 40 * 1024 * 1024,
+                mpegtsMinRemainSeconds: 4,
+                lazyLoadMaxDurationSeconds: 30,
+                lazyLoadRecoverDurationSeconds: 15,
+              })
+          : null;
 
         if (shouldUseHls && Hls.isSupported()) {
           const hls = new Hls({
@@ -2638,9 +2661,17 @@ export const VideoPlayer = React.memo(
             enableWorker: true,
             lowLatencyMode: false, // Desativado para priorizar estabilidade sobre latência
             backBufferLength: 30, // Manter 30s no buffer traseiro para replays rápidos
-            maxBufferLength: isSportsChannel ? 60 : (isLiveStream ? 20 : 40), 
-            maxMaxBufferLength: isSportsChannel ? 120 : (isLiveStream ? 40 : 120),
-            maxBufferSize: isSportsChannel ? 80 * 1024 * 1024 : (isLiveStream ? 30 * 1024 * 1024 : 60 * 1024 * 1024),
+            maxBufferLength: liveBufferProfile?.maxBufferLengthSeconds ?? 40,
+            maxMaxBufferLength: liveBufferProfile?.maxMaxBufferLengthSeconds ?? 120,
+            maxBufferSize: liveBufferProfile?.maxBufferSizeBytes ?? (60 * 1024 * 1024),
+            ...(liveBufferProfile
+              ? {
+                  // Mantem o player atrasado do live-edge para absorver oscilacoes de rede
+                  // sem interromper a reproducao.
+                  liveSyncDuration: liveBufferProfile.targetDelaySeconds,
+                  liveMaxLatencyDuration: liveBufferProfile.maxLatencySeconds,
+                }
+              : {}),
             manifestLoadingTimeOut: 30000,
             levelLoadingTimeOut: 30000,
             fragLoadingTimeOut: 30000,
@@ -2746,11 +2777,11 @@ export const VideoPlayer = React.memo(
             const player = mpegts.createPlayer(mediaDataSource as any, {
               enableWorker: true,
               liveBufferLatencyChasing: false, // Desativado: evita pulos (stuttering) para alcançar o "ao vivo"
-              liveBufferLatencyMaxLatency: isSportsChannel ? 15 : 10,
-              liveBufferLatencyMinRemain: 3.0,
+              liveBufferLatencyMaxLatency: liveBufferProfile?.targetDelaySeconds ?? 10,
+              liveBufferLatencyMinRemain: liveBufferProfile?.mpegtsMinRemainSeconds ?? 3,
               lazyLoad: false,
-              lazyLoadMaxDuration: isSportsChannel ? 60 : (isLiveStream ? 30 : 120),
-              lazyLoadRecoverDuration: isSportsChannel ? 30 : (isLiveStream ? 15 : 60),
+              lazyLoadMaxDuration: liveBufferProfile?.lazyLoadMaxDurationSeconds ?? 120,
+              lazyLoadRecoverDuration: liveBufferProfile?.lazyLoadRecoverDurationSeconds ?? 60,
             });
 
             mpegtsPlayerRef.current = player;
