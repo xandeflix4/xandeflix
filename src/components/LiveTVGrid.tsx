@@ -1389,7 +1389,7 @@ export const LiveTVGrid: React.FC<LiveTVGridProps> = ({
         </View>
         <div
           ref={channelsListRef as React.RefObject<HTMLDivElement>}
-          style={{ flex: 1, overflowY: 'auto', overflowX: 'visible', paddingBottom: 40, paddingInline: 6 }}
+          style={{ flex: 1, overflowY: 'auto', overflowX: 'visible', paddingTop: 8, paddingBottom: 40, paddingInline: 6 }}
           onScroll={(e) => {
             const node = e.currentTarget;
             if (node.scrollTop + node.clientHeight >= node.scrollHeight - 260) {
@@ -1454,42 +1454,53 @@ export const LiveTVGrid: React.FC<LiveTVGridProps> = ({
 
       {/* Preview Player Section */}
       <View style={styles.playerSection}>
-        {previewMedia && !isGlobalPlayerActive ? (
+        {!isGlobalPlayerActive ? (
           <div
             className="w-full h-full flex flex-col"
           >
             <View style={styles.previewContainer}>
-                <TouchableHighlight
-                  onPress={() => {
-                    openFullScreen(previewMedia);
-                  }}
-                  id="tv-preview-player"
-                  data-nav-id="tv-preview-player"
-                  style={[
-                    styles.playerWrapper,
-                    focusColumn === 'preview' && styles.playerWrapperFocused,
-                  ]}
-                >
-                    <VideoPlayer
-                      url={previewMedia.videoUrl}
-                      mediaType="live"
-                      media={previewMedia}
-                      onPreviewPlaybackFailed={handlePreviewPlaybackFailed}
-                      onClose={handlePreviewClose}
-                      onPreviewRequestFullscreen={handlePreviewFullscreen}
-                      suppressNativePreviewExitOnUnmount={false}
-                      isMinimized={false}
-                      isPreview={true}
-                    />
-                </TouchableHighlight>
+                {previewMedia ? (
+                  <TouchableHighlight
+                    onPress={() => {
+                      openFullScreen(previewMedia);
+                    }}
+                    id="tv-preview-player"
+                    data-nav-id="tv-preview-player"
+                    style={[
+                      styles.playerWrapper,
+                      focusColumn === 'preview' && styles.playerWrapperFocused,
+                    ]}
+                  >
+                      <VideoPlayer
+                        url={previewMedia.videoUrl}
+                        mediaType="live"
+                        media={previewMedia}
+                        onPreviewPlaybackFailed={handlePreviewPlaybackFailed}
+                        onClose={handlePreviewClose}
+                        onPreviewRequestFullscreen={handlePreviewFullscreen}
+                        suppressNativePreviewExitOnUnmount={false}
+                        isMinimized={false}
+                        isPreview={true}
+                      />
+                  </TouchableHighlight>
+                ) : (
+                  <View style={styles.playerWrapperPlaceholder}>
+                    <View style={styles.placeholderIconContainer}>
+                      <Radio size={44} color="rgba(255,255,255,0.08)" />
+                    </View>
+                    <Text style={styles.placeholderText}>Preview indisponível no momento</Text>
+                  </View>
+                )}
                 <View style={styles.previewInfoPanel}>
                    <View style={{ flex: 1 }}>
-                     <Text style={styles.previewTitleSmall}>{guideMedia?.title || previewMedia.title}</Text>
+                     <Text style={styles.previewTitleSmall}>{guideMedia?.title || 'Selecione um canal para ver detalhes'}</Text>
                    </View>
                 </View>
                 <View style={styles.previewEpgPanel}>
                   <Text style={styles.previewEpgTitle}>Guia de Programação</Text>
-                  {currentPreviewProgram ? (
+                  {!guideMedia ? (
+                    <Text style={styles.previewEpgEmptyText}>Selecione um canal para carregar o guia.</Text>
+                  ) : currentPreviewProgram ? (
                     <View style={styles.previewEpgCurrentCard}>
                       <Text style={styles.previewEpgCurrentLabel}>Agora</Text>
                       <Text style={styles.previewEpgCurrentName} numberOfLines={1}>
@@ -1822,6 +1833,17 @@ const styles = StyleSheet.create({
     shadowColor: '#E50914',
     shadowOpacity: 0.8,
     shadowRadius: 10,
+  },
+  playerWrapperPlaceholder: {
+    width: '100%',
+    aspectRatio: 16 / 9,
+    maxHeight: SCREEN_HEIGHT * 0.70,
+    backgroundColor: '#050505',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.08)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 12,
   },
   playerPlaceholder: {
     flex: 1,

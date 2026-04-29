@@ -3414,6 +3414,9 @@ export const VideoPlayer = React.memo(
                             onFocus: () => {
                               console.log('[Sidebar] Grupo focado:', category.title);
                             },
+                            onRight: () => {
+                              setFocusedId('tv-sidebar-search');
+                            },
                             onEnter: () => {
                                console.log('[Sidebar] Grupo selecionado via Enter:', category.title, category.id);
                                setChannelGroupId(category.id);
@@ -3450,6 +3453,17 @@ export const VideoPlayer = React.memo(
                              // Opcional: highlight visual
                           },
                           onEnter: () => el.focus(),
+                          onLeft: () => {
+                            const targetGroupId = activeBrowserCategory?.id || liveBrowserCategories[0]?.id;
+                            if (!targetGroupId) return;
+                            setFocusedId(`tv-sidebar-group-${targetGroupId}`);
+                          },
+                          onDown: () => {
+                            const firstChannelId = browserChannels[0]?.id;
+                            if (!firstChannelId) return;
+                            setFocusedId(`tv-sidebar-channel-${firstChannelId}`);
+                          },
+                          onBack: () => setIsChannelBrowserOpen(false),
                         });
                       }}
                       value={channelSearchQuery}
@@ -3458,8 +3472,8 @@ export const VideoPlayer = React.memo(
                       className="w-full rounded-xl border border-white/10 bg-white/5 px-4 py-4 text-sm font-black text-white outline-none focus:border-red-500/50 transition-colors font-['Outfit'] focus:bg-white/10"
                     />
                   </div>
-                  <div ref={channelListContainerRef} className="min-h-0 flex-1 overflow-y-auto pr-1 scrollbar-hide">
-                    {browserChannels.map((channel) => {
+                  <div ref={channelListContainerRef} className="min-h-0 flex-1 overflow-y-auto pr-1 pt-2 scrollbar-hide">
+                    {browserChannels.map((channel, index) => {
                       const selected = channel.id === media?.id || channel.videoUrl === url;
                       return (
                         <button
@@ -3469,6 +3483,15 @@ export const VideoPlayer = React.memo(
                           data-nav-id={`tv-sidebar-channel-${channel.id}`}
                           ref={(el) => {
                             if (el) registerNode(`tv-sidebar-channel-${channel.id}`, el, 'modal-live-channels', {
+                              onUp: () => {
+                                if (index <= 0) {
+                                  setFocusedId('tv-sidebar-search');
+                                  return;
+                                }
+                                const previousChannelId = browserChannels[index - 1]?.id;
+                                if (!previousChannelId) return;
+                                setFocusedId(`tv-sidebar-channel-${previousChannelId}`);
+                              },
                               onEnter: () => {
                                 onZap?.(channel);
                               },
