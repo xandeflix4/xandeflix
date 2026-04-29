@@ -404,7 +404,24 @@ export const LiveTVGrid: React.FC<LiveTVGridProps> = ({
     [guidePrograms, now],
   );
   const upcomingPreviewPrograms = useMemo(
-    () => guidePrograms.filter((program) => program.start > now).slice(0, 2),
+    () => {
+      const dedupedUpcoming: any[] = [];
+      const seenUpcomingKeys = new Set<string>();
+      const orderedFuturePrograms = [...guidePrograms]
+        .filter((program) => program.start > now)
+        .sort((a, b) => a.start - b.start);
+
+      for (const program of orderedFuturePrograms) {
+        const normalizedTitle = String(program.title || '').trim().toLowerCase();
+        const key = `${program.start}::${program.stop}::${normalizedTitle}`;
+        if (seenUpcomingKeys.has(key)) continue;
+        seenUpcomingKeys.add(key);
+        dedupedUpcoming.push(program);
+        if (dedupedUpcoming.length >= 4) break;
+      }
+
+      return dedupedUpcoming;
+    },
     [guidePrograms, now],
   );
 
