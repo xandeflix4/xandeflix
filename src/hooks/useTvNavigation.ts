@@ -553,6 +553,56 @@ export const useTvNavigation = (options?: { onBack?: () => void; isActive?: bool
         const prefix = currentFocusedId.startsWith('tv-sidebar-group-') ? 'tv-sidebar-group-' : 'tv-group-';
         const channelPrefix = prefix === 'tv-sidebar-group-' ? 'tv-sidebar-channel-' : 'tv-channel-';
 
+        const collectVisibleChannelIds = (): string[] => {
+          if (typeof document === 'undefined') {
+            return [];
+          }
+
+          const visibleChannelNodes = Array.from(
+            document.querySelectorAll<HTMLElement>(`[data-nav-id^="${channelPrefix}"]`),
+          )
+            .filter((node) => Boolean(node.dataset.navId))
+            .sort((left, right) => {
+              const leftRect = left.getBoundingClientRect();
+              const rightRect = right.getBoundingClientRect();
+              const topDiff = leftRect.top - rightRect.top;
+              if (Math.abs(topDiff) > 1) return topDiff;
+              return leftRect.left - rightRect.left;
+            });
+
+          const visibleIds: string[] = [];
+          for (const node of visibleChannelNodes) {
+            const navId = node.dataset.navId;
+            if (!navId) continue;
+            visibleIds.push(navId);
+          }
+          return visibleIds;
+        };
+
+        const attemptFocusChannelFromGroup = () => {
+          const channelIds = collectVisibleChannelIds();
+          if (channelIds.length === 0) {
+            for (const key of navNodes.keys()) {
+              if (key.startsWith(channelPrefix)) channelIds.push(key);
+            }
+          }
+
+          for (const channelId of channelIds) {
+            const target = navNodes.get(channelId);
+            if (!target || !resolveNodeRef(target)) {
+              continue;
+            }
+
+            if (focusNode(target, () => e.preventDefault(), !isTvMode)) {
+              focusedIdRef.current = target.id;
+              emitFocusedId(target.id);
+              return true;
+            }
+          }
+
+          return false;
+        };
+
         // P1: Otimizacao de performance - evitar Array.from e sort geometrico
         const groupIds: string[] = [];
         for (const key of navNodes.keys()) {
@@ -584,28 +634,23 @@ export const useTvNavigation = (options?: { onBack?: () => void; isActive?: bool
           if (currentNode.onEnter) {
             currentNode.onEnter();
           }
+          if (prefix === 'tv-sidebar-group-') {
+            requestAnimationFrame(() => {
+              if (!attemptFocusChannelFromGroup()) {
+                requestAnimationFrame(() => {
+                  attemptFocusChannelFromGroup();
+                });
+              }
+            });
+          }
           return;
         }
 
         if (key === 'ArrowRight') {
-          // Move into the channels column — pick first channel
-          const attemptFocusChannel = () => {
-            const channelIds = Array.from(navNodes.keys()).filter(k => k.startsWith(channelPrefix));
-            if (channelIds.length > 0) {
-              const target = navNodes.get(channelIds[0]);
-              if (target && focusNode(target, () => e.preventDefault(), !isTvMode)) {
-                focusedIdRef.current = target.id;
-                emitFocusedId(target.id);
-                return true;
-              }
-            }
-            return false;
-          };
-
-          if (!attemptFocusChannel()) {
+          if (!attemptFocusChannelFromGroup()) {
             // Se não encontrou canais imediatamente (ex: categoria mudando), tenta no próximo frame
             requestAnimationFrame(() => {
-              attemptFocusChannel();
+              attemptFocusChannelFromGroup();
             });
           }
           e.preventDefault();

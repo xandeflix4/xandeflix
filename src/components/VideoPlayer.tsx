@@ -1697,6 +1697,28 @@ export const VideoPlayer = React.memo(
           return;
         }
 
+        const isDirectionalKey =
+          key === 'ArrowUp' ||
+          key === 'ArrowDown' ||
+          key === 'ArrowLeft' ||
+          key === 'ArrowRight' ||
+          keyCode === 19 ||
+          keyCode === 20 ||
+          keyCode === 21 ||
+          keyCode === 22;
+        const isEnterLikeKey =
+          key === 'Enter' ||
+          key === 'OK' ||
+          key === 'NumpadEnter' ||
+          REMOTE_OK_KEYCODES.has(keyCode) ||
+          keyCode === 66;
+
+        // Quando o navegador de canais estiver aberto, deixamos o sistema de foco da grade
+        // (useTvNavigation) processar D-pad e Enter. Isso evita travar no primeiro item.
+        if (isChannelBrowserOpen && (isDirectionalKey || isEnterLikeKey)) {
+          return;
+        }
+
         showControls();
 
         if (
@@ -3243,23 +3265,15 @@ export const VideoPlayer = React.memo(
                                console.log('[Sidebar] Grupo selecionado via Enter:', category.title, category.id);
                                setChannelGroupId(category.id);
                                setChannelSearchQuery('');
-                               setTimeout(() => {
-                                 const el = document.getElementById('tv-sidebar-search');
-                                 if (el) el.focus();
-                               }, 150);
                             },
                             onBack: () => setIsChannelBrowserOpen(false),
-                            onRight: () => {
-                               const el = document.getElementById('tv-sidebar-search');
-                               if (el) el.focus();
-                            },
                           });
                         }}
                         onClick={() => {
                           setChannelGroupId(category.id);
                           setChannelSearchQuery('');
                         }}
-                        className="mb-2 w-full rounded-xl px-4 py-3 text-left text-[11px] font-black uppercase tracking-wide transition-colors font-['Outfit']"
+                        className={`mb-2 w-full rounded-xl px-4 py-3 text-left text-[11px] font-black uppercase tracking-wide transition-colors font-['Outfit'] ${selected ? 'active' : ''}`}
                         style={{
                           color: selected ? '#fff' : 'rgba(255,255,255,0.5)',
                           background: selected ? 'rgba(229,9,20,0.3)' : 'transparent',
