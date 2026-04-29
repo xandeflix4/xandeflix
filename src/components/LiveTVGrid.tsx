@@ -145,6 +145,7 @@ interface ChannelItemProps {
   now: number;
   programs: any[];
   onPress: (media: Media, index: number) => void;
+  onFocusMedia?: (media: Media, index: number) => void;
 }
 
 const ChannelItem = React.memo(({
@@ -155,6 +156,7 @@ const ChannelItem = React.memo(({
   now,
   programs,
   onPress,
+  onFocusMedia,
   registerNode,
   setFocusedId,
   focusChannelByIndex,
@@ -178,6 +180,7 @@ const ChannelItem = React.memo(({
       onFocus: () => {
         // P0: Foco visual via CSS nativo.
         focusedChannelIndexRef.current = index;
+        onFocusMedia?.(media, index);
       },
       onEnter: () => {
         onPress(media, index);
@@ -195,7 +198,7 @@ const ChannelItem = React.memo(({
         setFocusedId('tv-preview-player');
       },
     });
-  }, [focusChannelByIndex, focusGroupByIndex, focusedChannelIndexRef, index, liveCategories, media, onPress, previewMedia, registerNode, selectedCatId, setFocusedId]);
+  }, [focusChannelByIndex, focusGroupByIndex, focusedChannelIndexRef, index, liveCategories, media, onFocusMedia, onPress, previewMedia, registerNode, selectedCatId, setFocusedId]);
 
   return (
     <TouchableHighlight
@@ -280,6 +283,7 @@ export const LiveTVGrid: React.FC<LiveTVGridProps> = ({
   const [categoryItems, setCategoryItems] = useState<Media[]>([]);
   const [selectedMediaId, setSelectedMediaId] = useState<string | null>(initialSavedEntry?.media.id || null);
   const [previewMedia, setPreviewMedia] = useState<Media | null>(initialSavedEntry?.media || null);
+  const [inspectedMedia, setInspectedMedia] = useState<Media | null>(initialSavedEntry?.media || null);
   const [searchQuery, setSearchQuery] = useState('');
   const [now, setNow] = useState(() => Date.now());
   const openingFullscreenRef = useRef(false);
@@ -304,6 +308,7 @@ export const LiveTVGrid: React.FC<LiveTVGridProps> = ({
     if (initialSavedEntry) {
       setSelectedCatId(initialSavedEntry.categoryId);
       setSelectedMediaId(initialSavedEntry.media.id);
+      setInspectedMedia(initialSavedEntry.media);
       if (!previewMedia) {
         setPreviewMedia(initialSavedEntry.media);
       }
@@ -311,6 +316,7 @@ export const LiveTVGrid: React.FC<LiveTVGridProps> = ({
       const firstCat = liveCategories[0];
       setSelectedCatId(firstCat.id);
       setSelectedMediaId(null);
+      setInspectedMedia(null);
     }
 
     setFocusedGroupIndex(0);
@@ -388,17 +394,18 @@ export const LiveTVGrid: React.FC<LiveTVGridProps> = ({
 
     return [];
   }, [epgData, epgLookupMap, normalizeChannelKey]);
-  const previewPrograms = useMemo(() => {
-    if (!previewMedia) return [];
-    return resolveProgramsForMedia(previewMedia);
-  }, [previewMedia, resolveProgramsForMedia]);
+  const guideMedia = inspectedMedia || previewMedia;
+  const guidePrograms = useMemo(() => {
+    if (!guideMedia) return [];
+    return resolveProgramsForMedia(guideMedia);
+  }, [guideMedia, resolveProgramsForMedia]);
   const currentPreviewProgram = useMemo(
-    () => previewPrograms.find((program) => now >= program.start && now < program.stop) || null,
-    [now, previewPrograms],
+    () => guidePrograms.find((program) => now >= program.start && now < program.stop) || null,
+    [guidePrograms, now],
   );
   const upcomingPreviewPrograms = useMemo(
-    () => previewPrograms.filter((program) => program.start > now).slice(0, 2),
-    [now, previewPrograms],
+    () => guidePrograms.filter((program) => program.start > now).slice(0, 2),
+    [guidePrograms, now],
   );
 
   const formatProgramTime = useCallback((timestamp: number) => {
@@ -474,6 +481,7 @@ export const LiveTVGrid: React.FC<LiveTVGridProps> = ({
     if (lastSyncedExternalMediaIdRef.current !== externalMedia.id) {
       setPreviewMedia(externalMedia);
       setSelectedMediaId(externalMedia.id);
+      setInspectedMedia(externalMedia);
       activePreviewChannelIdRef.current = externalMedia.id;
       lastSyncedExternalMediaIdRef.current = externalMedia.id;
       lastSyncedExternalCategoryMediaIdRef.current = null;
@@ -687,6 +695,7 @@ export const LiveTVGrid: React.FC<LiveTVGridProps> = ({
       autoPreviewActiveRef.current = true;
       previewTriedKeysRef.current = new Set([`${randomItem.id}::${randomItem.videoUrl}`]);
       setSelectedMediaId(randomItem.id);
+      setInspectedMedia(randomItem);
       setPreviewMedia(randomItem);
     }, 1500); // Mais conservador no auto-preview inicial
 
@@ -799,6 +808,7 @@ export const LiveTVGrid: React.FC<LiveTVGridProps> = ({
     activePreviewChannelIdRef.current = nextMedia.id;
     autoPreviewActiveRef.current = true;
     setSelectedMediaId(nextMedia.id);
+    setInspectedMedia(nextMedia);
     setPreviewMedia(nextMedia);
   }, [globalPreviewPool, isGlobalPlayerActive, previewMedia, selectedCatId]); // Mantém a categoria atual no filtro de fallback
 
@@ -857,6 +867,7 @@ export const LiveTVGrid: React.FC<LiveTVGridProps> = ({
     openingFullscreenRef.current = true;
     activePreviewChannelIdRef.current = media.id;
     setSelectedMediaId(media.id);
+    setInspectedMedia(media);
 
     console.warn('[LiveTVGrid] openFullScreen: Disparando onPlayFull imediatamente');
     onPlayFull(media);
@@ -927,6 +938,7 @@ export const LiveTVGrid: React.FC<LiveTVGridProps> = ({
     previewFailureCountRef.current = 0;
     previewTriedKeysRef.current = new Set([`${media.id}::${media.videoUrl}`]);
     setSelectedMediaId(media.id);
+    setInspectedMedia(media);
     setPreviewMedia(media);
     previewArmRef.current = { mediaId: media.id, armedAt: now };
 
@@ -1117,6 +1129,13 @@ export const LiveTVGrid: React.FC<LiveTVGridProps> = ({
 
     focusNavIdWhenMounted(`tv-channel-${media.id}`);
   }, [focusNavIdWhenMounted, handleMediaClick, layout.isTvMode, layout.isTvProfile]);
+
+  const handleChannelFocus = useCallback((media: Media, index: number) => {
+    setFocusColumn('channels');
+    setFocusedChannelIndex(index);
+    setIsDiagnosticFocused(false);
+    setInspectedMedia((previous) => (previous?.id === media.id ? previous : media));
+  }, []);
 
   // Register Global/Static UI Nodes
   useEffect(() => {
@@ -1341,6 +1360,7 @@ export const LiveTVGrid: React.FC<LiveTVGridProps> = ({
                       now={now}
                       programs={resolveProgramsForMedia(media)}
                       onPress={handleChannelPress}
+                      onFocusMedia={handleChannelFocus}
                       registerNode={registerNode}
                       setFocusedId={setFocusedId}
                       focusChannelByIndex={focusChannelByIndex}
@@ -1396,7 +1416,7 @@ export const LiveTVGrid: React.FC<LiveTVGridProps> = ({
                 </TouchableHighlight>
                 <View style={styles.previewInfoPanel}>
                    <View style={{ flex: 1 }}>
-                     <Text style={styles.previewTitleSmall}>{previewMedia.title}</Text>
+                     <Text style={styles.previewTitleSmall}>{guideMedia?.title || previewMedia.title}</Text>
                    </View>
                 </View>
                 <View style={styles.previewEpgPanel}>
