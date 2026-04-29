@@ -184,6 +184,7 @@ const VOD_CONTROLS_AUTO_HIDE_MS = 8000;
 const REMOTE_OK_KEYCODES = new Set([13, 23, 66]);
 const DEFAULT_NATIVE_USER_AGENT = 'VLC/3.0.21 LibVLC/3.0.21';
 const NATIVE_SESSION_HANDOFF_WINDOW_MS = 6000;
+const WEB_LIVE_SOURCE_HINT_WINDOW_MS = 45000;
 
 type NativeSessionHandoffState = {
   url: string;
@@ -191,7 +192,14 @@ type NativeSessionHandoffState = {
   capturedAt: number;
 };
 
+type WebLiveSourceHintState = {
+  channelKey: string;
+  resolvedUrl: string;
+  capturedAt: number;
+};
+
 let nativeSessionHandoff: NativeSessionHandoffState | null = null;
+let webLiveSourceHint: WebLiveSourceHintState | null = null;
 
 function extractStreamHost(targetUrl: string): string {
   try {
@@ -381,6 +389,34 @@ function buildLivePreviewUrlCandidates(streamUrl: string, isLiveStream: boolean)
   } catch {
     return [trimmed];
   }
+}
+
+function buildLiveChannelKey(media: Media | null | undefined, fallbackUrl: string): string {
+  if (media?.id) {
+    return `id:${media.id}`;
+  }
+  return `url:${normalizePlayableUrl(fallbackUrl)}`;
+}
+
+function prioritizePreferredLiveCandidate(candidates: string[], preferredUrl: string | null): string[] {
+  if (!preferredUrl) {
+    return candidates;
+  }
+
+  const preferredNormalized = normalizePlayableUrl(preferredUrl);
+  const ordered: string[] = [];
+  const pushIfMissing = (value: string) => {
+    if (value && !ordered.includes(value)) {
+      ordered.push(value);
+    }
+  };
+
+  pushIfMissing(preferredNormalized);
+  candidates.forEach((candidate) => {
+    pushIfMissing(candidate);
+  });
+
+  return ordered;
 }
 
 function isLikelyHlsUrl(streamUrl: string): boolean {
@@ -714,20 +750,26 @@ export const VideoPlayer = React.memo(
       return normalizedHeaders;
     }, [streamHeaderEntries]);
     const [forceNativeFallback, setForceNativeFallback] = useState(false);
+    const [disableEmbeddedNativePreview, setDisableEmbeddedNativePreview] = useState(false);
     
     // TVs Philips e Android TVs no geral precisam do Player Nativo (ExoPlayer) para rodar Live TV.
     // O player web (MSE) costuma dar TIMEOUT ou erro de codec nessas TVs.
+    // Em TVs, window.innerWidth é grande, então focamos na plataforma.
+    const isAndroid = Capacitor.getPlatform() === 'android';
     const shouldPreferWebLiveFullscreen = isLiveStream && !isPreview && showChannelSidebar;
     const canUseNativeFallback = isNativePlatform && !isPreview;
     
     // Força o player nativo em Android para canais ao vivo, exceto se for explicitamente um tablet pequeno.
-    // Em TVs, window.innerWidth é grande, então vamos focar na plataforma.
-    const isAndroid = Capacitor.getPlatform() === 'android';
     const shouldUseNativePlayer =
       canUseNativeFallback &&
       !shouldPreferWebLiveFullscreen &&
       (forceNativeFallback || (isAndroid && isLiveStream));
-    const shouldUseEmbeddedNativePreview = isAndroid && isNativePlatform && isPreview && isLiveStream;
+    const shouldUseEmbeddedNativePreview =
+      isAndroid &&
+      isNativePlatform &&
+      isLiveStream &&
+      !disableEmbeddedNativePreview &&
+      isPreview;
     const shouldUseNativeBridgePlayer = shouldUseNativePlayer || shouldUseEmbeddedNativePreview;
     const desiredNativeSourceKey = useMemo(
       () =>
@@ -742,7 +784,7 @@ export const VideoPlayer = React.memo(
     const isChannelBrowserOpen = useStore((state) => state.isChannelBrowserOpen);
     const setIsChannelBrowserOpen = useStore((state) => state.setIsChannelBrowserOpen);
     // REPLACED BY GLOBAL STORE: const [isChannelBrowserOpen, setIsChannelBrowserOpen] = useState(false);
-    const videoObjectFitClass = 'object-cover';
+    const videoObjectFitClass = isPreview ? 'object-cover' : 'object-contain';
     const [channelGroupId, setChannelGroupId] = useState<string | null>(null);
     const [channelSearchQuery, setChannelSearchQuery] = useState('');
     const channelListContainerRef = useRef<HTMLDivElement | null>(null);
@@ -955,6 +997,7 @@ export const VideoPlayer = React.memo(
 
     useEffect(() => {
       setForceNativeFallback(false);
+      setDisableEmbeddedNativePreview(false);
       setInlineError(null);
       setPlaybackDiagnostic(null);
       setPreviewTerminalFailure(false);
@@ -1730,7 +1773,14 @@ export const VideoPlayer = React.memo(
           keyCode === 85 ||
           keyCode === 179
         ) {
-          void togglePlayPause();
+          if (isLiveStream) {
+            if (canShowChannelBrowser && !isChannelBrowserOpen) {
+              setIsChannelBrowserOpen(true);
+            }
+            showControls();
+          } else {
+            void togglePlayPause();
+          }
           e.preventDefault();
           e.stopPropagation();
         } else if (key === 'ArrowUp' || keyCode === 19) {
@@ -1863,6 +1913,7 @@ export const VideoPlayer = React.memo(
       const sessionResumePosition = sessionResumePositionRef.current;
       const targetUrl = latestNativeHandoffUrlRef.current;
       console.warn(`[VideoPlayer] setupNativePlayer targetUrl: ${targetUrl}`);
+      nativeSessionHandoffReusedRef.current = false;
 
       if (isSourceSwitch) {
         nativeSourceSwitchingRef.current = true;
@@ -2007,13 +2058,27 @@ export const VideoPlayer = React.memo(
           console.log('[NativePlayer] HANDOFF DETECTADO: Sessão já está tocando. Pulando switchSource/initPlayer!');
           result = { result: true, method: 'handoff' };
           
-          if (!isEmbeddedPreviewMode && NativeVideoPlayer.setLayout) {
-            await NativeVideoPlayer.setLayout({ fullscreen: true }).catch(() => {});
+          if (NativeVideoPlayer.setLayout) {
+            if (!isEmbeddedPreviewMode) {
+              await NativeVideoPlayer.setLayout({ fullscreen: true }).catch(() => {});
+            } else if (embeddedBounds) {
+              await NativeVideoPlayer.setLayout({
+                fullscreen: false,
+                x: embeddedBounds.x,
+                y: embeddedBounds.y,
+                width: embeddedBounds.width,
+                height: embeddedBounds.height,
+              }).catch(() => {});
+            }
           }
           
           // CRITICAL: Mark as opened so the component doesn't try to initialize again or teardown incorrectly
           openedPlayerRef.current = true;
-          activeNativeSourceKeyRef.current = targetUrl;
+          activeNativeSourceKeyRef.current = buildNativeSourceKey({
+            url: targetUrl,
+            headers: nativePlayerHeaders,
+            embedded: isEmbeddedPreviewMode,
+          });
           
           // Trigger UI showing
           showControls();
@@ -2093,6 +2158,25 @@ export const VideoPlayer = React.memo(
           playerError,
           isSourceSwitch ? 'Falha ao trocar fonte do player nativo.' : 'Falha ao iniciar player nativo.',
         );
+
+        const shouldFallbackToWebPreview =
+          !isSourceSwitch &&
+          isPreview &&
+          isEmbeddedPreviewMode;
+        if (shouldFallbackToWebPreview) {
+          console.warn('[VideoPlayer] Preview nativo indisponivel. Aplicando fallback para player web:', reason);
+          try {
+            await teardownNativeBridgeSession();
+          } catch (fallbackTeardownError) {
+            console.warn('[VideoPlayer] Falha ao encerrar sessão nativa antes do fallback web:', fallbackTeardownError);
+          }
+          setDisableEmbeddedNativePreview(true);
+          setError(null);
+          setInlineError(null);
+          setPlayerState('error');
+          return;
+        }
+
         setError(reason);
         applyPlaybackDiagnostic({
           stage: 'native',
@@ -2195,8 +2279,20 @@ export const VideoPlayer = React.memo(
       if (!video) return;
 
       const secureWebUrl = normalizePlayableUrl(playbackUrl || url);
-      const candidates = buildLivePreviewUrlCandidates(secureWebUrl, isLiveStream);
+      const liveChannelKey = buildLiveChannelKey(media, secureWebUrl);
+      const liveSourceHint =
+        isLiveStream &&
+        webLiveSourceHint &&
+        webLiveSourceHint.channelKey === liveChannelKey &&
+        Date.now() - webLiveSourceHint.capturedAt <= WEB_LIVE_SOURCE_HINT_WINDOW_MS
+          ? webLiveSourceHint
+          : null;
+      const candidates = prioritizePreferredLiveCandidate(
+        buildLivePreviewUrlCandidates(secureWebUrl, isLiveStream),
+        liveSourceHint?.resolvedUrl || null,
+      );
       if (candidates.length === 0) return;
+      latestPreviewUrlRef.current = candidates[0];
 
       let candidateIndex = 0;
       let disposed = false;
@@ -2218,8 +2314,11 @@ export const VideoPlayer = React.memo(
       let nativePromotionRequested = false;
       let hardPreviewFailureReported = false;
 
-      // Fase 2.1: Debounce de inicialização para evitar colapso de memória em trocas rápidas
-      const initDelay = isPreview ? 250 : 50;
+      // Fase 2.1: Debounce de inicialização para evitar colapso de memória em trocas rápidas.
+      // Se já temos hint válido do canal, reduzimos o atraso para acelerar preview/fullscreen.
+      const initDelay = isPreview
+        ? (liveSourceHint ? 120 : 250)
+        : (liveSourceHint ? 0 : 50);
       const initTimer: ReturnType<typeof setTimeout> | null = setTimeout(() => {
         playCurrentSource();
       }, initDelay);
@@ -2244,6 +2343,17 @@ export const VideoPlayer = React.memo(
           httpStatus: options?.httpStatus,
           url: maskSensitiveUrl(targetUrl),
         });
+      };
+      const rememberResolvedLiveSource = (resolvedUrl: string) => {
+        if (!isLiveStream || !resolvedUrl) {
+          return;
+        }
+
+        webLiveSourceHint = {
+          channelKey: liveChannelKey,
+          resolvedUrl: normalizePlayableUrl(resolvedUrl),
+          capturedAt: Date.now(),
+        };
       };
 
       const triggerNativeFallback = (reason: string): boolean => {
@@ -2597,6 +2707,7 @@ export const VideoPlayer = React.memo(
 
         teardownCurrentSource({ releaseElement: false });
         const currentUrl = candidates[candidateIndex];
+        latestPreviewUrlRef.current = currentUrl;
         touchBufferIndicator(`Carregando buffer (${candidateIndex + 1}/${candidates.length})`, {
           step: candidateIndex === 0 ? 7 : 4,
           cap: 94,
@@ -2705,6 +2816,7 @@ export const VideoPlayer = React.memo(
             setPlaybackDiagnostic(null);
             setInlineError(null);
             completeBufferIndicator();
+            rememberResolvedLiveSource(currentUrl);
             void video.play().catch((playError) => {
               console.error('[Preview] Erro ao iniciar play:', playError);
             });
@@ -2811,6 +2923,7 @@ export const VideoPlayer = React.memo(
               setPlaybackDiagnostic(null);
               setInlineError(null);
               completeBufferIndicator();
+              rememberResolvedLiveSource(currentUrl);
               startLiveStallWatchdog();
             };
             timeUpdateHandler = () => {
@@ -2862,6 +2975,7 @@ export const VideoPlayer = React.memo(
           setPlaybackDiagnostic(null);
           setInlineError(null);
           completeBufferIndicator();
+          rememberResolvedLiveSource(currentUrl);
           startLiveStallWatchdog();
         };
         nativeErrorHandler = () => {
@@ -2954,9 +3068,17 @@ export const VideoPlayer = React.memo(
         }`}
         onMouseMove={showControls}
         onClick={() => {
-          if (!isPreview && !isChannelBrowserOpen) {
-            void togglePlayPause();
+          if (isPreview || isChannelBrowserOpen) return;
+
+          if (isLiveStream) {
+            if (canShowChannelBrowser) {
+              setIsChannelBrowserOpen(true);
+            }
+            showControls();
+            return;
           }
+
+          void togglePlayPause();
         }}
       >
         {shouldUseNativeBridgePlayer ? (

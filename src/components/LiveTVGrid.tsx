@@ -1053,6 +1053,13 @@ export const LiveTVGrid: React.FC<LiveTVGridProps> = ({
       return;
     }
 
+    if (targetIndex >= filteredItems.length) {
+      setFocusColumn('channels');
+      setIsDiagnosticFocused(true);
+      focusNavIdWhenMounted('tv-btn-diagnostic');
+      return;
+    }
+
     const safeIndex = Math.max(0, Math.min(targetIndex, filteredItems.length - 1));
     focusedChannelIndexRef.current = safeIndex;
 
@@ -1067,7 +1074,7 @@ export const LiveTVGrid: React.FC<LiveTVGridProps> = ({
     if (nextChannel) {
       focusNavIdWhenMounted(`tv-channel-${nextChannel.id}`);
     }
-  }, [channelVirtualizer, filteredItems, focusNavIdWhenMounted, loadMoreChannels]);
+  }, [channelVirtualizer, filteredItems, focusNavIdWhenMounted, loadMoreChannels, setFocusColumn, setIsDiagnosticFocused]);
 
   const focusGroupByIndex = useCallback((targetIndex: number) => {
     if (liveCategories.length === 0) {
@@ -1133,14 +1140,35 @@ export const LiveTVGrid: React.FC<LiveTVGridProps> = ({
         setIsDiagnosticFocused(true);
       },
       onEnter: () => setShowDiagnostic(true),
+      onUp: () => {
+        setIsDiagnosticFocused(false);
+        setFocusColumn('channels');
+        focusChannelByIndex(focusedChannelIndexRef.current);
+      },
+      onLeft: () => {
+        const targetGroupId = selectedCatId || liveCategories[0]?.id;
+        if (!targetGroupId) return;
+        const targetGroupIndex = liveCategories.findIndex((category) => category.id === targetGroupId);
+        focusGroupByIndex(targetGroupIndex >= 0 ? targetGroupIndex : 0);
+      },
+      onRight: () => {
+        if (!previewMedia) return;
+        setFocusColumn('preview');
+        setFocusedId('tv-preview-player');
+      },
     }));
 
     return () => unregisterList.forEach((unregister) => unregister());
   }, [
     openFullScreen,
+    focusChannelByIndex,
+    focusGroupByIndex,
+    liveCategories,
     previewMedia,
     registerNode,
+    selectedCatId,
     setFocusedId,
+    setFocusColumn,
   ]);
 
   useEffect(() => {
