@@ -265,14 +265,41 @@ div[class*="cardFocused"]::after {
 
 /* Canais focado: destacar levemente sem escala agressiva */
 [data-nav-id^="tv-channel-"]:focus,
+[data-nav-id^="tv-channel-"]:focus-visible,
 [data-nav-id^="tv-sidebar-channel-"]:focus {
   background-color: rgba(255, 255, 255, 0.08) !important;
+  outline-offset: 2px !important;
+}
+
+[data-nav-id^="tv-sidebar-channel-"]:focus-visible {
+  background-color: rgba(255, 255, 255, 0.08) !important;
+  outline-offset: 2px !important;
 }
 
 /* Grupos focado */
 [data-nav-id^="tv-group-"]:focus,
 [data-nav-id^="tv-sidebar-group-"]:focus {
   background-color: rgba(255, 255, 255, 0.1) !important;
+}
+
+/* Campo de busca da grade LiveTV:
+   mantém foco visível sem invadir o botão "Diagnóstico". */
+[data-nav-id="tv-search-input"] {
+  min-width: 0 !important;
+  width: 100% !important;
+  caret-color: #E50914;
+}
+
+input[data-nav-id="tv-search-input"]:focus,
+input[data-nav-id="tv-search-input"]:focus-visible {
+  outline: none !important;
+  outline-offset: 0 !important;
+  box-shadow: none !important;
+  border-color: transparent !important;
+  transform: none !important;
+  background-color: transparent !important;
+  caret-color: #E50914 !important;
+  z-index: auto !important;
 }
 /* ================================================
    SKELETON & LOADING EFFECTS

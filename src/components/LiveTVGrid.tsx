@@ -146,6 +146,7 @@ interface ChannelItemProps {
   programs: any[];
   onPress: (media: Media, index: number) => void;
   onFocusMedia?: (media: Media, index: number) => void;
+  onMoveToSearch?: () => void;
 }
 
 const ChannelItem = React.memo(({
@@ -157,6 +158,7 @@ const ChannelItem = React.memo(({
   programs,
   onPress,
   onFocusMedia,
+  onMoveToSearch,
   registerNode,
   setFocusedId,
   focusChannelByIndex,
@@ -185,7 +187,13 @@ const ChannelItem = React.memo(({
       onEnter: () => {
         onPress(media, index);
       },
-      onUp: () => focusChannelByIndex(index - 1),
+      onUp: () => {
+        if (index <= 0) {
+          onMoveToSearch?.();
+          return;
+        }
+        focusChannelByIndex(index - 1);
+      },
       onDown: () => focusChannelByIndex(index + 1),
       onLeft: () => {
         const targetGroupId = selectedCatId || liveCategories[0]?.id;
@@ -198,7 +206,7 @@ const ChannelItem = React.memo(({
         setFocusedId('tv-preview-player');
       },
     });
-  }, [focusChannelByIndex, focusGroupByIndex, focusedChannelIndexRef, index, liveCategories, media, onFocusMedia, onPress, previewMedia, registerNode, selectedCatId, setFocusedId]);
+  }, [focusChannelByIndex, focusGroupByIndex, focusedChannelIndexRef, index, liveCategories, media, onFocusMedia, onMoveToSearch, onPress, previewMedia, registerNode, selectedCatId, setFocusedId]);
 
   return (
     <TouchableHighlight
@@ -1154,6 +1162,12 @@ export const LiveTVGrid: React.FC<LiveTVGridProps> = ({
     setInspectedMedia((previous) => (previous?.id === media.id ? previous : media));
   }, []);
 
+  const focusSearchInput = useCallback(() => {
+    setFocusColumn('channels');
+    setIsDiagnosticFocused(false);
+    focusNavIdWhenMounted('tv-search-input');
+  }, [focusNavIdWhenMounted]);
+
   // Register Global/Static UI Nodes
   useEffect(() => {
     const unregisterList: (() => void)[] = [];
@@ -1169,14 +1183,18 @@ export const LiveTVGrid: React.FC<LiveTVGridProps> = ({
       }));
     }
 
-    // Register Diagnostic Button
-    unregisterList.push(registerNode('tv-btn-diagnostic', null, 'body', {
+    // Register Search Input
+    unregisterList.push(registerNode('tv-search-input', null, 'body', {
       onFocus: () => {
         setFocusColumn('channels');
-        setIsDiagnosticFocused(true);
+        setIsDiagnosticFocused(false);
       },
-      onEnter: () => setShowDiagnostic(true),
-      onUp: () => {
+      onDown: () => {
+        if (filteredItems.length === 0) {
+          setIsDiagnosticFocused(true);
+          focusNavIdWhenMounted('tv-btn-diagnostic');
+          return;
+        }
         setIsDiagnosticFocused(false);
         setFocusColumn('channels');
         focusChannelByIndex(focusedChannelIndexRef.current);
@@ -1188,6 +1206,33 @@ export const LiveTVGrid: React.FC<LiveTVGridProps> = ({
         focusGroupByIndex(targetGroupIndex >= 0 ? targetGroupIndex : 0);
       },
       onRight: () => {
+        setIsDiagnosticFocused(true);
+        focusNavIdWhenMounted('tv-btn-diagnostic');
+      },
+    }));
+
+    // Register Diagnostic Button
+    unregisterList.push(registerNode('tv-btn-diagnostic', null, 'body', {
+      onFocus: () => {
+        setFocusColumn('channels');
+        setIsDiagnosticFocused(true);
+      },
+      onEnter: () => setShowDiagnostic(true),
+      onUp: () => {
+        setIsDiagnosticFocused(false);
+        focusNavIdWhenMounted('tv-search-input');
+      },
+      onDown: () => {
+        if (filteredItems.length === 0) return;
+        setIsDiagnosticFocused(false);
+        setFocusColumn('channels');
+        focusChannelByIndex(focusedChannelIndexRef.current);
+      },
+      onLeft: () => {
+        setIsDiagnosticFocused(false);
+        focusNavIdWhenMounted('tv-search-input');
+      },
+      onRight: () => {
         if (!previewMedia) return;
         setFocusColumn('preview');
         setFocusedId('tv-preview-player');
@@ -1196,7 +1241,9 @@ export const LiveTVGrid: React.FC<LiveTVGridProps> = ({
 
     return () => unregisterList.forEach((unregister) => unregister());
   }, [
+    filteredItems.length,
     openFullScreen,
+    focusNavIdWhenMounted,
     focusChannelByIndex,
     focusGroupByIndex,
     liveCategories,
@@ -1221,6 +1268,7 @@ export const LiveTVGrid: React.FC<LiveTVGridProps> = ({
         activeNavId.startsWith('tv-group-')
         || activeNavId.startsWith('tv-channel-')
         || activeNavId === 'tv-preview-player'
+        || activeNavId === 'tv-search-input'
         || activeNavId === 'tv-btn-diagnostic';
 
       if (isAlreadyInsideLiveGrid) {
@@ -1315,6 +1363,8 @@ export const LiveTVGrid: React.FC<LiveTVGridProps> = ({
           <View style={styles.searchContainer}>
             <Search size={16} color="rgba(255,255,255,0.4)" />
             <input
+              id="tv-search-input"
+              data-nav-id="tv-search-input"
               style={styles.searchInput}
               placeholder="Buscar canal..."
               value={searchQuery}
@@ -1378,6 +1428,7 @@ export const LiveTVGrid: React.FC<LiveTVGridProps> = ({
                       programs={resolveProgramsForMedia(media)}
                       onPress={handleChannelPress}
                       onFocusMedia={handleChannelFocus}
+                      onMoveToSearch={focusSearchInput}
                       registerNode={registerNode}
                       setFocusedId={setFocusedId}
                       focusChannelByIndex={focusChannelByIndex}
@@ -1597,6 +1648,7 @@ const styles = StyleSheet.create({
     borderRadius: 12,
     borderWidth: 1,
     borderColor: 'rgba(255,255,255,0.06)',
+    overflow: 'hidden',
   },
   diagnosticButton: {
     paddingVertical: 10,
@@ -1678,7 +1730,7 @@ const styles = StyleSheet.create({
     gap: 20,
   },
   itemThumbnailContainer: {
-    width: 52,
+    width: 48,
     aspectRatio: '1/1',
     borderRadius: 12,
     overflow: 'hidden',
