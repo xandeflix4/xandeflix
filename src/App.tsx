@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useState } from 'react';
-import { View, Text, TouchableHighlight } from 'react-native';
+import { View, Text, TouchableHighlight, Dimensions } from 'react-native';
 import { App as CapacitorApp } from '@capacitor/app';
 import { Capacitor } from '@capacitor/core';
 import { StatusBar } from '@capacitor/status-bar';
@@ -19,6 +19,7 @@ const LEGACY_AUTH_STORAGE_KEYS = [
   'xandeflix_user_id',
   'xandeflix_session',
 ] as const;
+const EXIT_MODAL_MAX_HEIGHT = Math.min(Dimensions.get('window').height * 0.86, 420);
 
 function clearLegacyAuthStorage() {
   LEGACY_AUTH_STORAGE_KEYS.forEach((key) => localStorage.removeItem(key));
@@ -386,18 +387,21 @@ export default function App() {
           backgroundColor: 'rgba(0,0,0,0.96)',
           justifyContent: 'center',
           alignItems: 'center',
+          paddingHorizontal: 18,
+          paddingVertical: 24,
           zIndex: 9999,
         }}>
           <View style={{
-            width: 480,
+            width: '100%',
+            maxWidth: 480,
             backgroundColor: '#181818',
             borderRadius: 24,
             padding: 32,
             borderWidth: 1,
             borderColor: 'rgba(255,255,255,0.12)',
             alignItems: 'center',
-            flexGrow: 0,
-            flexShrink: 0,
+            justifyContent: 'flex-start',
+            maxHeight: EXIT_MODAL_MAX_HEIGHT,
             shadowColor: '#000',
             shadowOffset: { width: 0, height: 20 },
             shadowOpacity: 0.8,

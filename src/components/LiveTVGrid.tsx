@@ -8,7 +8,7 @@ import { useTvNavigation } from '../hooks/useTvNavigation';
 import { NetworkDiagnostic } from './NetworkDiagnostic';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import { DISK_CATEGORY_PAGE_SIZE, useDiskCategory } from '../hooks/useDiskCategory';
-import { getChannelCountByCategory } from '../lib/db';
+import { getChannelCountByCategory, searchChannelsByQuery } from '../lib/db';
 
 interface LiveItemThumbnailProps {
   uri: string;
@@ -70,6 +70,19 @@ type LivePreviewPoolEntry = {
 
 const GROUP_SELECTION_THROTTLE_MS = 180;
 const LIVE_CHANNEL_ROW_ESTIMATE = 88;
+
+const normalizeLiveSearchKey = (value: string): string =>
+  String(value || '')
+    .trim()
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '');
+
+const normalizeLiveCategoryKey = (value: string): string =>
+  normalizeLiveSearchKey(value)
+    .replace(/^canais\s*\|\s*/i, '')
+    .replace(/^canais\s+/i, '')
+    .trim();
 
 interface GroupItemProps {
   category: Category;
@@ -293,6 +306,8 @@ export const LiveTVGrid: React.FC<LiveTVGridProps> = ({
   const [previewMedia, setPreviewMedia] = useState<Media | null>(initialSavedEntry?.media || null);
   const [inspectedMedia, setInspectedMedia] = useState<Media | null>(initialSavedEntry?.media || null);
   const [searchQuery, setSearchQuery] = useState('');
+  const [globalSearchItems, setGlobalSearchItems] = useState<Media[]>([]);
+  const [isSearchingAllChannels, setIsSearchingAllChannels] = useState(false);
   const [now, setNow] = useState(() => Date.now());
   const openingFullscreenRef = useRef(false);
   const activePreviewChannelIdRef = useRef<string | null>(null);
@@ -342,6 +357,8 @@ export const LiveTVGrid: React.FC<LiveTVGridProps> = ({
   const groupsListRef = useRef<HTMLDivElement | null>(null);
   const channelsListRef = useRef<HTMLDivElement | null>(null);
   const groupSelectionTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const searchRequestIdRef = useRef(0);
+  const searchResultsCacheRef = useRef<Map<string, Media[]>>(new Map());
   const selectedCategory = useMemo(
     () => liveCategories.find((c) => c.id === selectedCatId) || null,
     [liveCategories, selectedCatId],
@@ -568,6 +585,10 @@ export const LiveTVGrid: React.FC<LiveTVGridProps> = ({
   }, [diskReloadToken]);
 
   useEffect(() => {
+    searchResultsCacheRef.current.clear();
+  }, [diskReloadToken, liveCategories.length]);
+
+  useEffect(() => {
     setCategoryItems((previous) => {
       const base = page === 0 ? [] : previous;
       const seen = new Set(base.map((item) => `${item.id}::${item.videoUrl}`));
@@ -587,6 +608,83 @@ export const LiveTVGrid: React.FC<LiveTVGridProps> = ({
   useEffect(() => {
     setVisibleItems(categoryItems.slice(0, 80));
   }, [categoryItems, setVisibleItems]);
+
+  const normalizedSearchQuery = useMemo(
+    () => normalizeLiveSearchKey(searchQuery),
+    [searchQuery],
+  );
+
+  const allowedLiveCategoryKeys = useMemo(() => {
+    const set = new Set<string>();
+    for (const category of liveCategories) {
+      const rawKey = normalizeLiveSearchKey(category.title);
+      const normalizedKey = normalizeLiveCategoryKey(category.title);
+      if (rawKey) set.add(rawKey);
+      if (normalizedKey) set.add(normalizedKey);
+    }
+    return set;
+  }, [liveCategories]);
+
+  useEffect(() => {
+    if (!normalizedSearchQuery) {
+      setGlobalSearchItems([]);
+      setIsSearchingAllChannels(false);
+      return;
+    }
+
+    const cached = searchResultsCacheRef.current.get(normalizedSearchQuery);
+    if (cached) {
+      setGlobalSearchItems(cached);
+      setIsSearchingAllChannels(false);
+      return;
+    }
+
+    const requestId = searchRequestIdRef.current + 1;
+    searchRequestIdRef.current = requestId;
+    setIsSearchingAllChannels(true);
+
+    const timeoutId = window.setTimeout(() => {
+      void (async () => {
+        try {
+          const rawResults = await searchChannelsByQuery(normalizedSearchQuery, {
+            limit: layout.isTvProfile ? 1400 : 3200,
+            types: ['live'],
+            yieldEveryRows: layout.isTvProfile ? 700 : 2500,
+            shouldAbort: () => searchRequestIdRef.current !== requestId,
+          });
+          if (searchRequestIdRef.current !== requestId) return;
+
+          const filteredByScope = rawResults.filter((item) => {
+            const rawCategoryKey = normalizeLiveSearchKey(item.category);
+            const normalizedCategoryKey = normalizeLiveCategoryKey(item.category);
+            return (
+              allowedLiveCategoryKeys.has(rawCategoryKey)
+              || allowedLiveCategoryKeys.has(normalizedCategoryKey)
+            );
+          });
+
+          const nextCache = searchResultsCacheRef.current;
+          nextCache.set(normalizedSearchQuery, filteredByScope);
+          if (nextCache.size > 24) {
+            const oldestKey = nextCache.keys().next().value;
+            if (oldestKey) nextCache.delete(oldestKey);
+          }
+
+          setGlobalSearchItems(filteredByScope);
+        } catch (error) {
+          if (searchRequestIdRef.current !== requestId) return;
+          console.warn('[LiveTVGrid] Falha na busca global de canais ao vivo:', error);
+          setGlobalSearchItems([]);
+        } finally {
+          if (searchRequestIdRef.current === requestId) {
+            setIsSearchingAllChannels(false);
+          }
+        }
+      })();
+    }, layout.isTvProfile ? 210 : 120);
+
+    return () => window.clearTimeout(timeoutId);
+  }, [allowedLiveCategoryKeys, layout.isTvProfile, normalizedSearchQuery]);
 
   useEffect(() => {
     let disposed = false;
@@ -734,11 +832,9 @@ export const LiveTVGrid: React.FC<LiveTVGridProps> = ({
   }, [externalMedia, globalPreviewPool, lastLiveChannel, section]); // Removido selectedCatId para evitar re-trigger ao navegar grupos
 
   const filteredItems = useMemo(() => {
-    if (!searchQuery.trim()) return categoryItems;
-    return categoryItems.filter((i) =>
-      i.title.toLowerCase().includes(searchQuery.toLowerCase()),
-    );
-  }, [categoryItems, searchQuery]);
+    if (!normalizedSearchQuery) return categoryItems;
+    return globalSearchItems;
+  }, [categoryItems, globalSearchItems, normalizedSearchQuery]);
 
   const channelVirtualizer = useVirtualizer({
     count: filteredItems.length,
@@ -860,12 +956,13 @@ export const LiveTVGrid: React.FC<LiveTVGridProps> = ({
   }, [filteredItems]);
 
   useEffect(() => {
+    if (normalizedSearchQuery) return;
     if (filteredItems.length === 0) return;
     if (focusColumn !== 'channels') return;
     if (focusedChannelIndex >= Math.max(0, filteredItems.length - 6)) {
       loadMoreChannels();
     }
-  }, [filteredItems.length, focusColumn, focusedChannelIndex, loadMoreChannels]);
+  }, [filteredItems.length, focusColumn, focusedChannelIndex, loadMoreChannels, normalizedSearchQuery]);
 
   useEffect(() => {
     if (focusColumn !== 'channels') return;
@@ -1391,6 +1488,7 @@ export const LiveTVGrid: React.FC<LiveTVGridProps> = ({
           ref={channelsListRef as React.RefObject<HTMLDivElement>}
           style={{ flex: 1, overflowY: 'auto', overflowX: 'visible', paddingTop: 8, paddingBottom: 40, paddingInline: 6 }}
           onScroll={(e) => {
+            if (normalizedSearchQuery) return;
             const node = e.currentTarget;
             if (node.scrollTop + node.clientHeight >= node.scrollHeight - 260) {
               loadMoreChannels();
@@ -1399,7 +1497,11 @@ export const LiveTVGrid: React.FC<LiveTVGridProps> = ({
         >
           {filteredItems.length === 0 ? (
             <View style={styles.channelListLoading}>
-              <Text style={styles.channelListLoadingText}>Nenhum canal encontrado.</Text>
+              <Text style={styles.channelListLoadingText}>
+                {normalizedSearchQuery && isSearchingAllChannels
+                  ? 'Buscando em todos os canais ao vivo...'
+                  : 'Nenhum canal encontrado.'}
+              </Text>
             </View>
           ) : (
             <div style={{ height: channelsInnerHeight, position: 'relative' }}>
