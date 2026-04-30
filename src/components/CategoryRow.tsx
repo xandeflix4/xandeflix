@@ -136,6 +136,10 @@ const MediaCard = React.memo(({
   }, [imageRetryCount, resolvedImageUrl]);
 
   const canOpenMedia = Boolean(onPress && isMedia(item));
+  const isComingSoon =
+    isMedia(item)
+    && item.type !== 'live'
+    && !String(item.videoUrl || '').trim();
 
   // Reset status when image changes
   React.useEffect(() => {
@@ -217,6 +221,29 @@ const MediaCard = React.memo(({
       >
         <span style={{ opacity: 0.15 }}>{String(item.title || '?').slice(0, 2)}</span>
       </div>
+
+      {isComingSoon && (
+        <div
+          style={{
+            position: 'absolute',
+            top: 8,
+            right: 8,
+            zIndex: 4,
+            borderRadius: 999,
+            padding: '4px 8px',
+            background: 'rgba(245,158,11,0.22)',
+            border: '1px solid rgba(245,158,11,0.56)',
+            color: '#fbbf24',
+            fontSize: 10,
+            fontWeight: 900,
+            letterSpacing: 0.5,
+            textTransform: 'uppercase',
+            pointerEvents: 'none',
+          }}
+        >
+          Em breve
+        </div>
+      )}
 
       {retryableImageUrl && imageStatus !== 'error' && (
         <img
@@ -333,7 +360,7 @@ export const CategoryRow: React.FC<CategoryRowProps> = ({
   const eagerRowRender = tightTopSpacing;
   const baseInitialRenderedCount = layout.isTvProfile ? 12 : 16;
   const [renderedCount, setRenderedCount] = React.useState(baseInitialRenderedCount);
-  const [isVisible, setIsVisible] = React.useState(false);
+  const [isVisible, setIsVisible] = React.useState(layout.isTvProfile ? true : false);
   const rowRef = React.useRef<HTMLDivElement>(null);
   const effectiveRenderedCount = eagerRowRender
     ? resolvedItems.length
@@ -378,6 +405,8 @@ export const CategoryRow: React.FC<CategoryRowProps> = ({
   ]);
 
   React.useEffect(() => {
+    if (layout.isTvProfile) return; // Na TV, o unmount é gerenciado 100% pelo rowVirtualizer pai.
+    
     const observer = new IntersectionObserver(
       ([entry]) => {
         setIsVisible(entry.isIntersecting);
@@ -386,7 +415,7 @@ export const CategoryRow: React.FC<CategoryRowProps> = ({
     );
     if (rowRef.current) observer.observe(rowRef.current);
     return () => observer.disconnect();
-  }, []);
+  }, [layout.isTvProfile]);
 
   const onFocusWrapper = React.useCallback((media: Media, id: string, index: number) => {
     if (!eagerRowRender && index >= effectiveRenderedCountRef.current - 6) {

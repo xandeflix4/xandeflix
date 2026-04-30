@@ -191,11 +191,18 @@ export const HeroSection: React.FC<HeroSectionProps> = React.memo(({
 
   useEffect(() => {
     if (!displayData) return;
+    const canPlayNow = Boolean(String(displayData.videoUrl || '').trim());
 
     const cleanups = [
       registerNode('hero-play', playBtnRef.current, 'hero', {
         onFocus: () => onFocus('hero-play'),
-        onEnter: () => onPlay(displayData),
+        onEnter: () => {
+          if (canPlayNow) {
+            onPlay(displayData);
+            return;
+          }
+          onInfo?.(displayData);
+        },
         disableAutoScroll: true,
       }),
       registerNode('hero-info', infoBtnRef.current, 'hero', {
@@ -209,6 +216,7 @@ export const HeroSection: React.FC<HeroSectionProps> = React.memo(({
   }, [displayData, onFocus, onInfo, onPlay, registerNode]);
 
   if (!displayData) return null;
+  const canPlayNow = Boolean(String(displayData.videoUrl || '').trim());
 
   const backgroundUri = stableBackgroundUri || preferredBackgroundUri || '';
   const shouldPlayTrailer =
@@ -475,6 +483,13 @@ export const HeroSection: React.FC<HeroSectionProps> = React.memo(({
                 {String(displayData.category || displayData.type || 'Filme')}
               </span>
             </div>
+            {!canPlayNow && (
+              <div style={{ borderRadius: 7, padding: '3px 8px', background: 'rgba(245,158,11,0.2)', border: '1px solid rgba(245,158,11,0.5)' }}>
+                <span style={{ color: '#fbbf24', fontSize: Math.max(10, metaSize - 2), fontWeight: 900, letterSpacing: 0.7, textTransform: 'uppercase' }}>
+                  Em breve
+                </span>
+              </div>
+            )}
           </div>
 
           <p
@@ -531,15 +546,23 @@ export const HeroSection: React.FC<HeroSectionProps> = React.memo(({
               role="button"
               tabIndex={0}
               data-nav-id="hero-play"
-              onClick={() => onPlay(displayData)}
+              onClick={() => {
+                if (canPlayNow) {
+                  onPlay(displayData);
+                  return;
+                }
+                onInfo?.(displayData);
+              }}
               style={{
                 display: 'flex',
                 alignItems: 'center',
                 gap: 8,
                 borderRadius: 10,
-                border: '1px solid rgba(255,255,255,0.34)',
-                backgroundColor: focusedId === 'hero-play' ? '#fff' : 'rgba(255,255,255,0.92)',
-                color: '#111827',
+                border: canPlayNow ? '1px solid rgba(255,255,255,0.34)' : '1px solid rgba(255,255,255,0.24)',
+                backgroundColor: canPlayNow
+                  ? (focusedId === 'hero-play' ? '#fff' : 'rgba(255,255,255,0.92)')
+                  : (focusedId === 'hero-play' ? 'rgba(255,255,255,0.34)' : 'rgba(17,24,39,0.52)'),
+                color: canPlayNow ? '#111827' : '#fff',
                 fontSize: buttonFontSize,
                 fontWeight: 900,
                 padding: `${buttonVerticalPadding}px ${buttonHorizontalPadding}px`,
@@ -550,8 +573,8 @@ export const HeroSection: React.FC<HeroSectionProps> = React.memo(({
                 transition: 'transform 150ms ease, background-color 150ms ease',
               }}
             >
-              <Play size={isCompactHero ? 15 : 17} color="#111827" fill="#111827" />
-              Assistir Agora
+              <Play size={isCompactHero ? 15 : 17} color={canPlayNow ? '#111827' : '#fff'} fill={canPlayNow ? '#111827' : '#fff'} />
+              {canPlayNow ? 'Assistir Agora' : 'Ver Detalhes'}
             </div>
 
             <div

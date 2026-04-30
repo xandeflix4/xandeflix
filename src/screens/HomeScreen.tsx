@@ -19,7 +19,13 @@ import { usePlaylist } from '../hooks/usePlaylist';
 import { useMediaFilter } from '../hooks/useMediaFilter';
 import { useResponsiveLayout } from '../hooks/useResponsiveLayout';
 import { useTvNavigation } from '../hooks/useTvNavigation';
-import { fetchTMDBMetadata, isTMDBConfigured, type TMDBData } from '../lib/tmdb';
+import {
+  fetchTMDBMetadata,
+  fetchTMDBTrending,
+  isTMDBConfigured,
+  type TMDBData,
+  type TMDBTrendingItem,
+} from '../lib/tmdb';
 import { detectTvEnvironment } from '../lib/deviceProfile';
 import { searchChannelsByQuery } from '../lib/db';
 
@@ -64,6 +70,8 @@ const normalizeTMDBType = (type: string | undefined): 'movie' | 'series' | null 
 };
 
 const _isTvBoot = detectTvEnvironment();
+const TMDB_HOME_HERO_LIMIT = _isTvBoot ? 16 : 24;
+const TMDB_HOME_ROW_LIMIT = _isTvBoot ? 28 : 40;
 const HOME_ARTWORK_PREFETCH_ITEM_LIMIT = _isTvBoot ? 24 : 60;
 const HOME_ARTWORK_DIRECT_IMAGE_LIMIT = _isTvBoot ? 36 : 90;
 const HOME_ARTWORK_PREFETCH_CONCURRENCY = _isTvBoot ? 3 : 6;
@@ -170,6 +178,175 @@ const getTMDBRankingScore = (metadata: TMDBData | null | undefined): number | nu
   return (voteAverage * (0.7 + confidence * 0.3)) + popularityBoost + (matchScore * 0.25);
 };
 
+const buildTMDBVirtualMediaId = (item: TMDBTrendingItem): string =>
+  `tmdb-${item.mediaType}-${item.id}`;
+
+const buildTMDBTrendingMedia = (
+  item: TMDBTrendingItem,
+  categoryLabel: string,
+): Media => {
+  const mediaType = item.mediaType === 'movie' ? 'movie' : 'series';
+  return {
+    id: buildTMDBVirtualMediaId(item),
+    title: item.title,
+    description: item.overview || 'Sinopse nao disponivel.',
+    thumbnail: item.poster || item.backdrop || '',
+    backdrop: item.backdrop || item.poster || '',
+    videoUrl: '',
+    type: mediaType as any,
+    year: item.year || 0,
+    rating: item.rating || '0.0',
+    category: categoryLabel,
+  };
+};
+
+const buildTMDBTrendingMetadata = (item: TMDBTrendingItem): TMDBData => ({
+  description: item.overview || 'Sinopse nao disponivel.',
+  thumbnail: item.poster || item.backdrop || null,
+  backdrop: item.backdrop || item.poster || null,
+  year: item.year || 0,
+  rating: item.rating || '0.0',
+  voteAverage: item.voteAverage,
+  voteCount: item.voteCount,
+  popularity: item.popularity,
+  genres: [],
+  trailerKey: null,
+  streamingProvider: null,
+  cast: [],
+  matchScore: 1,
+  matchedTitle: item.title,
+});
+
+const dedupeTMDBTrendingMedia = (items: Media[]): Media[] => {
+  const seen = new Set<string>();
+  const deduped: Media[] = [];
+  for (const item of items) {
+    const key = String(item.id || '').trim();
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    deduped.push(item);
+  }
+  return deduped;
+};
+
+const normalizeTitleLookup = (value: string): string =>
+  String(value || '')
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/\b(19|20)\d{2}\b/g, ' ')
+    .replace(/\bs\d{1,2}\s*e\d{1,2}\b/gi, ' ')
+    .replace(/[^a-z0-9]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+const buildTitleLookupKeys = (title: string): string[] => {
+  const raw = normalizeTitleLookup(title);
+  if (!raw) return [];
+  const compact = raw
+    .replace(/\b(hd|fhd|uhd|sd|dublado|legendado|dual audio|h265|hevc)\b/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return Array.from(new Set([raw, compact].filter(Boolean)));
+};
+
+const buildPlayableCatalogLookup = (categories: Category[]): Map<string, Media[]> => {
+  const lookup = new Map<string, Media[]>();
+  const seenByBucket = new Map<string, Set<string>>();
+
+  for (const category of categories) {
+    for (const item of category.items) {
+      const mediaType = normalizeTMDBType(item.type as unknown as string);
+      if (!mediaType) continue;
+      if (!String(item.videoUrl || '').trim()) continue;
+
+      const titleKeys = buildTitleLookupKeys(item.title);
+      for (const titleKey of titleKeys) {
+        const bucketKey = `${mediaType}:${titleKey}`;
+        const existing = lookup.get(bucketKey) || [];
+        const seenIds = seenByBucket.get(bucketKey) || new Set<string>();
+        if (seenIds.has(item.id)) continue;
+        seenIds.add(item.id);
+        seenByBucket.set(bucketKey, seenIds);
+        existing.push(item);
+        lookup.set(bucketKey, existing);
+      }
+    }
+  }
+
+  return lookup;
+};
+
+const selectBestPlayableMatch = (
+  candidates: Media[],
+  trendingItem: TMDBTrendingItem,
+): Media | null => {
+  if (candidates.length === 0) return null;
+  const trendingKeys = buildTitleLookupKeys(trendingItem.title);
+  const primaryTrendingKey = trendingKeys[0] || '';
+
+  const scored = candidates
+    .map((candidate, originalIndex) => {
+      const candidateKeys = buildTitleLookupKeys(candidate.title);
+      const candidatePrimary = candidateKeys[0] || '';
+      const yearScore =
+        trendingItem.year > 0 && Number(candidate.year || 0) === trendingItem.year ? 1.2 : 0;
+      const exactScore = candidatePrimary && candidatePrimary === primaryTrendingKey ? 2 : 0;
+      const partialScore = candidateKeys.some((key) => trendingKeys.includes(key)) ? 0.9 : 0;
+      const artworkScore =
+        (String(candidate.backdrop || '').trim() ? 0.2 : 0)
+        + (String(candidate.thumbnail || '').trim() ? 0.2 : 0);
+
+      return {
+        candidate,
+        originalIndex,
+        score: exactScore + partialScore + yearScore + artworkScore,
+      };
+    })
+    .sort((a, b) => {
+      if (b.score !== a.score) return b.score - a.score;
+      return a.originalIndex - b.originalIndex;
+    });
+
+  return scored[0]?.candidate || null;
+};
+
+const mergeTrendingWithPlayableMedia = (
+  playable: Media,
+  trendingItem: TMDBTrendingItem,
+  fallbackCategoryLabel: string,
+): Media => ({
+  ...playable,
+  title: playable.title || trendingItem.title,
+  description: playable.description || trendingItem.overview || 'Sinopse nao disponivel.',
+  thumbnail: playable.thumbnail || trendingItem.poster || trendingItem.backdrop || '',
+  backdrop: playable.backdrop || trendingItem.backdrop || trendingItem.poster || '',
+  year: trendingItem.year || playable.year || 0,
+  rating: playable.rating || trendingItem.rating || '0.0',
+  category: playable.category || fallbackCategoryLabel,
+});
+
+const resolvePlayableMatchFromTrending = (
+  trendingItem: TMDBTrendingItem,
+  catalogLookup: Map<string, Media[]>,
+): Media | null => {
+  const typeKey = trendingItem.mediaType === 'movie' ? 'movie' : 'series';
+  const candidateKeys = buildTitleLookupKeys(trendingItem.title);
+  const collected: Media[] = [];
+  const seen = new Set<string>();
+
+  for (const titleKey of candidateKeys) {
+    const bucket = catalogLookup.get(`${typeKey}:${titleKey}`) || [];
+    for (const candidate of bucket) {
+      if (seen.has(candidate.id)) continue;
+      seen.add(candidate.id);
+      collected.push(candidate);
+    }
+  }
+
+  return selectBestPlayableMatch(collected, trendingItem);
+};
+
 const preloadImageUrl = async (url: string): Promise<void> => {
   const safeUrl = String(url || '').trim();
   if (!safeUrl || typeof window === 'undefined' || typeof Image === 'undefined') return;
@@ -219,10 +396,10 @@ interface RowsVirtualListProps {
   heroPaginationTotal: number;
   canHeroPaginate: boolean;
   onTrailerError: (media: Media) => void;
-  scrollRef: React.RefObject<HTMLDivElement>;
   handleHeroInfo: (media: Media) => void;
 }
 
+// RowsVirtualList agora é apenas apresentacional, recebendo o virtualizer do pai
 const RowsVirtualList = React.memo(({
   categories,
   cardPreloadedTMDB,
@@ -245,32 +422,9 @@ const RowsVirtualList = React.memo(({
   heroPaginationTotal,
   canHeroPaginate,
   onTrailerError,
-  scrollRef,
   handleHeroInfo,
-}: RowsVirtualListProps) => {
-  const viewportWidth = Math.max(layout.contentMaxWidth || layout.width, layout.width);
-  const baseHeroEstimatedHeight = Math.round(
-    Math.min(
-      layout.heroHeightMax,
-      Math.max(layout.heroMinHeight, viewportWidth * layout.heroHeightRatio),
-    ),
-  );
-  const heroEstimatedHeight = layout.isTvProfile
-    ? Math.max(280, Math.min(baseHeroEstimatedHeight, Math.round(layout.height * 0.58)))
-    : baseHeroEstimatedHeight;
-  const rowEstimatedHeight = layout.isTvProfile ? 220 : 360;
-
-  // Virtualization is ALWAYS enabled to prevent OOM on TVs with 198k items
-  const rowVirtualizer = useVirtualizer({
-    count: categories.length + 1, // +1 for Hero
-    getScrollElement: () => scrollRef.current,
-    estimateSize: (index) => {
-      if (index === 0) return heroEstimatedHeight;
-      return rowEstimatedHeight;
-    },
-    overscan: layout.isTvProfile ? 4 : 8,
-  });
-
+  rowVirtualizer, // Recebido do pai
+}: RowsVirtualListProps & { rowVirtualizer: any }) => {
   return (
     <div
       style={{
@@ -279,7 +433,7 @@ const RowsVirtualList = React.memo(({
         position: 'relative',
       }}
     >
-      {rowVirtualizer.getVirtualItems().map((virtualRow) => {
+      {rowVirtualizer.getVirtualItems().map((virtualRow: any) => {
         const isHero = virtualRow.index === 0;
 
         if (isHero) {
@@ -321,6 +475,7 @@ const RowsVirtualList = React.memo(({
           <div
             key={virtualRow.key}
             data-index={virtualRow.index}
+            data-home-row-index={virtualRow.index}
             ref={rowVirtualizer.measureElement}
             style={{
               position: 'absolute',
@@ -433,6 +588,12 @@ const HomeScreen: React.FC<{ onLogout: () => void }> = ({ onLogout }) => {
   const [searchKeyboardShift, setSearchKeyboardShift] = useState(true);
   const [searchCatalogItems, setSearchCatalogItems] = useState<Media[]>([]);
   const [isSearchCatalogLoading, setIsSearchCatalogLoading] = useState(false);
+  const [homeTMDBHeroItems, setHomeTMDBHeroItems] = useState<Media[]>([]);
+  const [homeTMDBMoviesWeekCategory, setHomeTMDBMoviesWeekCategory] = useState<Category | null>(null);
+  const [homeTMDBSeriesWeekCategory, setHomeTMDBSeriesWeekCategory] = useState<Category | null>(null);
+  const [homeTMDBMoviesComingSoonCategory, setHomeTMDBMoviesComingSoonCategory] = useState<Category | null>(null);
+  const [homeTMDBSeriesComingSoonCategory, setHomeTMDBSeriesComingSoonCategory] = useState<Category | null>(null);
+  const [homeTMDBMetadataByKey, setHomeTMDBMetadataByKey] = useState<Record<string, TMDBData>>({});
   const heroPreloadedTMDBRef = useRef<Record<string, TMDBData>>({});
   const cardPreloadScopeRef = useRef<string>('');
   const searchCatalogRequestRef = useRef(0);
@@ -603,6 +764,8 @@ const HomeScreen: React.FC<{ onLogout: () => void }> = ({ onLogout }) => {
   const hasRequestedInitialPlaylistRef = useRef(false);
   const wasPlayingRef = useRef(false);
   const autoRotateResumeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Ref estável para o rowVirtualizer — permite uso em callbacks declarados antes da criação do virtualizer
+  const rowVirtualizerRef = useRef<any>(null);
   const isHeroRandomFilter = activeFilter === 'home' || activeFilter === 'movie' || activeFilter === 'series';
 
   const clearAutoRotateResumeTimer = useCallback(() => {
@@ -653,12 +816,164 @@ const HomeScreen: React.FC<{ onLogout: () => void }> = ({ onLogout }) => {
     [catalogPreviewCategories],
   );
 
+  const playableCatalogLookup = useMemo(
+    () => buildPlayableCatalogLookup(catalogPreviewCategories),
+    [catalogPreviewCategories],
+  );
+
   useEffect(() => {
     searchResultsCacheRef.current.clear();
   }, [catalogPreviewCategories.length]);
 
+  useEffect(() => {
+    if (!isTMDBConfigured()) {
+      setHomeTMDBHeroItems([]);
+      setHomeTMDBMoviesWeekCategory(null);
+      setHomeTMDBSeriesWeekCategory(null);
+      setHomeTMDBMoviesComingSoonCategory(null);
+      setHomeTMDBSeriesComingSoonCategory(null);
+      setHomeTMDBMetadataByKey({});
+      return;
+    }
+
+    let cancelled = false;
+
+    const loadTMDBHomeFeed = async () => {
+      try {
+        const [moviesWeek, seriesWeek, mixedDay] = await Promise.all([
+          fetchTMDBTrending('movie', 'week', { limit: TMDB_HOME_ROW_LIMIT }),
+          fetchTMDBTrending('tv', 'week', { limit: TMDB_HOME_ROW_LIMIT }),
+          fetchTMDBTrending('all', 'day', { limit: TMDB_HOME_HERO_LIMIT * 2 }),
+        ]);
+
+        if (cancelled) return;
+
+        const metadataByKey: Record<string, TMDBData> = {};
+
+        const mapTrendingCollection = (
+          source: TMDBTrendingItem[],
+          categoryLabel: string,
+        ) => {
+          const playable: Media[] = [];
+          const comingSoon: Media[] = [];
+
+          for (const trendingItem of source) {
+            const matched = resolvePlayableMatchFromTrending(trendingItem, playableCatalogLookup);
+            const merged = matched
+              ? mergeTrendingWithPlayableMedia(matched, trendingItem, categoryLabel)
+              : buildTMDBTrendingMedia(trendingItem, categoryLabel);
+
+            metadataByKey[merged.id] = buildTMDBTrendingMetadata(trendingItem);
+            if (matched) {
+              playable.push(merged);
+            } else {
+              comingSoon.push(merged);
+            }
+          }
+
+          return {
+            playable: dedupeTMDBTrendingMedia(playable),
+            comingSoon: dedupeTMDBTrendingMedia(comingSoon),
+          };
+        };
+
+        const movieMapped = mapTrendingCollection(moviesWeek, 'TMDB - Filmes em tendencia');
+        const seriesMapped = mapTrendingCollection(seriesWeek, 'TMDB - Series em tendencia');
+        const heroDayMapped = mapTrendingCollection(mixedDay, 'TMDB - Em alta hoje');
+
+        const movieItems = movieMapped.playable.slice(0, TMDB_HOME_ROW_LIMIT);
+        const seriesItems = seriesMapped.playable.slice(0, TMDB_HOME_ROW_LIMIT);
+        const targetYear = 2026;
+        const movieItems2026 = movieMapped.playable
+          .filter((item) => Number(item.year || 0) === targetYear)
+          .slice(0, TMDB_HOME_ROW_LIMIT);
+        const seriesItems2026 = seriesMapped.playable
+          .filter((item) => Number(item.year || 0) === targetYear)
+          .slice(0, TMDB_HOME_ROW_LIMIT);
+        const movieItemsPrimary = movieItems2026.length > 0 ? movieItems2026 : movieItems;
+        const seriesItemsPrimary = seriesItems2026.length > 0 ? seriesItems2026 : seriesItems;
+
+        const movieComingSoonItems = movieMapped.comingSoon.slice(0, TMDB_HOME_ROW_LIMIT);
+        const seriesComingSoonItems = seriesMapped.comingSoon.slice(0, TMDB_HOME_ROW_LIMIT);
+
+        const heroPlayableItems = heroDayMapped.playable.slice(0, TMDB_HOME_HERO_LIMIT);
+        const heroFallbackPlayable = dedupeTMDBTrendingMedia([...movieItems, ...seriesItems]).slice(0, TMDB_HOME_HERO_LIMIT);
+        const heroComingSoonFallback = heroDayMapped.comingSoon.slice(0, Math.min(6, TMDB_HOME_HERO_LIMIT));
+
+        const heroItems =
+          heroPlayableItems.length > 0
+            ? heroPlayableItems
+            : heroFallbackPlayable.length > 0
+              ? heroFallbackPlayable
+              : heroComingSoonFallback;
+
+        setHomeTMDBHeroItems(heroItems);
+        setHomeTMDBMoviesWeekCategory(
+          movieItemsPrimary.length > 0
+            ? {
+                id: 'home-tmdb-trending-movies-week',
+                title: 'Filmes em Tendencia (2026)',
+                type: 'movie',
+                items: movieItemsPrimary,
+              }
+            : null,
+        );
+        setHomeTMDBSeriesWeekCategory(
+          seriesItemsPrimary.length > 0
+            ? {
+                id: 'home-tmdb-trending-series-week',
+                title: 'Series em Tendencia (2026)',
+                type: 'series',
+                items: seriesItemsPrimary,
+              }
+            : null,
+        );
+        setHomeTMDBMoviesComingSoonCategory(
+          movieComingSoonItems.length > 0
+            ? {
+                id: 'home-tmdb-coming-soon-movies-week',
+                title: 'Lançamentos - Breve',
+                type: 'movie',
+                items: movieComingSoonItems,
+              }
+            : null,
+        );
+        setHomeTMDBSeriesComingSoonCategory(
+          seriesComingSoonItems.length > 0
+            ? {
+                id: 'home-tmdb-coming-soon-series-week',
+                title: 'Séries - Breve',
+                type: 'series',
+                items: seriesComingSoonItems,
+              }
+            : null,
+        );
+        setHomeTMDBMetadataByKey(metadataByKey);
+      } catch (error) {
+        if (cancelled) return;
+        console.warn('[HomeScreen][TMDB] Falha ao carregar tendencias:', error);
+        setHomeTMDBHeroItems([]);
+        setHomeTMDBMoviesWeekCategory(null);
+        setHomeTMDBSeriesWeekCategory(null);
+        setHomeTMDBMoviesComingSoonCategory(null);
+        setHomeTMDBSeriesComingSoonCategory(null);
+        setHomeTMDBMetadataByKey({});
+      }
+    };
+
+    void loadTMDBHomeFeed();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [catalogPreviewCategories.length, playableCatalogLookup]);
+
   const heroCandidates = useMemo(() => {
     if (!isHeroRandomFilter) return [];
+
+    if (activeFilter === 'home' && homeTMDBHeroItems.length > 0) {
+      return homeTMDBHeroItems;
+    }
 
     const allowedTypes =
       activeFilter === 'movie'
@@ -699,7 +1014,7 @@ const HomeScreen: React.FC<{ onLogout: () => void }> = ({ onLogout }) => {
     }
 
     return candidates;
-  }, [activeFilter, filteredCategories, isHeroRandomFilter]);
+  }, [activeFilter, filteredCategories, homeTMDBHeroItems, isHeroRandomFilter]);
 
   const heroReadyCandidates = useMemo(
     () =>
@@ -758,8 +1073,8 @@ const HomeScreen: React.FC<{ onLogout: () => void }> = ({ onLogout }) => {
   const heroDisplayTMDBData = useMemo(() => {
     const key = getHeroMediaKey(heroDisplayMedia);
     if (!key) return null;
-    return heroPreloadedTMDB[key] || null;
-  }, [heroDisplayMedia, heroPreloadedTMDB]);
+    return heroPreloadedTMDB[key] || homeTMDBMetadataByKey[key] || null;
+  }, [heroDisplayMedia, heroPreloadedTMDB, homeTMDBMetadataByKey]);
 
   const heroPaginationState = useMemo(() => {
     if (!isHeroRandomFilter) return { index: null as number | null, total: 0 };
@@ -800,6 +1115,13 @@ const HomeScreen: React.FC<{ onLogout: () => void }> = ({ onLogout }) => {
   );
 
   const handlePlay = useCallback((media: Media) => {
+    const playableUrl = String(media.videoUrl || '').trim();
+    if (!playableUrl) {
+      setDetailsMedia(media);
+      setIsDetailsVisible(true);
+      return;
+    }
+
     clearAutoRotateResumeTimer();
     setIsChannelBrowserOpen(false);
     setFocusedId(null);
@@ -809,12 +1131,12 @@ const HomeScreen: React.FC<{ onLogout: () => void }> = ({ onLogout }) => {
       setLastClosedLiveMedia(null);
     }
     setPlayingMedia(media);
-    setActiveVideoUrl(media.videoUrl);
+    setActiveVideoUrl(playableUrl);
     setVideoType(media.type as any);
     setIsAutoRotating(false);
     setIsDetailsVisible(false);
     setPlayerMode('fullscreen');
-  }, [clearAutoRotateResumeTimer, setFocusedId, setIsChannelBrowserOpen, setPlayerMode]);
+  }, [clearAutoRotateResumeTimer, setFocusedId, setIsChannelBrowserOpen, setDetailsMedia, setPlayerMode]);
 
   const closeActivePlayer = useCallback(() => {
     const closedLiveMedia = videoType === 'live' ? playingMedia : null;
@@ -838,6 +1160,15 @@ const HomeScreen: React.FC<{ onLogout: () => void }> = ({ onLogout }) => {
       setIsDetailsVisible(true);
     }
   }, [handlePlay]);
+
+  const closeGridCategory = useCallback(() => {
+    setGridCategory(null);
+  }, []);
+
+  const handleGridSelectMedia = useCallback((media: Media) => {
+    setGridCategory(null);
+    handleMediaPress(media);
+  }, [handleMediaPress]);
 
   const handleHeroInfo = useCallback((media: Media) => {
     setDetailsMedia(media);
@@ -891,9 +1222,25 @@ const HomeScreen: React.FC<{ onLogout: () => void }> = ({ onLogout }) => {
     [isTvProfile],
   );
 
-  const handleCategoryMediaFocus = useCallback((_: Media, _id: string) => {
+  const handleCategoryMediaFocus = useCallback((_: Media, id: string) => {
     setIsAutoRotating(false);
     scheduleHeroAutoRotateResume(layout.isTvProfile ? 10000 : 7000);
+
+    if (!layout.isTvProfile || typeof document === 'undefined') return;
+
+    const virtualizer = rowVirtualizerRef.current;
+    if (!virtualizer) return;
+
+    // Extrair o rowIndex do navId (ex: "item-2-5" -> 2)
+    const match = id.match(/item-(\d+)-/);
+    if (match) {
+      const rowIndex = parseInt(match[1], 10);
+      // No rowVirtualizer, o index 0 é o Hero, então as categorias começam em 1.
+      virtualizer.scrollToIndex(rowIndex + 1, { 
+        align: 'center',
+        behavior: 'auto' 
+      });
+    }
   }, [layout.isTvProfile, scheduleHeroAutoRotateResume]);
 
   useEffect(() => {
@@ -1326,17 +1673,28 @@ const HomeScreen: React.FC<{ onLogout: () => void }> = ({ onLogout }) => {
       return categoriesWithCoverCards;
     }
 
+    const tmdbWeeklyRows: Category[] = [
+      homeTMDBMoviesWeekCategory,
+      homeTMDBSeriesWeekCategory,
+      homeTMDBMoviesComingSoonCategory,
+      homeTMDBSeriesComingSoonCategory,
+    ].filter((category): category is Category => Boolean(category && category.items.length > 0));
+
     const categoriesBase = categoriesWithCoverCards.filter((category) => {
       const normalizedTitle = normalizeCategoryLabel(category.title);
       return (
         category.id !== 'home-favorites'
         && category.id !== 'home-top-rated-lancamentos'
+        && category.id !== 'home-tmdb-trending-movies-week'
+        && category.id !== 'home-tmdb-trending-series-week'
+        && category.id !== 'home-tmdb-coming-soon-movies-week'
+        && category.id !== 'home-tmdb-coming-soon-series-week'
         && normalizedTitle !== 'meus favoritos'
         && normalizedTitle !== 'mais conceituados tmdb lancamentos'
       );
     });
 
-    let withFavorites = categoriesBase;
+    let withFavorites = [...tmdbWeeklyRows, ...categoriesBase];
     if (favoriteItems.length > 0) {
       const favoritesCategory: Category = {
         id: 'home-favorites',
@@ -1344,7 +1702,10 @@ const HomeScreen: React.FC<{ onLogout: () => void }> = ({ onLogout }) => {
         type: 'movie',
         items: favoriteItems,
       };
-      const favoritesInsertIndex = Math.min(2, withFavorites.length);
+      const favoritesInsertIndex = Math.min(
+        Math.max(tmdbWeeklyRows.length, 2),
+        withFavorites.length,
+      );
       withFavorites = [
         ...withFavorites.slice(0, favoritesInsertIndex),
         favoritesCategory,
@@ -1355,6 +1716,7 @@ const HomeScreen: React.FC<{ onLogout: () => void }> = ({ onLogout }) => {
     const mergedMetadataByKey: Record<string, TMDBData> = {
       ...cardPreloadedTMDB,
       ...heroPreloadedTMDB,
+      ...homeTMDBMetadataByKey,
     };
 
     const topRatedLaunchItems = filteredCategories
@@ -1406,7 +1768,10 @@ const HomeScreen: React.FC<{ onLogout: () => void }> = ({ onLogout }) => {
       items: topRatedLaunchItems,
     };
 
-    const topRatedInsertIndex = Math.min(3, withFavorites.length);
+    const topRatedInsertIndex = Math.min(
+      Math.max(3, tmdbWeeklyRows.length + (favoriteItems.length > 0 ? 1 : 0)),
+      withFavorites.length,
+    );
     return [
       ...withFavorites.slice(0, topRatedInsertIndex),
       topRatedCategory,
@@ -1418,8 +1783,55 @@ const HomeScreen: React.FC<{ onLogout: () => void }> = ({ onLogout }) => {
     categoriesWithCoverCards,
     favoriteItems,
     filteredCategories,
+    homeTMDBMetadataByKey,
+    homeTMDBMoviesComingSoonCategory,
+    homeTMDBMoviesWeekCategory,
+    homeTMDBSeriesComingSoonCategory,
+    homeTMDBSeriesWeekCategory,
     heroPreloadedTMDB,
   ]);
+
+  // P0/Otimização: Virtualizador de linhas movido para o nível do HomeScreen
+  // para permitir controle centralizado de scroll via D-Pad (scrollToIndex).
+  const viewportWidth = Math.max(layout.contentMaxWidth || layout.width, layout.width);
+  const baseHeroEstimatedHeight = Math.round(
+    Math.min(
+      layout.heroHeightMax,
+      Math.max(layout.heroMinHeight, viewportWidth * layout.heroHeightRatio),
+    ),
+  );
+  const heroEstimatedHeight = layout.isTvProfile
+    ? Math.max(280, Math.min(baseHeroEstimatedHeight, Math.round(layout.height * 0.58)))
+    : baseHeroEstimatedHeight;
+
+  // P0: Calcula o tamanho EXATO de cada linha para evitar "pulos" de reajuste do virtualizador.
+  // Utiliza a exata mesma lógica do componente CategoryRow.tsx para garantir 100% de precisão.
+  const getExactRowHeight = useCallback((index: number) => {
+    if (index === 0) return heroEstimatedHeight;
+    const category = categoriesForRows[index - 1];
+    if (!category) return layout.isTvProfile ? 460 : 360;
+
+    const titleLower = category.title.toLowerCase();
+    const isLiveRow = category.type === 'live' || titleLower.includes('canais') || titleLower.includes('ao vivo');
+    
+    const cardWidth = layout.isTvProfile
+      ? (isLiveRow ? 360 : 240)
+      : (layout.isCompact ? (isLiveRow ? 320 : 210) : (isLiveRow ? 360 : 230));
+      
+    const cardHeight = isLiveRow ? Math.round(cardWidth * (9 / 16)) : Math.round(cardWidth * 1.5);
+    const rowHeight = cardHeight + (layout.isTvProfile ? 100 : 140);
+    
+    return rowHeight;
+  }, [categoriesForRows, heroEstimatedHeight, layout]);
+
+  const rowVirtualizer = useVirtualizer({
+    count: categoriesForRows.length + 1, // +1 for Hero
+    getScrollElement: () => scrollRef.current,
+    estimateSize: getExactRowHeight,
+    overscan: layout.isTvProfile ? 30 : 10,
+  });
+  // Sincroniza ref para uso em callbacks declarados antes desta linha
+  rowVirtualizerRef.current = rowVirtualizer;
 
   const searchResultCount = useMemo(
     () => categoriesForRows.reduce((acc, category) => acc + category.items.length, 0),
@@ -2183,8 +2595,8 @@ const HomeScreen: React.FC<{ onLogout: () => void }> = ({ onLogout }) => {
                   heroPaginationTotal={heroPaginationState.total}
                   canHeroPaginate={heroSelectionCandidates.length > 1}
                   onTrailerError={handleTrailerError}
-                  scrollRef={scrollRef as any}
                   handleHeroInfo={handleHeroInfo}
+                  rowVirtualizer={rowVirtualizer}
                 />
               </div>
             </div>
@@ -2331,11 +2743,8 @@ const HomeScreen: React.FC<{ onLogout: () => void }> = ({ onLogout }) => {
         {gridCategory && (
           <CategoryGridView
             category={gridCategory}
-            onClose={() => setGridCategory(null)}
-            onSelectMedia={(media) => {
-              setGridCategory(null);
-              handleMediaPress(media);
-            }}
+            onClose={closeGridCategory}
+            onSelectMedia={handleGridSelectMedia}
           />
         )}
       </Suspense>

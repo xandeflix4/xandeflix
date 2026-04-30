@@ -1,5 +1,5 @@
-import React, { useCallback, useEffect, useState } from 'react';
-import { View, Text, TouchableHighlight, Dimensions } from 'react-native';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { View, Text, TouchableHighlight } from 'react-native';
 import { App as CapacitorApp } from '@capacitor/app';
 import { Capacitor } from '@capacitor/core';
 import { StatusBar } from '@capacitor/status-bar';
@@ -19,7 +19,6 @@ const LEGACY_AUTH_STORAGE_KEYS = [
   'xandeflix_user_id',
   'xandeflix_session',
 ] as const;
-const EXIT_MODAL_MAX_HEIGHT = Math.min(Dimensions.get('window').height * 0.86, 420);
 
 function clearLegacyAuthStorage() {
   LEGACY_AUTH_STORAGE_KEYS.forEach((key) => localStorage.removeItem(key));
@@ -59,15 +58,100 @@ export default function App() {
     isActive: showExitConfirmation,
     onBack: () => setShowExitConfirmation(false),
   });
+  const showExitConfirmationRef = useRef(showExitConfirmation);
 
   useEffect(() => {
-    if (showExitConfirmation) {
-      // Pequeno delay para garantir que os nodes foram registrados no DOM
-      setTimeout(() => {
-        setFocusedId('exit-cancel');
-      }, 50);
-    }
+    showExitConfirmationRef.current = showExitConfirmation;
+  }, [showExitConfirmation]);
+
+  useEffect(() => {
+    if (!showExitConfirmation) return;
+    // Pequeno delay para garantir que os nodes foram registrados no DOM
+    const timerId = window.setTimeout(() => {
+      setFocusedId('exit-cancel');
+    }, 50);
+    return () => window.clearTimeout(timerId);
   }, [showExitConfirmation, setFocusedId]);
+
+  useEffect(() => {
+    if (!showExitConfirmation) return;
+
+    const modalNodeIds = ['exit-cancel', 'exit-confirm'] as const;
+    type ModalNodeId = (typeof modalNodeIds)[number];
+
+    const getFocusedModalNode = (): ModalNodeId | null => {
+      const activeElement = document.activeElement as HTMLElement | null;
+      const navId = activeElement?.dataset?.navId
+        || activeElement?.closest('[data-nav-id]')?.getAttribute('data-nav-id')
+        || null;
+      if (navId === 'exit-cancel' || navId === 'exit-confirm') return navId;
+      return null;
+    };
+
+    const focusModalNodeByIndex = (index: number) => {
+      const safeIndex = (index + modalNodeIds.length) % modalNodeIds.length;
+      setFocusedId(modalNodeIds[safeIndex]);
+    };
+
+    const activateFocusedModalNode = () => {
+      const targetNavId = getFocusedModalNode() || 'exit-cancel';
+      const element = document.querySelector<HTMLElement>(`[data-nav-id="${targetNavId}"]`);
+      if (element) {
+        element.click();
+      }
+    };
+
+    const normalizeModalKey = (event: KeyboardEvent): string => {
+      if (event.key === 'Escape' || event.key === 'Back') return 'Back';
+      if (event.key === 'Enter' || event.key === 'OK') return 'Enter';
+      if (event.key === 'ArrowLeft' || event.key === 'ArrowRight' || event.key === 'ArrowUp' || event.key === 'ArrowDown') {
+        return event.key;
+      }
+
+      const keyCode = (event as KeyboardEvent & { keyCode?: number }).keyCode;
+      if (keyCode === 4) return 'Back';
+      if (keyCode === 13 || keyCode === 23 || keyCode === 66 || keyCode === 160) return 'Enter';
+      if (keyCode === 21) return 'ArrowLeft';
+      if (keyCode === 22) return 'ArrowRight';
+      if (keyCode === 19) return 'ArrowUp';
+      if (keyCode === 20) return 'ArrowDown';
+      return '';
+    };
+
+    const trapModalNavigation = (event: KeyboardEvent) => {
+      const key = normalizeModalKey(event);
+      if (!key) return;
+
+      event.preventDefault();
+      event.stopPropagation();
+      event.stopImmediatePropagation();
+
+      if (key === 'Back') {
+        setShowExitConfirmation(false);
+        return;
+      }
+
+      if (key === 'Enter') {
+        activateFocusedModalNode();
+        return;
+      }
+
+      const currentFocusedNode = getFocusedModalNode();
+      const currentIndex = currentFocusedNode ? modalNodeIds.indexOf(currentFocusedNode) : 0;
+
+      if (key === 'ArrowLeft' || key === 'ArrowUp') {
+        focusModalNodeByIndex(currentIndex - 1);
+        return;
+      }
+
+      if (key === 'ArrowRight' || key === 'ArrowDown') {
+        focusModalNodeByIndex(currentIndex + 1);
+      }
+    };
+
+    window.addEventListener('keydown', trapModalNavigation, true);
+    return () => window.removeEventListener('keydown', trapModalNavigation, true);
+  }, [setFocusedId, showExitConfirmation]);
 
   useEffect(() => {
     const crash = getLastCrash();
@@ -107,8 +191,13 @@ export default function App() {
   useEffect(() => {
     if (Capacitor.isNativePlatform()) {
       const backButtonListener = CapacitorApp.addListener('backButton', ({ canGoBack }) => {
+        if (showExitConfirmationRef.current) {
+          setShowExitConfirmation(false);
+          return;
+        }
+
         // Se houver modais abertos ou navegação interna, enviamos o Escape
-        const hasOpenModals = document.querySelector('[role="dialog"], .modal-open, #player-overlay');
+        const hasOpenModals = document.querySelector('[role="dialog"], .modal-open, #player-overlay, #exit-confirmation-modal');
         
         if (hasOpenModals) {
           const escapeEvent = new KeyboardEvent('keydown', { key: 'Escape', bubbles: true });
@@ -365,20 +454,23 @@ export default function App() {
     );
   }
 
+  let mainContent;
   if (isLoading) {
-    return <LoadingScreen />;
-  }
-
-  if (!isAuthenticated) {
-    return <LoginScreen onLoginSuccess={handleLoginSuccess} />;
+    mainContent = <LoadingScreen />;
+  } else if (!isAuthenticated) {
+    mainContent = <LoginScreen onLoginSuccess={handleLoginSuccess} />;
+  } else {
+    mainContent = <HomeScreen onLogout={handleLogout} />;
   }
 
   return (
     <>
-      <HomeScreen onLogout={handleLogout} />
+      {mainContent}
       
       {showExitConfirmation && (
-        <View style={{
+        <View
+          id="exit-confirmation-modal"
+          style={{
           position: 'absolute',
           top: 0,
           left: 0,
@@ -393,27 +485,29 @@ export default function App() {
         }}>
           <View style={{
             width: '100%',
-            maxWidth: 480,
+            maxWidth: 520,
             backgroundColor: '#181818',
             borderRadius: 24,
-            padding: 32,
+            paddingTop: 24,
+            paddingHorizontal: 24,
+            paddingBottom: 22,
             borderWidth: 1,
             borderColor: 'rgba(255,255,255,0.12)',
             alignItems: 'center',
             justifyContent: 'flex-start',
-            maxHeight: EXIT_MODAL_MAX_HEIGHT,
+            minHeight: 0,
             shadowColor: '#000',
-            shadowOffset: { width: 0, height: 20 },
-            shadowOpacity: 0.8,
-            shadowRadius: 40,
-            elevation: 30,
+            shadowOffset: { width: 0, height: 18 },
+            shadowOpacity: 0.7,
+            shadowRadius: 32,
+            elevation: 24,
           }}>
             <View style={{
-              width: 50,
+              width: 46,
               height: 4,
               backgroundColor: '#E50914',
               borderRadius: 2,
-              marginBottom: 20,
+              marginBottom: 18,
             }} />
             
             <Text style={{
@@ -421,62 +515,77 @@ export default function App() {
               fontSize: 24,
               fontWeight: '900',
               textAlign: 'center',
-              marginBottom: 12,
+              marginBottom: 10,
               fontFamily: 'Outfit',
             }}>Sair do Xandeflix?</Text>
             
-            <Text style={{
-              color: 'rgba(255,255,255,0.7)',
-              fontSize: 15,
+            <div style={{
+              width: '100%',
+              maxWidth: 420,
+              marginBottom: 20,
               textAlign: 'center',
-              marginBottom: 32,
-              lineHeight: 22,
-              fontFamily: 'Outfit',
-              maxWidth: '90%',
+              color: 'rgba(255,255,255,0.75)',
+              fontSize: 15,
+              lineHeight: '20px',
+              fontFamily: 'Outfit, sans-serif',
             }}>
-              Sua programação atual será pausada. Tem Certeza que deseja fechar o aplicativo?
-            </Text>
+              <div>Sua programação atual será pausada.</div>
+              <div style={{ marginTop: 6 }}>Deseja realmente fechar o aplicativo?</div>
+            </div>
 
             <View style={{ 
               flexDirection: 'row', 
-              gap: 16, 
+              gap: 10, 
               width: '100%',
-              justifyContent: 'center'
+              maxWidth: 430,
+              height: 50,
+              marginTop: 2,
+              paddingHorizontal: 16,
             }}>
               <TouchableHighlight
-                ref={(ref) => registerNode('exit-cancel', ref as any, 'exit-modal', {
+                ref={(ref) => registerNode('exit-cancel', ref as any, 'modal-exit', {
                   onEnter: () => setShowExitConfirmation(false),
+                  onLeft: () => setFocusedId('exit-confirm'),
+                  onRight: () => setFocusedId('exit-confirm'),
+                  onUp: () => setFocusedId('exit-confirm'),
+                  onDown: () => setFocusedId('exit-confirm'),
+                  onBack: () => setShowExitConfirmation(false),
                 })}
                 onPress={() => setShowExitConfirmation(false)}
                 underlayColor="rgba(255,255,255,0.15)"
                 style={{
-                  width: 220,
+                  flex: 1,
                   backgroundColor: 'rgba(255,255,255,0.08)',
-                  borderRadius: 12,
-                  paddingVertical: 16,
+                  borderRadius: 10,
+                  justifyContent: 'center',
                   alignItems: 'center',
                   borderWidth: 1,
                   borderColor: 'rgba(255,255,255,0.05)',
                 }}
               >
-                <Text style={{ color: 'white', fontSize: 15, fontWeight: '900', fontFamily: 'Outfit' }}>VOLTAR</Text>
+                <Text style={{ color: 'white', fontSize: 14, fontWeight: '900', fontFamily: 'Outfit' }}>VOLTAR</Text>
               </TouchableHighlight>
 
               <TouchableHighlight
-                ref={(ref) => registerNode('exit-confirm', ref as any, 'exit-modal', {
+                ref={(ref) => registerNode('exit-confirm', ref as any, 'modal-exit', {
                   onEnter: () => CapacitorApp.exitApp(),
+                  onLeft: () => setFocusedId('exit-cancel'),
+                  onRight: () => setFocusedId('exit-cancel'),
+                  onUp: () => setFocusedId('exit-cancel'),
+                  onDown: () => setFocusedId('exit-cancel'),
+                  onBack: () => setShowExitConfirmation(false),
                 })}
                 onPress={() => CapacitorApp.exitApp()}
                 underlayColor="#b91c1c"
                 style={{
-                  width: 220,
+                  flex: 1,
                   backgroundColor: '#E50914',
-                  borderRadius: 12,
-                  paddingVertical: 16,
+                  borderRadius: 10,
+                  justifyContent: 'center',
                   alignItems: 'center',
                 }}
               >
-                <Text style={{ color: 'white', fontSize: 15, fontWeight: '900', fontFamily: 'Outfit' }}>SAIR AGORA</Text>
+                <Text style={{ color: 'white', fontSize: 14, fontWeight: '900', fontFamily: 'Outfit' }}>SAIR AGORA</Text>
               </TouchableHighlight>
             </View>
           </View>
@@ -485,8 +594,8 @@ export default function App() {
           <style dangerouslySetInnerHTML={{ __html: `
             [data-nav-id="exit-cancel"]:focus, [data-nav-id="exit-confirm"]:focus {
               outline: none !important;
-              box-shadow: 0 0 0 4px #E50914, 0 0 20px rgba(229, 9, 20, 0.5) !important;
-              transform: scale(1.05) !important;
+              box-shadow: 0 0 0 2px #E50914, 0 0 10px rgba(229, 9, 20, 0.28) !important;
+              transform: scale(1) !important;
             }
           `}} />
         </View>

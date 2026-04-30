@@ -240,8 +240,8 @@ const focusNode = (
   if (!node.disableAutoScroll && !isElementMostlyInViewport(ref)) {
     ref.scrollIntoView({
       behavior: smoothScroll ? 'smooth' : 'auto',
-      block: 'center',
-      inline: 'center',
+      block: 'nearest', // Deixa a rolagem vertical para o virtualizador (evita "pulos" duplos)
+      inline: 'center', // Mantém a centralização horizontal do carrossel
     });
   }
 
@@ -287,7 +287,7 @@ export const useTvNavigation = (options?: { onBack?: () => void; isActive?: bool
       if (!node?.disableAutoScroll) {
         element.scrollIntoView({
           behavior: isTvMode ? 'auto' : 'smooth',
-          block: 'center',
+          block: 'nearest', // Deixa a rolagem vertical para o virtualizador
           inline: 'center',
         });
       }
@@ -543,6 +543,42 @@ export const useTvNavigation = (options?: { onBack?: () => void; isActive?: bool
             emitFocusedId(candidate.id);
             return;
           }
+        }
+
+        const activeFilter = useStore.getState().activeFilter || 'home';
+        const shouldTryScrollToTop =
+          activeFilter === 'home'
+          || activeFilter === 'movie'
+          || activeFilter === 'series';
+
+        if (shouldTryScrollToTop && typeof document !== 'undefined') {
+          const scrollHost = document.querySelector('.main-scrollview') as HTMLElement | null;
+          if (scrollHost) {
+            scrollHost.scrollTo({ top: 0, left: 0, behavior: 'auto' });
+          }
+
+          const delayedCandidates = ['hero-play', 'hero-info', 'item-0-0', 'item-1-0'];
+          const tryFocusDelayed = () => {
+            for (const delayedId of delayedCandidates) {
+              const delayedNode = navNodes.get(delayedId);
+              if (!delayedNode) continue;
+              if (focusNode(delayedNode, () => e.preventDefault(), !isTvMode)) {
+                focusedIdRef.current = delayedNode.id;
+                emitFocusedId(delayedNode.id);
+                return true;
+              }
+            }
+            return false;
+          };
+
+          requestAnimationFrame(() => {
+            if (tryFocusDelayed()) return;
+            requestAnimationFrame(() => {
+              tryFocusDelayed();
+            });
+          });
+          e.preventDefault();
+          return;
         }
       }
 

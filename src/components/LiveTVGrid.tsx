@@ -363,6 +363,13 @@ export const LiveTVGrid: React.FC<LiveTVGridProps> = ({
     () => liveCategories.find((c) => c.id === selectedCatId) || null,
     [liveCategories, selectedCatId],
   );
+
+  // P0: Refs para estabilizar o registro de nós de navegação e evitar fechamento do teclado no Fire Stick
+  const liveCategoriesRef = useRef(liveCategories);
+  useEffect(() => { liveCategoriesRef.current = liveCategories; }, [liveCategories]);
+
+  const selectedCatIdRef = useRef(selectedCatId);
+  useEffect(() => { selectedCatIdRef.current = selectedCatId; }, [selectedCatId]);
   const normalizeChannelKey = useCallback((value: string | null | undefined) => {
     const raw = String(value || '')
       .normalize('NFD')
@@ -836,6 +843,9 @@ export const LiveTVGrid: React.FC<LiveTVGridProps> = ({
     return globalSearchItems;
   }, [categoryItems, globalSearchItems, normalizedSearchQuery]);
 
+  const filteredItemsRef = useRef(filteredItems);
+  useEffect(() => { filteredItemsRef.current = filteredItems; }, [filteredItems]);
+
   const channelVirtualizer = useVirtualizer({
     count: filteredItems.length,
     getScrollElement: () => channelsListRef.current,
@@ -1266,19 +1276,9 @@ export const LiveTVGrid: React.FC<LiveTVGridProps> = ({
   }, [focusNavIdWhenMounted]);
 
   // Register Global/Static UI Nodes
+  // P0: Registro estável para evitar que o teclado feche ao digitar (ERR_CONNECTION_RESET/Blur no Android)
   useEffect(() => {
     const unregisterList: (() => void)[] = [];
-
-    // Preview Player registration
-    if (previewMedia) {
-      unregisterList.push(registerNode('tv-preview-player', null, 'body', {
-        onFocus: () => {
-          setFocusColumn('preview');
-          setIsDiagnosticFocused(false);
-        },
-        onEnter: () => openFullScreen(previewMedia),
-      }));
-    }
 
     // Register Search Input
     unregisterList.push(registerNode('tv-search-input', null, 'body', {
@@ -1287,7 +1287,7 @@ export const LiveTVGrid: React.FC<LiveTVGridProps> = ({
         setIsDiagnosticFocused(false);
       },
       onDown: () => {
-        if (filteredItems.length === 0) {
+        if (filteredItemsRef.current.length === 0) {
           setIsDiagnosticFocused(true);
           focusNavIdWhenMounted('tv-btn-diagnostic');
           return;
@@ -1297,9 +1297,9 @@ export const LiveTVGrid: React.FC<LiveTVGridProps> = ({
         focusChannelByIndex(focusedChannelIndexRef.current);
       },
       onLeft: () => {
-        const targetGroupId = selectedCatId || liveCategories[0]?.id;
+        const targetGroupId = selectedCatIdRef.current || liveCategoriesRef.current[0]?.id;
         if (!targetGroupId) return;
-        const targetGroupIndex = liveCategories.findIndex((category) => category.id === targetGroupId);
+        const targetGroupIndex = liveCategoriesRef.current.findIndex((category) => category.id === targetGroupId);
         focusGroupByIndex(targetGroupIndex >= 0 ? targetGroupIndex : 0);
       },
       onRight: () => {
@@ -1320,7 +1320,7 @@ export const LiveTVGrid: React.FC<LiveTVGridProps> = ({
         focusNavIdWhenMounted('tv-search-input');
       },
       onDown: () => {
-        if (filteredItems.length === 0) return;
+        if (filteredItemsRef.current.length === 0) return;
         setIsDiagnosticFocused(false);
         setFocusColumn('channels');
         focusChannelByIndex(focusedChannelIndexRef.current);
@@ -1330,7 +1330,6 @@ export const LiveTVGrid: React.FC<LiveTVGridProps> = ({
         focusNavIdWhenMounted('tv-search-input');
       },
       onRight: () => {
-        if (!previewMedia) return;
         setFocusColumn('preview');
         setFocusedId('tv-preview-player');
       },
@@ -1338,18 +1337,28 @@ export const LiveTVGrid: React.FC<LiveTVGridProps> = ({
 
     return () => unregisterList.forEach((unregister) => unregister());
   }, [
-    filteredItems.length,
-    openFullScreen,
+    registerNode,
+    setFocusColumn,
+    setIsDiagnosticFocused,
     focusNavIdWhenMounted,
     focusChannelByIndex,
     focusGroupByIndex,
-    liveCategories,
-    previewMedia,
-    registerNode,
-    selectedCatId,
     setFocusedId,
-    setFocusColumn,
+    setShowDiagnostic,
   ]);
+
+  // Preview Player registration (Dynamic)
+  useEffect(() => {
+    if (!previewMedia) return;
+
+    return registerNode('tv-preview-player', null, 'body', {
+      onFocus: () => {
+        setFocusColumn('preview');
+        setIsDiagnosticFocused(false);
+      },
+      onEnter: () => openFullScreen(previewMedia),
+    });
+  }, [previewMedia, registerNode, setFocusColumn, setIsDiagnosticFocused, openFullScreen]);
 
   useEffect(() => {
     if (liveCategories.length === 0) {

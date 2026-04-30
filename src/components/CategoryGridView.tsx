@@ -10,16 +10,19 @@ import { useTvNavigation } from '../hooks/useTvNavigation';
 import { Skeleton } from './Skeleton';
 import { DISK_CATEGORY_PAGE_SIZE, useDiskCategory } from '../hooks/useDiskCategory';
 
+const GRID_NAV_SECTION = 'modal-grid';
+
 interface GridItemProps {
   item: Media;
   navId: string;
+  navSection: string;
   onPress: (media: Media) => void;
   onFocus?: () => void;
   cardWidth: number;
   cardHeight: number;
 }
 
-const GridItem = React.memo(({ item, navId, onPress, onFocus, cardWidth, cardHeight }: GridItemProps) => {
+const GridItem = React.memo(({ item, navId, navSection, onPress, onFocus, cardWidth, cardHeight }: GridItemProps) => {
   const { registerNode } = useTvNavigation({ isActive: false, subscribeFocused: false });
   const { data: tmdbData, loading: tmdbLoading } = useTMDB(item.title, item.type, {
     includeDetails: false,
@@ -54,7 +57,7 @@ const GridItem = React.memo(({ item, navId, onPress, onFocus, cardWidth, cardHei
         tabIndex={0}
         data-nav-id={navId}
         ref={(element) =>
-          registerNode(navId, element, 'body', { onEnter: () => onPress(item), onFocus })
+          registerNode(navId, element, navSection, { onEnter: () => onPress(item), onFocus })
         }
         className="media-card-transition will-change-transform"
         onFocus={() => {
@@ -77,10 +80,12 @@ const GridItem = React.memo(({ item, navId, onPress, onFocus, cardWidth, cardHei
           borderRadius: 0,
           overflow: 'hidden',
           backgroundColor: '#1a1a1a',
-          border: '2px solid rgba(255,255,255,0.05)',
+          border: isFocused ? '2px solid #E50914' : '2px solid rgba(255,255,255,0.05)',
           cursor: 'pointer',
           position: 'relative',
-          transform: 'translate3d(0,0,0)',
+          transform: isFocused ? 'translate3d(0,0,0) scale(1.02)' : 'translate3d(0,0,0)',
+          boxShadow: isFocused ? '0 0 0 2px rgba(229,9,20,0.25), 0 12px 28px rgba(0,0,0,0.42)' : 'none',
+          transition: 'transform 140ms ease, border-color 140ms ease, box-shadow 140ms ease',
         }}
       >
         {hasRenderableImage ? (
@@ -196,7 +201,14 @@ interface CategoryGridViewProps {
 export const CategoryGridView: React.FC<CategoryGridViewProps> = ({ category, onClose, onSelectMedia }) => {
   const [search, setSearch] = useState('');
   const layout = useResponsiveLayout();
-  const { registerNode, setFocusedId } = useTvNavigation({ isActive: false, subscribeFocused: false });
+  const onCloseRef = useRef(onClose);
+  useEffect(() => {
+    onCloseRef.current = onClose;
+  }, [onClose]);
+  const requestClose = useCallback(() => {
+    onCloseRef.current();
+  }, []);
+  const { registerNode, setFocusedId } = useTvNavigation({ isActive: true, onBack: requestClose, subscribeFocused: false });
   const scrollParentRef = useRef<HTMLDivElement | null>(null);
   const setSelectedCategoryName = useStore((state) => state.setSelectedCategoryName);
   const setVisibleItems = useStore((state) => state.setVisibleItems);
@@ -207,42 +219,81 @@ export const CategoryGridView: React.FC<CategoryGridViewProps> = ({ category, on
     page,
     DISK_CATEGORY_PAGE_SIZE,
   );
-
   const loadMore = useCallback(() => {
     if (pageLoading || !hasMore) return;
     setPage((prev) => prev + 1);
   }, [hasMore, pageLoading]);
 
   useEffect(() => {
+    const focusFirstItem = () => {
+      const firstItem = document.querySelector<HTMLElement>('[data-nav-id^="grid-item-"]');
+      const firstItemId = firstItem?.dataset?.navId || null;
+      if (!firstItem || !firstItemId) return;
+      setFocusedId(firstItemId);
+      firstItem.focus({ preventScroll: true });
+    };
+
+    const focusSearchInput = () => {
+      setFocusedId('grid-search');
+      const searchInput = document.querySelector('[data-nav-id="grid-search"]') as HTMLElement | null;
+      if (searchInput) {
+        searchInput.focus({ preventScroll: true });
+      }
+    };
+
     const unregisterList: (() => void)[] = [];
 
     unregisterList.push(registerNode({
       id: 'grid-close',
+      section: GRID_NAV_SECTION,
       type: 'button',
-      onEnter: onClose,
-      onBack: onClose,
+      onEnter: requestClose,
+      onBack: requestClose,
+      onDown: focusSearchInput,
     }));
 
     unregisterList.push(registerNode({
       id: 'grid-search',
+      section: GRID_NAV_SECTION,
       type: 'input',
       onEnter: () => {
         const input = document.querySelector('[data-nav-id="grid-search"]') as HTMLInputElement | null;
         input?.focus();
       },
-      onBack: onClose,
+      onBack: requestClose,
+      onDown: focusFirstItem,
+      onUp: () => setFocusedId('grid-close'),
     }));
 
-    // Focus on the first element (search or close) when grid mounts
+    // Focus on the first element (search) when grid mounts.
+    // Retry across frames to survive heavy virtualized renders on TV devices.
     const timer = setTimeout(() => {
-      setFocusedId('grid-search');
-    }, 150);
+      focusSearchInput();
+      requestAnimationFrame(() => {
+        focusSearchInput();
+      });
+    }, 120);
 
     return () => {
       clearTimeout(timer);
       unregisterList.forEach((unregister) => unregister());
     };
-  }, [onClose, registerNode, setFocusedId]);
+  }, [registerNode, requestClose, setFocusedId]);
+
+  useEffect(() => {
+    const handleModalBack = (event: KeyboardEvent) => {
+      const key = event.key;
+      const keyCode = (event as KeyboardEvent & { keyCode?: number }).keyCode || 0;
+      const isBack = key === 'Escape' || key === 'Back' || keyCode === 4;
+      if (!isBack) return;
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      requestClose();
+    };
+
+    window.addEventListener('keydown', handleModalBack, true);
+    return () => window.removeEventListener('keydown', handleModalBack, true);
+  }, [requestClose]);
 
   useEffect(() => {
     setSearch('');
@@ -325,9 +376,22 @@ export const CategoryGridView: React.FC<CategoryGridViewProps> = ({ category, on
     });
   }, [page, pageItems]);
 
+  const sourceItems = useMemo(() => {
+    const fallbackItems = Array.isArray(category.items) ? category.items : [];
+    if (diskItems.length > 0) return diskItems;
+
+    // Categorias virtuais (ex: tendências TMDB) não existem no índice local.
+    // Nesses casos, usamos os itens recebidos pela própria categoria da Home.
+    if (!pageLoading && page === 0 && !hasMore && fallbackItems.length > 0) {
+      return fallbackItems;
+    }
+
+    return diskItems;
+  }, [category.items, diskItems, hasMore, page, pageLoading]);
+
   useEffect(() => {
-    setVisibleItems(diskItems.slice(0, 80));
-  }, [diskItems, setVisibleItems]);
+    setVisibleItems(sourceItems.slice(0, 80));
+  }, [setVisibleItems, sourceItems]);
 
   useEffect(() => {
     const node = scrollParentRef.current;
@@ -343,40 +407,34 @@ export const CategoryGridView: React.FC<CategoryGridViewProps> = ({ category, on
   }, [loadMore]);
 
   const filteredItems = useMemo(() => {
-    if (!search) return diskItems;
+    if (!search) return sourceItems;
     const normalized = search.toLowerCase();
-    return diskItems.filter((item) => item.title.toLowerCase().includes(normalized));
-  }, [diskItems, search]);
+    return sourceItems.filter((item) => item.title.toLowerCase().includes(normalized));
+  }, [search, sourceItems]);
 
   const shouldReserveSideRail = (!layout.isMobile || layout.isTvProfile);
   const sideRailOffset = shouldReserveSideRail ? (layout.sideRailCollapsedWidth || 80) : 0;
-  const railSafePadding = shouldReserveSideRail ? (layout.isTvProfile ? 18 : 16) : 0;
-  const gridGap = layout.isTvProfile ? 6 : layout.isMobile ? 12 : 14;
-  const contentPadding = layout.isMobile
-    ? 16
-    : layout.isTablet
-      ? 20
-      : Math.max(24, Math.min(36, Math.round((layout.horizontalPadding || 40) * 0.82)));
+  // Mantem o "Ver tudo" com metragem equivalente aos cards da Home.
+  // Em Firestick/Android TV, garantimos 5 colunas reais na viewport de CSS.
+  const railSafePadding = shouldReserveSideRail ? (layout.isTvProfile ? 8 : 16) : 0;
+  const gridGap = layout.isTvProfile ? 10 : 14;
+  const contentPadding = layout.isTvProfile ? 20 : layout.isMobile ? 16 : 28;
   const gridAreaWidth =
     layout.width - sideRailOffset - ((contentPadding * 2) + railSafePadding);
-  const minCardWidth = layout.isTvProfile ? 212 : layout.isMobile ? 132 : 160;
-  let columns = layout.isTvProfile
-    ? (layout.width >= 1900 ? 6 : layout.width >= 1450 ? 5 : 4)
+  const baseCardWidth = layout.isTvProfile ? 240 : layout.isCompact ? 210 : 230;
+  const tvTargetColumns = 5;
+  const resolvedColumns = layout.isTvProfile
+    ? tvTargetColumns
     : layout.isMobile
       ? 2
-      : layout.width >= 1700
-        ? 6
-        : 5;
-  while (columns > 2 && (minCardWidth * columns + (gridGap * (columns - 1))) > gridAreaWidth) {
-    columns -= 1;
-  }
-  const availableWidth = gridAreaWidth - (gridGap * (columns - 1));
-  const cardMaxWidth = layout.isTvProfile ? 280 : (layout.gridCardMaxWidth || (layout.isMobile ? 180 : layout.isTablet ? 200 : 210));
-  const cardWidth = Math.max(
-    minCardWidth,
-    Math.min(cardMaxWidth, Math.floor(availableWidth / columns)),
-  );
-  const cardHeight = Math.round(cardWidth * (3 / 2));
+      : Math.max(1, Math.floor((gridAreaWidth + gridGap) / (baseCardWidth + gridGap)));
+  const columns = Math.max(1, resolvedColumns);
+  const cardWidth = layout.isTvProfile
+    ? Math.max(120, Math.floor((gridAreaWidth - (gridGap * (columns - 1))) / columns))
+    : layout.isMobile
+      ? Math.max(1, Math.floor((gridAreaWidth - gridGap) / 2))
+      : Math.max(1, baseCardWidth);
+  const cardHeight = Math.round(cardWidth * 1.5);
   const gridTitleSize = layout.isTvProfile ? 26 : layout.isCompact ? 22 : 32;
   const gridMetaSize = layout.isTvProfile ? 12 : layout.isCompact ? 12 : 14;
 
@@ -460,7 +518,7 @@ export const CategoryGridView: React.FC<CategoryGridViewProps> = ({ category, on
                   marginTop: 4,
                 }}
               >
-                {diskItems.length}{hasMore ? '+' : ''} conteudos carregados
+                {sourceItems.length}{hasMore ? '+' : ''} conteudos carregados
               </div>
             </div>
           </div>
@@ -560,8 +618,10 @@ export const CategoryGridView: React.FC<CategoryGridViewProps> = ({ category, on
                     right: contentPadding,
                     height: cardHeight,
                     display: 'grid',
-                    gridTemplateColumns: `repeat(${columns}, minmax(0, 1fr))`,
-                    gap: gridGap,
+                    gridTemplateColumns: `repeat(${columns}, ${cardWidth}px)`,
+                    columnGap: gridGap,
+                    rowGap: gridGap,
+                    justifyContent: 'start',
                     transform: `translate3d(0, ${virtualRow.start + contentPadding}px, 0)`,
                   }}
                 >
@@ -572,6 +632,7 @@ export const CategoryGridView: React.FC<CategoryGridViewProps> = ({ category, on
                         key={`${item.id}-${absoluteIndex}`}
                         item={item}
                         navId={`grid-item-${item.id}-${absoluteIndex}`}
+                        navSection={GRID_NAV_SECTION}
                         onPress={onSelectMedia}
                         onFocus={() => {
                           if (absoluteIndex >= Math.max(0, filteredItems.length - (columns * 2))) {

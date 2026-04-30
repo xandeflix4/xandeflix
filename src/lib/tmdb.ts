@@ -59,6 +59,24 @@ export interface TMDBPersonFilmographyItem {
   role?: string;
 }
 
+export type TMDBTrendingMediaType = 'movie' | 'tv' | 'all';
+export type TMDBTrendingWindow = 'day' | 'week';
+
+export interface TMDBTrendingItem {
+  id: number;
+  mediaType: 'movie' | 'series';
+  title: string;
+  overview: string;
+  poster: string | null;
+  backdrop: string | null;
+  year: number;
+  rating: string;
+  voteAverage: number;
+  voteCount: number;
+  popularity: number;
+  genreIds: number[];
+}
+
 interface TMDBWatchProviderItem {
   provider_name?: string;
   logo_path?: string | null;
@@ -113,6 +131,20 @@ function buildSearchUrl(query: string, type: TMDBMediaType, year?: string): stri
     url.searchParams.set(type === 'movie' ? 'year' : 'first_air_date_year', year);
   }
 
+  return url.toString();
+}
+
+function buildTrendingUrl(
+  mediaType: TMDBTrendingMediaType,
+  window: TMDBTrendingWindow,
+  page = 1,
+): string {
+  const normalizedPage = Number.isFinite(page) && page > 0 ? Math.floor(page) : 1;
+  const url = new URL(`${TMDB_API_BASE}/trending/${mediaType}/${window}`);
+  url.searchParams.set('api_key', getTMDBApiKey());
+  url.searchParams.set('language', 'pt-BR');
+  url.searchParams.set('include_adult', 'false');
+  url.searchParams.set('page', String(normalizedPage));
   return url.toString();
 }
 
@@ -545,6 +577,58 @@ export async function searchTMDB(query: string, type: TMDBMediaType): Promise<TM
 
   const payload = await fetchTMDBJson<{ results?: any[] }>(buildSearchUrl(cleanedQuery, type));
   return Array.isArray(payload.results) ? payload.results.map(mapTMDBSearchResult) : [];
+}
+
+export async function fetchTMDBTrending(
+  mediaType: TMDBTrendingMediaType,
+  window: TMDBTrendingWindow,
+  options: { page?: number; limit?: number } = {},
+): Promise<TMDBTrendingItem[]> {
+  const { page = 1, limit = 20 } = options;
+  const normalizedLimit = Math.max(1, Math.min(60, Math.floor(limit)));
+  const payload = await fetchTMDBJson<{ results?: any[] }>(buildTrendingUrl(mediaType, window, page));
+  const results = Array.isArray(payload.results) ? payload.results : [];
+
+  const mapped = results
+    .map((entry) => {
+      const type = entry?.media_type === 'tv' ? 'series' : entry?.media_type === 'movie' ? 'movie' : null;
+      if (!type) return null;
+
+      const title = String(entry?.title || entry?.name || '').trim();
+      if (!title) return null;
+
+      const posterPath = typeof entry?.poster_path === 'string' ? entry.poster_path : null;
+      const backdropPath = typeof entry?.backdrop_path === 'string' ? entry.backdrop_path : null;
+      const dateRaw = String(entry?.release_date || entry?.first_air_date || '0');
+      const parsedYear = Number(dateRaw.slice(0, 4));
+      const year = Number.isFinite(parsedYear) && parsedYear > 0 ? parsedYear : 0;
+      const voteAverage = Number(entry?.vote_average || 0);
+      const voteCount = Number(entry?.vote_count || 0);
+      const popularity = Number(entry?.popularity || 0);
+      const genreIds = Array.isArray(entry?.genre_ids)
+        ? entry.genre_ids
+            .map((genreId: any) => Number(genreId))
+            .filter((genreId: number) => Number.isFinite(genreId) && genreId > 0)
+        : [];
+
+      return {
+        id: Number(entry?.id || 0),
+        mediaType: type,
+        title,
+        overview: String(entry?.overview || ''),
+        poster: buildPosterUrl(posterPath, 'w500'),
+        backdrop: buildPosterUrl(backdropPath, 'w1280'),
+        year,
+        rating: voteAverage > 0 ? voteAverage.toFixed(1) : '0.0',
+        voteAverage: Number.isFinite(voteAverage) ? voteAverage : 0,
+        voteCount: Number.isFinite(voteCount) ? voteCount : 0,
+        popularity: Number.isFinite(popularity) ? popularity : 0,
+        genreIds,
+      } satisfies TMDBTrendingItem;
+    })
+    .filter((item): item is TMDBTrendingItem => Boolean(item && item.id > 0));
+
+  return mapped.slice(0, normalizedLimit);
 }
 
 async function searchBestTMDBResult(
