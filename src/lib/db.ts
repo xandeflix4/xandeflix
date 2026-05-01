@@ -451,6 +451,54 @@ export async function getChannelsByCategory(
   return results;
 }
 
+export async function getPreviewChannels(
+  limitPerCategory: number = 300,
+  yieldEveryRows: number = 5000,
+): Promise<Map<string, MediaItem[]>> {
+  const results = new Map<string, MediaItem[]>();
+  if (catalog.tupleChunks.length === 0) return results;
+
+  const counts = new Int32Array(catalog.groups.length);
+  let scannedRows = 0;
+  let globalRow = 0;
+
+  for (let chunkIndex = 0; chunkIndex < catalog.tupleChunks.length; chunkIndex += 1) {
+    const chunk = catalog.tupleChunks[chunkIndex];
+    const rowCount = Math.floor(chunk.length / TUPLE_WIDTH);
+
+    for (let row = 0; row < rowCount; row += 1) {
+      const base = row * TUPLE_WIDTH;
+      const groupIdx = chunk[base + 1] ?? 0;
+
+      if (counts[groupIdx] < limitPerCategory) {
+        counts[groupIdx] += 1;
+
+        const titleIdx = chunk[base] ?? 0;
+        const urlIdx = chunk[base + 2] ?? 0;
+        const logoIdx = chunk[base + 3] ?? 0;
+        const typeFlag = chunk[base + 4] ?? 0;
+
+        const groupName = normalizeGroupTitle(catalog.groups[groupIdx]);
+        let items = results.get(groupName);
+        if (!items) {
+          items = [];
+          results.set(groupName, items);
+        }
+        items.push(buildMediaFromTuple(globalRow, titleIdx, groupIdx, urlIdx, logoIdx, typeFlag));
+      }
+
+      globalRow += 1;
+      scannedRows += 1;
+
+      if (yieldEveryRows > 0 && scannedRows % yieldEveryRows === 0) {
+        await new Promise<void>((resolve) => setTimeout(resolve, 0));
+      }
+    }
+  }
+
+  return results;
+}
+
 export async function getChannelCountByCategory(category: string): Promise<number> {
   const groupIndex = resolveGroupIndex(category);
   if (groupIndex == null) return 0;

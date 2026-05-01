@@ -73,7 +73,7 @@ export const HeroSection: React.FC<HeroSectionProps> = React.memo(({
   const { data: tmdbData } = useTMDB(
     shouldFetchOnDemandTMDB ? media?.title : undefined,
     shouldFetchOnDemandTMDB ? media?.type : undefined,
-    { categoryHint: media?.category },
+    { categoryHint: media?.category, yearHint: media?.year },
   );
 
   const resolvedTMDBData = preloadedTMDBData || tmdbData;
@@ -190,7 +190,7 @@ export const HeroSection: React.FC<HeroSectionProps> = React.memo(({
   }, [displayData?.id, embeddableTrailerKey]);
 
   useEffect(() => {
-    if (!displayData) return;
+    if (!displayData || !media) return;
     const canPlayNow = Boolean(String(displayData.videoUrl || '').trim());
 
     const cleanups = [
@@ -201,19 +201,19 @@ export const HeroSection: React.FC<HeroSectionProps> = React.memo(({
             onPlay(displayData);
             return;
           }
-          onInfo?.(displayData);
+          onInfo?.(media);
         },
         disableAutoScroll: true,
       }),
       registerNode('hero-info', infoBtnRef.current, 'hero', {
         onFocus: () => onFocus('hero-info'),
-        onEnter: () => onInfo?.(displayData),
+        onEnter: () => onInfo?.(media),
         disableAutoScroll: true,
       }),
     ];
 
     return () => cleanups.forEach((cleanup) => cleanup?.());
-  }, [displayData, onFocus, onInfo, onPlay, registerNode]);
+  }, [displayData, media, onFocus, onInfo, onPlay, registerNode]);
 
   if (!displayData) return null;
   const canPlayNow = Boolean(String(displayData.videoUrl || '').trim());
@@ -317,7 +317,7 @@ export const HeroSection: React.FC<HeroSectionProps> = React.memo(({
       <div ref={heroViewportRef} style={{ position: 'absolute', inset: 0, zIndex: -1 }} />
 
       <div className="absolute inset-0 z-0">
-        <AnimatePresence mode="wait">
+        <AnimatePresence>
           <motion.div
             key={`${displayData.id || 'hero'}-${backgroundUri || 'no-image'}`}
             initial={{ opacity: 0 }}
@@ -551,7 +551,7 @@ export const HeroSection: React.FC<HeroSectionProps> = React.memo(({
                   onPlay(displayData);
                   return;
                 }
-                onInfo?.(displayData);
+                onInfo?.(media);
               }}
               style={{
                 display: 'flex',
@@ -582,7 +582,7 @@ export const HeroSection: React.FC<HeroSectionProps> = React.memo(({
               role="button"
               tabIndex={0}
               data-nav-id="hero-info"
-              onClick={() => onInfo?.(displayData)}
+              onClick={() => onInfo?.(media)}
               style={{
                 display: 'flex',
                 alignItems: 'center',

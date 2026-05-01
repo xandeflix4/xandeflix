@@ -200,7 +200,7 @@ export const SideMenu: React.FC<SideMenuProps> = ({ onSelect, activeId = 'home',
 
       <div
         className={cn(
-          'side-menu-panel fixed left-0 top-0 bottom-0 z-[260] border-r border-white/5 flex flex-col shadow-2xl',
+          'side-menu-panel fixed left-0 top-0 bottom-0 z-[260] border-none flex flex-col shadow-2xl',
           layout.isTvProfile ? 'bg-[#0a0a0a]' : 'bg-black/60 backdrop-blur-xl'
         )}
         style={{
@@ -210,8 +210,8 @@ export const SideMenu: React.FC<SideMenuProps> = ({ onSelect, activeId = 'home',
             : 'width 200ms ease-out, background-color 200ms ease-out',
           paddingTop: panelVerticalPadding,
           paddingBottom: Math.max(16, panelVerticalPadding - 8),
-          borderRightWidth: 1,
-          borderRightColor: 'rgba(255,255,255,0.05)',
+          borderRightWidth: 0,
+          borderRightColor: 'transparent',
           willChange: 'width',
           transform: 'translate3d(0, 0, 0)',
           contain: 'layout style',
@@ -379,7 +379,7 @@ export const SideMenu: React.FC<SideMenuProps> = ({ onSelect, activeId = 'home',
 
         {/* Bottom Info — labels always in DOM */}
         <div
-          className="border-t border-white/5 space-y-2 shrink-0"
+          className="border-none space-y-2 shrink-0"
           style={{
             paddingLeft: panelContentPaddingX,
             paddingRight: panelContentPaddingX,

@@ -15,6 +15,8 @@ const TV_USER_AGENT_PATTERNS = [
   /\bshield android tv\b/i,
   /\bmibox\b/i,
   /\bchromecast\b/i,
+  /\bsilk\b/i, // Amazon Silk browser (often used on Fire TV)
+  /\bwv\b/i, // Generic Android WebView (often used in Capacitor/Cordova TV apps)
 ];
 
 export const detectTvEnvironment = (): boolean => {

@@ -48,6 +48,7 @@ export const useTMDB = (
 ) => {
   const includeDetails = options.includeDetails !== false;
   const categoryHint = String(options.categoryHint || '').trim();
+  const yearHint = options.yearHint;
   const [data, setData] = useState<TMDBData | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -61,7 +62,8 @@ export const useTMDB = (
       return;
     }
 
-    const { cleanTitle, year } = cleanMediaTitle(title);
+    const { cleanTitle, year: extractedYear } = cleanMediaTitle(title);
+    const finalYear = yearHint || extractedYear;
     const normalizedTitle = cleanTitle.trim();
     if (!normalizedTitle) {
       setData(null);
@@ -71,7 +73,7 @@ export const useTMDB = (
 
     const cacheVariant = includeDetails ? 'full' : 'lite';
     const catHint = categoryHint.toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 30);
-    const cacheKey = `${TMDB_CACHE_VERSION}:${cacheVariant}:${type}:${normalizedTitle}:${year || 'none'}:${catHint || 'nocat'}`;
+    const cacheKey = `${TMDB_CACHE_VERSION}:${cacheVariant}:${type}:${normalizedTitle}:${finalYear || 'none'}:${catHint || 'nocat'}`;
     setData(null);
     setLoading(true);
     setError(null);
@@ -101,9 +103,9 @@ export const useTMDB = (
           request = (async () => {
              if (!isTMDBConfigured()) return null;
              const result = await fetchTMDBMetadata(
-               year ? `${normalizedTitle} (${year})` : normalizedTitle,
+               finalYear ? `${normalizedTitle} (${finalYear})` : normalizedTitle,
                type as 'movie' | 'series',
-               { includeDetails, categoryHint },
+               { includeDetails, categoryHint, yearHint: finalYear ? Number(finalYear) : undefined },
              );
              if (result) {
                try {
@@ -143,4 +145,57 @@ export const useTMDB = (
   }, [categoryHint, includeDetails, title, type]);
 
   return { data, loading, error };
+};
+
+export const useTMDBSeason = (tvId: number | undefined, seasonNumber: number | undefined) => {
+  const [data, setData] = useState<import('../lib/tmdb').TMDBEpisodeDetail[]>([]);
+  const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    let isMounted = true;
+    if (!tvId || typeof seasonNumber !== 'number') {
+      setData([]);
+      setLoading(false);
+      return;
+    }
+
+    const cacheKey = `tmdb-season-${tvId}-${seasonNumber}`;
+    setLoading(true);
+
+    const fetchSeason = async () => {
+      try {
+        const cached = await tmdbStore.getItem<import('../lib/tmdb').TMDBEpisodeDetail[]>(cacheKey);
+        if (cached) {
+          if (isMounted) {
+            setData(cached);
+            setLoading(false);
+          }
+          return;
+        }
+
+        const { fetchTMDBSeasonDetails } = await import('../lib/tmdb');
+        const result = await fetchTMDBSeasonDetails(tvId, seasonNumber);
+        
+        if (result && result.length > 0) {
+          await tmdbStore.setItem(cacheKey, result);
+        }
+
+        if (isMounted) {
+          setData(result);
+        }
+      } catch (err) {
+        // ignore
+      } finally {
+        if (isMounted) setLoading(false);
+      }
+    };
+
+    fetchSeason();
+
+    return () => {
+      isMounted = false;
+    };
+  }, [tvId, seasonNumber]);
+
+  return { data, loading };
 };

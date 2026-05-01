@@ -3,6 +3,7 @@ import { cleanMediaTitle } from './titleCleaner';
 export type TMDBMediaType = 'movie' | 'series';
 
 export interface TMDBData {
+  id?: number;
   description: string;
   thumbnail: string | null;
   backdrop: string | null;
@@ -32,6 +33,7 @@ export interface TMDBData {
 export interface FetchTMDBMetadataOptions {
   includeDetails?: boolean;
   categoryHint?: string;
+  yearHint?: number;
 }
 
 export interface TMDBSearchResult {
@@ -657,11 +659,13 @@ export async function fetchTMDBMetadata(
     return null;
   }
 
-  const { cleanTitle, year } = cleanMediaTitle(rawTitle);
+  const { cleanTitle, year: extractedYear } = cleanMediaTitle(rawTitle);
   const normalizedTitle = cleanTitle.trim();
   if (!normalizedTitle) {
     return null;
   }
+
+  const year = (options.yearHint && options.yearHint > 1900) ? String(options.yearHint) : extractedYear;
 
   // Detectar gêneros esperados a partir da categoria IPTV para desambiguação
   const genreHints = categoryHint ? detectGenreHintsFromCategory(categoryHint) : [];
@@ -750,6 +754,7 @@ export async function fetchTMDBMetadata(
   }
 
   return {
+    id: mapped.id,
     description: mapped.overview || 'Sinopse nao disponivel.',
     // Use null instead of empty strings to simplify UI fallback logic.
     thumbnail: canUseArtwork && mapped.poster_path ? buildPosterUrl(mapped.poster_path, 'w500') : null,
@@ -766,4 +771,41 @@ export async function fetchTMDBMetadata(
     matchScore,
     matchedTitle: mapped.title,
   };
+}
+
+export interface TMDBEpisodeDetail {
+  episode_number: number;
+  name: string;
+  overview: string;
+  still_path: string | null;
+}
+
+export async function fetchTMDBSeasonDetails(
+  tvId: number,
+  seasonNumber: number,
+): Promise<TMDBEpisodeDetail[]> {
+  if (!isTMDBConfigured() || !tvId || typeof seasonNumber !== 'number') {
+    return [];
+  }
+
+  const url = new URL(`${TMDB_API_BASE}/tv/${tvId}/season/${seasonNumber}`);
+  url.searchParams.set('api_key', getTMDBApiKey());
+  url.searchParams.set('language', 'pt-BR');
+
+  try {
+    const payload = await fetchTMDBJson<{ episodes?: any[] }>(url.toString());
+    if (!Array.isArray(payload.episodes)) {
+      return [];
+    }
+
+    return payload.episodes.map((ep) => ({
+      episode_number: Number(ep.episode_number || 0),
+      name: String(ep.name || '').trim(),
+      overview: String(ep.overview || '').trim(),
+      still_path: ep.still_path ? buildPosterUrl(ep.still_path, 'w500') : null,
+    }));
+  } catch (error) {
+    console.warn(`[TMDB] Falha ao buscar temporada ${seasonNumber} para serie ${tvId}:`, formatTMDBError(error));
+    return [];
+  }
 }

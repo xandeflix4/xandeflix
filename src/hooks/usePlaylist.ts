@@ -57,8 +57,8 @@ interface WorkerCatalogChunkMessage {
   isFinal?: boolean;
 }
 
-const PLAYLIST_FETCH_TIMEOUT_MS = 180000; // 3 minutos por tentativa (Firestick/TVs lentas)
-const PLAYLIST_FETCH_TOTAL_BUDGET_MS = 420000;
+const PLAYLIST_FETCH_TIMEOUT_MS = 60000; // 1 minuto por tentativa (equilíbrio entre TVs lentas e falha rápida)
+const PLAYLIST_FETCH_TOTAL_BUDGET_MS = 120000; // 2 minutos total — falha rápida quando offline
 const MAX_PLAYLIST_SYNC_BYTES = 150 * 1024 * 1024; // 150MB
 const PLAYLIST_FLOW_WATCHDOG_TIMEOUT_MS = 600000; // 10 minutos - emuladores de TV são muito lentos
 const MAX_CHANNELS_PER_PLAYLIST = 350000; // Limite maximo aumentado para 350k canais
@@ -202,16 +202,7 @@ function buildPlaylistUrlCandidates(playlistUrl: string): string[] {
 
     const finalCandidates: string[] = [];
     baseCandidates.forEach(url => {
-      const u = new URL(url);
-      if (output === 'mpegts') {
-        finalCandidates.push(url, u.toString().replace('output=mpegts', 'output=ts'), u.toString().replace('output=mpegts', 'output=hls'));
-      } else if (output === 'hls') {
-        finalCandidates.push(url, u.toString().replace('output=hls', 'output=ts'), u.toString().replace('output=hls', 'output=mpegts'));
-      } else if (output === 'ts') {
-        finalCandidates.push(url, u.toString().replace('output=ts', 'output=mpegts'), u.toString().replace('output=ts', 'output=hls'));
-      } else {
-        finalCandidates.push(url);
-      }
+      finalCandidates.push(url);
     });
 
     return Array.from(new Set(finalCandidates));
@@ -254,7 +245,11 @@ async function buildCategoriesPreviewFromCatalog(
 ): Promise<Category[]> {
   const categoryTitles = await getChannelCategories();
   const categories: Category[] = [];
-  const { cleanMediaTitle, extractSeriesInfo } = await import('../lib/titleCleaner');
+  const { cleanMediaTitle } = await import('../lib/titleCleaner');
+  
+  onUpdate?.(`[Catalogo] Escaneando canais para vitrine...`, 80);
+  const { getPreviewChannels } = await import('../lib/db');
+  const previewMap = await getPreviewChannels(200, 5000);
 
   for (let index = 0; index < categoryTitles.length; index += 1) {
     const title = categoryTitles[index];
@@ -262,56 +257,43 @@ async function buildCategoriesPreviewFromCatalog(
     // Buscamos em lotes até atingir pelo menos 20 séries agrupadas
     const isSeriesCat = /series|vod|show/i.test(title);
     const targetGroupCount = 20;
-    const maxScanLimit = 1500; // Limite de segurança para evitar loops infinitos
     
-    let offset = 0;
-    const batchSize = 100;
     const seriesMap = new Map<string, { main: Media, episodes: any[] }>();
     const standaloneItems: Media[] = [];
     
-    while (offset < maxScanLimit) {
-      const batch = await getChannelsByCategory(title, offset, batchSize);
-      if (!batch.length) break;
+    const batch = previewMap.get(title) || [];
 
-      for (const item of batch) {
-        const { cleanTitle, season, episode, isSeries: detectedSeries } = cleanMediaTitle(item.title);
-        
-        if (detectedSeries || isSeriesCat) {
-          if (season !== undefined && episode !== undefined) {
-            const key = `${cleanTitle}`.toLowerCase().trim();
-            if (!seriesMap.has(key)) {
-              if (seriesMap.size >= targetGroupCount) continue; // Já temos 20, ignoramos novas séries
-              seriesMap.set(key, {
-                main: { 
-                  ...item, 
-                  title: cleanTitle, 
-                  type: 'series' as any,
-                  id: `series-${item.id}` 
-                },
-                episodes: []
-              });
-            }
-            seriesMap.get(key)!.episodes.push({
-              id: item.id,
-              seasonNumber: season,
-              episodeNumber: episode,
-              title: item.title,
-              videoUrl: item.videoUrl
+    for (const item of batch) {
+      const { cleanTitle, season, episode, isSeries: detectedSeries } = cleanMediaTitle(item.title);
+      
+      if (detectedSeries || isSeriesCat) {
+        if (season !== undefined && episode !== undefined) {
+          const key = `${cleanTitle}`.toLowerCase().trim();
+          if (!seriesMap.has(key)) {
+            if (seriesMap.size >= targetGroupCount) continue; // Já temos 20, ignoramos novas séries
+            seriesMap.set(key, {
+              main: { 
+                ...item, 
+                title: cleanTitle, 
+                type: 'series' as any,
+                id: `series-${item.id}` 
+              },
+              episodes: []
             });
-          } else if (standaloneItems.length < CHANNEL_PREVIEW_LIMIT_PER_CATEGORY) {
-            standaloneItems.push(item);
           }
+          seriesMap.get(key)!.episodes.push({
+            id: item.id,
+            seasonNumber: season,
+            episodeNumber: episode,
+            title: item.title,
+            videoUrl: item.videoUrl
+          });
         } else if (standaloneItems.length < CHANNEL_PREVIEW_LIMIT_PER_CATEGORY) {
           standaloneItems.push(item);
         }
+      } else if (standaloneItems.length < CHANNEL_PREVIEW_LIMIT_PER_CATEGORY) {
+        standaloneItems.push(item);
       }
-
-      // Critério de parada: já temos 20 séries e o standalone já está cheio (ou fim da lista)
-      if (seriesMap.size >= targetGroupCount && (standaloneItems.length >= CHANNEL_PREVIEW_LIMIT_PER_CATEGORY || !isSeriesCat)) {
-        break;
-      }
-      
-      offset += batchSize;
     }
 
     const groupedSeries: Media[] = Array.from(seriesMap.values()).map(group => {
@@ -362,7 +344,7 @@ async function buildCategoriesPreviewFromCatalog(
       items: displayItems,
     });
 
-    if (index % 6 === 0) {
+    if (index % 12 === 0) {
       const percent = Math.round(((index + 1) / Math.max(categoryTitles.length, 1)) * 100);
       onUpdate?.(`[Catalogo] Montando vitrine local (${percent}%): ${index + 1}/${categoryTitles.length} categorias`, 86);
       await new Promise<void>((resolve) => window.setTimeout(resolve, 0));
@@ -632,17 +614,20 @@ async function warmupUiElements(
     return;
   }
 
-  for (let index = 0; index < urls.length; index += 1) {
-    const url = urls[index];
-    await prefetchImage(url);
-
-    if (index % 4 === 0 || index === urls.length - 1) {
-      const percent = Math.round(((index + 1) / urls.length) * 100);
-      const mappedProgress = 93 + Math.round(percent * 0.06); // 93..99
-      onUpdate?.(`[UI] Carregando elementos visuais: ${percent}% (${index + 1}/${urls.length})`, mappedProgress);
-      await new Promise<void>((resolve) => window.setTimeout(resolve, 0));
+  // Processa as imagens em lotes (concorrente)
+  const CONCURRENCY = 6;
+  const workers = Array.from({ length: CONCURRENCY }, async (_, workerIndex) => {
+    for (let i = workerIndex; i < urls.length; i += CONCURRENCY) {
+      await prefetchImage(urls[i]);
+      if (workerIndex === 0 && (i % (CONCURRENCY * 2) === 0 || i === urls.length - 1)) {
+        const percent = Math.round(((i + 1) / urls.length) * 100);
+        const mappedProgress = 93 + Math.round(percent * 0.06);
+        onUpdate?.(`[UI] Carregando elementos visuais: ${percent}%`, mappedProgress);
+      }
     }
-  }
+  });
+
+  await Promise.all(workers);
 }
 
 export const usePlaylist = () => {
@@ -992,7 +977,6 @@ export const usePlaylist = () => {
               break;
             }
 
-            workerLastError = new Error('A lista foi processada, mas sem canais validos.');
           } catch (error) {
             workerLastError = error;
             const details = error instanceof Error ? error.message : 'erro desconhecido';
@@ -1005,11 +989,25 @@ export const usePlaylist = () => {
         }
 
         if (!parsedPlaylist || parsedPlaylist.totalLoaded <= 0) {
-          const message =
-            workerLastError instanceof Error
-              ? workerLastError.message
-              : 'Nao foi possivel processar a playlist em stream.';
-          throw new Error(`O parsing em stream falhou: ${message}`);
+          const isTimeout = workerLastError instanceof Error && workerLastError.message.toLowerCase().includes('tempo limite');
+          const userMessage = isTimeout
+            ? 'Fonte de Sinal Indisponível'
+            : 'Falha ao Carregar Lista IPTV';
+          const userDetails = isTimeout
+            ? 'O servidor do seu provedor IPTV não respondeu a tempo. Isso pode significar que a fonte está fora do ar ou em manutenção. Tente novamente mais tarde.'
+            : (workerLastError instanceof Error ? workerLastError.message : 'Não foi possível processar a playlist.');
+
+          setPlaylistStatus('error_playlist');
+          setPlaylistError({
+            status: 'error_playlist',
+            message: userMessage,
+            details: userDetails,
+            playlistUrl,
+          });
+          appendProgressLog(`[Erro] ${userDetails}`);
+          setPlaylistProgress(100);
+          setLoading(false);
+          return;
         }
 
         // Atualização final com catálogo completo - MERGE DIFERENCIAL

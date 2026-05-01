@@ -10,7 +10,7 @@ import {
 } from 'react-native';
 import { useStore } from '../store/useStore';
 import { motion, AnimatePresence } from 'motion/react';
-import { Search, RotateCcw, LogOut, ChevronRight, LayoutGrid, X, Star } from 'lucide-react';
+import { Search, RotateCcw, LogOut, ChevronRight, LayoutGrid, X, Star, WifiOff, Radio } from 'lucide-react';
 import { Media, Category } from '../types';
 import { useVirtualizer } from '@tanstack/react-virtual';
 
@@ -1801,7 +1801,7 @@ const HomeScreen: React.FC<{ onLogout: () => void }> = ({ onLogout }) => {
     ),
   );
   const heroEstimatedHeight = layout.isTvProfile
-    ? Math.max(280, Math.min(baseHeroEstimatedHeight, Math.round(layout.height * 0.58)))
+    ? Math.max(420, Math.min(baseHeroEstimatedHeight, Math.round(layout.height * 0.92)))
     : baseHeroEstimatedHeight;
 
   // P0: Calcula o tamanho EXATO de cada linha para evitar "pulos" de reajuste do virtualizador.
@@ -2058,22 +2058,19 @@ const HomeScreen: React.FC<{ onLogout: () => void }> = ({ onLogout }) => {
   // Sempre rouba o foco para o conteúdo principal para fechar/desativar a sidebar automaticamente.
   useEffect(() => {
     if (!loading && isTvMode && isHomeNavActive) {
-      const initTimer = setTimeout(() => {
-        try {
-          if (activeFilter === 'live' || activeFilter === 'sports') {
-            // Para live/sports, o foco inicial é gerenciado pelo LiveTVGrid
-            // Forçamos o blur para remover o foco da SideMenu e permitir que a grade assuma.
-            if (document.activeElement instanceof HTMLElement) {
-              document.activeElement.blur();
-            }
-          } else {
-            // VOD: Foca no botão Play do Hero
-            setFocusedId('hero-play');
+      // Tenta focar imediatamente e depois com delay para garantir que o componente montou
+      const focusHero = () => {
+        if (activeFilter === 'live' || activeFilter === 'sports') {
+          if (document.activeElement instanceof HTMLElement) {
+            document.activeElement.blur();
           }
-        } catch (error) {
-          void error;
+        } else {
+          setFocusedId('hero-play');
         }
-      }, 300);
+      };
+
+      focusHero();
+      const initTimer = setTimeout(focusHero, 800);
       return () => clearTimeout(initTimer);
     }
   }, [loading, isTvMode, isHomeNavActive, activeFilter, setFocusedId]);
@@ -2090,41 +2087,251 @@ const HomeScreen: React.FC<{ onLogout: () => void }> = ({ onLogout }) => {
   }
 
   if (hasBlockingPlaylistError) {
+    const isSourceOffline = playlistError?.message?.includes('Fonte de Sinal') 
+      || playlistError?.details?.includes('não respondeu')
+      || playlistError?.details?.includes('tempo limite')
+      || playlistError?.details?.includes('Tempo limite');
+    
     return (
-      <View style={styles.container}>
-        <View style={styles.errorStateContainer}>
-          <Text style={styles.errorStateTitle}>
-            {playlistError?.message || 'Falha ao carregar o catalogo'}
-          </Text>
-          <Text style={styles.errorStateDetails}>
-            {playlistError?.details || 'Nao foi possivel carregar sua lista agora. Verifique a conexao e tente novamente.'}
-          </Text>
+      <div
+        style={{
+          width: '100%',
+          height: '100%',
+          backgroundColor: '#050505',
+          display: 'flex',
+          flexDirection: 'column',
+          justifyContent: 'center',
+          alignItems: 'center',
+          position: 'fixed',
+          inset: 0,
+          zIndex: 9999,
+          padding: 24,
+        }}
+      >
+        {/* Glow background */}
+        <div
+          style={{
+            position: 'absolute',
+            width: '50vw',
+            height: '50vw',
+            background: isSourceOffline
+              ? 'radial-gradient(circle, rgba(239,68,68,0.08) 0%, transparent 70%)'
+              : 'radial-gradient(circle, rgba(229,9,20,0.1) 0%, transparent 70%)',
+            filter: 'blur(100px)',
+            zIndex: 0,
+          }}
+        />
 
-          <View style={styles.errorStateActions}>
-            <TouchableHighlight
-              onPress={handleRetryPlaylist}
-              underlayColor="rgba(255,255,255,0.08)"
-              style={styles.errorPrimaryButton}
-            >
-              <View style={styles.errorButtonInner}>
-                <RotateCcw size={18} color="white" />
-                <Text style={styles.errorPrimaryButtonText}>Tentar Novamente</Text>
-              </View>
-            </TouchableHighlight>
+        <div
+          style={{
+            position: 'relative',
+            zIndex: 1,
+            display: 'flex',
+            flexDirection: 'column',
+            alignItems: 'center',
+            maxWidth: 520,
+            width: '100%',
+          }}
+        >
+          {/* Icon */}
+          <motion.div
+            animate={{
+              scale: [1, 1.08, 1],
+              opacity: [0.6, 1, 0.6],
+            }}
+            transition={{
+              duration: 3,
+              repeat: Infinity,
+              ease: 'easeInOut',
+            }}
+            style={{
+              width: 80,
+              height: 80,
+              borderRadius: '50%',
+              background: isSourceOffline
+                ? 'linear-gradient(135deg, rgba(239,68,68,0.15), rgba(239,68,68,0.05))'
+                : 'linear-gradient(135deg, rgba(229,9,20,0.15), rgba(229,9,20,0.05))',
+              border: `2px solid ${isSourceOffline ? 'rgba(239,68,68,0.25)' : 'rgba(229,9,20,0.25)'}`,
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              marginBottom: 24,
+            }}
+          >
+            {isSourceOffline ? (
+              <WifiOff size={36} color="#f87171" strokeWidth={2} />
+            ) : (
+              <Radio size={36} color="#E50914" strokeWidth={2} />
+            )}
+          </motion.div>
 
-            <TouchableHighlight
-              onPress={onLogout}
-              underlayColor="rgba(239,68,68,0.12)"
-              style={styles.errorSecondaryButton}
+          {/* Title */}
+          <h1
+            style={{
+              margin: 0,
+              fontSize: 28,
+              fontWeight: 900,
+              fontFamily: 'Outfit, sans-serif',
+              color: 'white',
+              textAlign: 'center',
+              letterSpacing: -0.5,
+            }}
+          >
+            {isSourceOffline ? 'Fonte de Sinal Indisponível' : (playlistError?.message || 'Falha ao Carregar Catálogo')}
+          </h1>
+
+          {/* Subtitle */}
+          <p
+            style={{
+              margin: '12px 0 0',
+              fontSize: 15,
+              fontFamily: 'Outfit, sans-serif',
+              color: 'rgba(255,255,255,0.55)',
+              textAlign: 'center',
+              lineHeight: '22px',
+              maxWidth: 440,
+            }}
+          >
+            {isSourceOffline
+              ? 'O servidor do seu provedor IPTV não respondeu. Isso geralmente indica que a fonte está fora do ar ou em manutenção temporária.'
+              : (playlistError?.details || 'Não foi possível carregar sua lista agora. Verifique a conexão e tente novamente.')}
+          </p>
+
+          {/* Technical details card */}
+          {playlistError?.details && (
+            <div
+              style={{
+                marginTop: 20,
+                width: '100%',
+                maxWidth: 440,
+                backgroundColor: 'rgba(255,255,255,0.04)',
+                border: '1px solid rgba(255,255,255,0.08)',
+                borderRadius: 12,
+                padding: '12px 16px',
+              }}
             >
-              <View style={styles.errorButtonInner}>
-                <LogOut size={18} color="#f87171" />
-                <Text style={styles.errorSecondaryButtonText}>Sair da Sessao</Text>
-              </View>
-            </TouchableHighlight>
-          </View>
-        </View>
-      </View>
+              <span
+                style={{
+                  display: 'block',
+                  fontSize: 10,
+                  fontWeight: 700,
+                  fontFamily: 'Outfit, sans-serif',
+                  color: 'rgba(255,255,255,0.3)',
+                  textTransform: 'uppercase',
+                  letterSpacing: 1.5,
+                  marginBottom: 6,
+                }}
+              >
+                Detalhes Técnicos
+              </span>
+              <span
+                style={{
+                  fontSize: 12,
+                  fontFamily: 'monospace',
+                  color: 'rgba(255,255,255,0.45)',
+                  lineHeight: '17px',
+                  wordBreak: 'break-word',
+                }}
+              >
+                {playlistError.details}
+              </span>
+            </div>
+          )}
+
+          {/* Action Buttons — D-Pad Navigable */}
+          <div
+            style={{
+              marginTop: 32,
+              display: 'flex',
+              flexDirection: 'column',
+              gap: 12,
+              width: '100%',
+              maxWidth: 340,
+            }}
+          >
+            <button
+              data-nav-id="error-retry"
+              tabIndex={0}
+              autoFocus
+              onClick={handleRetryPlaylist}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' || (e as any).keyCode === 23 || (e as any).keyCode === 66) {
+                  e.preventDefault();
+                  handleRetryPlaylist();
+                }
+              }}
+              style={{
+                backgroundColor: '#E50914',
+                borderRadius: 12,
+                padding: '14px 24px',
+                border: '2px solid transparent',
+                cursor: 'pointer',
+                display: 'flex',
+                flexDirection: 'row',
+                alignItems: 'center',
+                justifyContent: 'center',
+                gap: 10,
+                outline: 'none',
+              }}
+              onFocus={(e) => { e.currentTarget.style.borderColor = 'white'; e.currentTarget.style.transform = 'scale(1.03)'; }}
+              onBlur={(e) => { e.currentTarget.style.borderColor = 'transparent'; e.currentTarget.style.transform = 'scale(1)'; }}
+            >
+              <RotateCcw size={18} color="white" />
+              <span style={{ color: 'white', fontSize: 16, fontWeight: 800, fontFamily: 'Outfit, sans-serif' }}>
+                Tentar Novamente
+              </span>
+            </button>
+
+            <button
+              data-nav-id="error-logout"
+              tabIndex={0}
+              onClick={onLogout}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' || (e as any).keyCode === 23 || (e as any).keyCode === 66) {
+                  e.preventDefault();
+                  onLogout?.();
+                }
+              }}
+              style={{
+                backgroundColor: 'rgba(255,255,255,0.06)',
+                borderRadius: 12,
+                padding: '14px 24px',
+                border: '2px solid rgba(255,255,255,0.1)',
+                cursor: 'pointer',
+                display: 'flex',
+                flexDirection: 'row',
+                alignItems: 'center',
+                justifyContent: 'center',
+                gap: 10,
+                outline: 'none',
+              }}
+              onFocus={(e) => { e.currentTarget.style.borderColor = '#f87171'; e.currentTarget.style.transform = 'scale(1.03)'; }}
+              onBlur={(e) => { e.currentTarget.style.borderColor = 'rgba(255,255,255,0.1)'; e.currentTarget.style.transform = 'scale(1)'; }}
+            >
+              <LogOut size={18} color="#f87171" />
+              <span style={{ color: 'rgba(255,255,255,0.7)', fontSize: 15, fontWeight: 700, fontFamily: 'Outfit, sans-serif' }}>
+                Sair da Sessão
+              </span>
+            </button>
+          </div>
+
+          {/* Brand footer */}
+          <span
+            style={{
+              marginTop: 40,
+              fontSize: 10,
+              fontFamily: 'Outfit, sans-serif',
+              color: 'rgba(255,255,255,0.15)',
+              fontWeight: 900,
+              textTransform: 'uppercase',
+              letterSpacing: 3,
+              fontStyle: 'italic',
+            }}
+          >
+            XANDEFLIX
+          </span>
+        </div>
+      </div>
     );
   }
 
@@ -2191,21 +2398,7 @@ const HomeScreen: React.FC<{ onLogout: () => void }> = ({ onLogout }) => {
 
   return (
     <View style={styles.container}>
-      {!hasBlockingPlaylistError && isDetailsPageMode && shouldShowSideMenu && (
-        <div
-          aria-hidden={shouldDisableSideMenu}
-          style={{ pointerEvents: shouldDisableSideMenu ? 'none' : 'auto' }}
-        >
-          <SideMenu
-            onSelect={handleCategorySelect}
-            activeId={activeFilter}
-            onLogout={onLogout}
-            onExpandedChange={handleSideMenuExpandedChange}
-          />
-        </div>
-      )}
-
-      {!hasBlockingPlaylistError && !isDetailsPageMode && (
+      {!hasBlockingPlaylistError && (
       <View
         style={{ flex: 1, flexDirection: 'row', width: '100%', height: '100%' }}
       >
@@ -2587,7 +2780,7 @@ const HomeScreen: React.FC<{ onLogout: () => void }> = ({ onLogout }) => {
                   handleHeroFocus={handleHeroFocus}
                   setIsDetailsVisible={setIsDetailsVisible}
                   setDetailsMedia={setDetailsMedia}
-                  isHeroVisibleInList={isHeroVisibleInList}
+                  isHeroVisibleInList={isHeroVisibleInList && !isDetailsVisible && !gridCategory && !isSettingsVisible && !isFullscreenPlayerActive}
                   handlePlay={handlePlay}
                   onHeroPrev={handleHeroPrev}
                   onHeroNext={handleHeroNext}

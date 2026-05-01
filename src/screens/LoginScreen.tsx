@@ -58,7 +58,8 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLoginSuccess }) => {
     input.focus();
     // Em alguns WebViews de TV, clicar no elemento ajuda a invocar o IME (teclado)
     input.click();
-    // Garante que o cursor vá para o final
+    // Mantido por precaução caso seja chamado programaticamente, 
+    // mas não deve ser usado como callback do onEnter do useTvNavigation.
     const val = input.value;
     input.value = '';
     input.value = val;
@@ -213,7 +214,6 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLoginSuccess }) => {
               ref={(el) => {
                 idInputRef.current = el;
                 registerNode('login-id', el, 'body', {
-                  onEnter: () => focusInputField(idInputRef.current),
                   disableAutoScroll: true,
                 });
               }}
@@ -250,7 +250,6 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLoginSuccess }) => {
               ref={(el) => {
                 pwdInputRef.current = el;
                 registerNode('login-password', el, 'body', {
-                  onEnter: () => focusInputField(pwdInputRef.current),
                   disableAutoScroll: true,
                 });
               }}

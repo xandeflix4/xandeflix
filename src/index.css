@@ -72,8 +72,8 @@ html, body {
 
 /* Custom scrollbar for a Netflix-like look */
 ::-webkit-scrollbar {
-  width: 8px;
-  height: 8px;
+  width: 4px;
+  height: 4px;
 }
 
 ::-webkit-scrollbar-track {
@@ -100,10 +100,10 @@ html, body {
 
 /* Estilos de Scrollbar Personalizada para TV */
 .custom-scrollbar::-webkit-scrollbar {
-  width: 4px;
+  width: 2px;
 }
 .custom-scrollbar::-webkit-scrollbar-thumb {
-  background: rgba(255, 255, 255, 0.1);
+  background: rgba(255, 255, 255, 0.2);
   border-radius: 10px;
 }
 .custom-scrollbar {

@@ -180,16 +180,24 @@ const clearFocusedIdIfNeeded = (id: string, localRef?: { current: string | null 
     return;
   }
 
+  // Se o elemento ainda está focado no DOM e é o que queremos limpar,
+  // verificamos se há uma re-registração iminente (opcional, mas o blur é o mais perigoso)
+  if (typeof document !== 'undefined') {
+    const activeElement = document.activeElement as HTMLElement | null;
+    const currentNavId = getNavIdFromElement(activeElement);
+    
+    // Se o elemento focado é o próprio ID que estamos limpando,
+    // evitamos o blur imediato se possível, pois isso causa perda de contexto no D-Pad.
+    if (currentNavId === id) {
+      // Apenas removemos a referência interna, mas deixamos o foco no DOM.
+      // O próximo handleKeyDown tentará recuperar via getActiveNavId().
+      console.warn(`[useTvNavigation] Mantendo foco no DOM para id="${id}" durante unmount/re-reg.`);
+    }
+  }
+
   focusedNodeId = null;
   if (localRef && localRef.current === id) {
     localRef.current = null;
-  }
-
-  if (typeof document !== 'undefined') {
-    const activeElement = document.activeElement as HTMLElement | null;
-    if (activeElement && getNavIdFromElement(activeElement) === id) {
-      activeElement.blur();
-    }
   }
 
   if (focusListeners.size > 0) {
@@ -394,6 +402,8 @@ export const useTvNavigation = (options?: { onBack?: () => void; isActive?: bool
       const currentFocusedId = getActiveNavId() ?? focusedIdRef.current;
       const currentNode = currentFocusedId ? navNodes.get(currentFocusedId) : null;
 
+      console.warn(`[useTvNavigation] KeyDown: "${key}" | FocusedId: "${currentFocusedId}" | NodeFound: ${!!currentNode}`);
+
       if (key === 'Escape' || key === 'Back') {
         if (currentNode?.onBack) {
           e.preventDefault();
@@ -431,17 +441,14 @@ export const useTvNavigation = (options?: { onBack?: () => void; isActive?: bool
         return;
       }
 
-      if (!currentFocusedId || !currentNode) {
-        const firstNode = getFirstNavigableNode();
-        if (firstNode && focusNode(firstNode, () => e.preventDefault(), !isTvMode)) {
-          focusedIdRef.current = firstNode.id;
-          emitFocusedId(firstNode.id);
-        }
-        return;
+      let currentRef = currentNode ? resolveNodeRef(currentNode) : null;
+      if (!currentRef && currentFocusedId) {
+        console.warn(`[useTvNavigation] currentRef não encontrado para id="${currentFocusedId}". Tentando recuperar do DOM.`);
+        currentRef = findElementByNavId(currentFocusedId);
       }
 
-      const currentRef = resolveNodeRef(currentNode);
       if (!currentRef) {
+        console.warn(`[useTvNavigation] Foco perdido completamente. Tentando recuperar via firstNavigableNode.`);
         const firstNode = getFirstNavigableNode();
         if (firstNode && focusNode(firstNode, () => e.preventDefault(), !isTvMode)) {
           focusedIdRef.current = firstNode.id;
@@ -497,7 +504,7 @@ export const useTvNavigation = (options?: { onBack?: () => void; isActive?: bool
       }
 
       // Fast path for menu vertical navigation.
-      if (currentNode.section === 'menu' && (key === 'ArrowUp' || key === 'ArrowDown')) {
+      if (currentNode?.section === 'menu' && (key === 'ArrowUp' || key === 'ArrowDown')) {
         const menuNodes = Array.from(navNodes.values())
           .filter((node) => node.section === 'menu' && resolveNodeRef(node))
           .sort((a, b) => {
@@ -527,7 +534,7 @@ export const useTvNavigation = (options?: { onBack?: () => void; isActive?: bool
       }
 
       // Fast path for menu right navigation (entering Hero or main content).
-      if (currentNode.section === 'menu' && key === 'ArrowRight') {
+      if (currentNode?.section === 'menu' && key === 'ArrowRight') {
         const candidateIds = ['hero-play', 'hero-info', 'item-0-0', 'item-1-0'];
         // Also try to enter the first tv-group if on LiveTV screen
         const tvGroupNodes = Array.from(navNodes.keys()).filter(k => k.startsWith('tv-group-'));
@@ -582,262 +589,9 @@ export const useTvNavigation = (options?: { onBack?: () => void; isActive?: bool
         }
       }
 
-      // ============================================================
-      // Fast path for LiveTV groups (tv-group-* ou tv-sidebar-group-*) — index-based nav
-      // ============================================================
-      if (currentFocusedId.startsWith('tv-group-') || currentFocusedId.startsWith('tv-sidebar-group-')) {
-        const prefix = currentFocusedId.startsWith('tv-sidebar-group-') ? 'tv-sidebar-group-' : 'tv-group-';
-        const channelPrefix = prefix === 'tv-sidebar-group-' ? 'tv-sidebar-channel-' : 'tv-channel-';
-
-        const collectVisibleChannelIds = (): string[] => {
-          if (typeof document === 'undefined') {
-            return [];
-          }
-
-          const visibleChannelNodes = Array.from(
-            document.querySelectorAll<HTMLElement>(`[data-nav-id^="${channelPrefix}"]`),
-          )
-            .filter((node) => Boolean(node.dataset.navId))
-            .sort((left, right) => {
-              const leftRect = left.getBoundingClientRect();
-              const rightRect = right.getBoundingClientRect();
-              const topDiff = leftRect.top - rightRect.top;
-              if (Math.abs(topDiff) > 1) return topDiff;
-              return leftRect.left - rightRect.left;
-            });
-
-          const visibleIds: string[] = [];
-          for (const node of visibleChannelNodes) {
-            const navId = node.dataset.navId;
-            if (!navId) continue;
-            visibleIds.push(navId);
-          }
-          return visibleIds;
-        };
-
-        const attemptFocusChannelFromGroup = () => {
-          const channelIds = collectVisibleChannelIds();
-          if (channelIds.length === 0) {
-            for (const key of navNodes.keys()) {
-              if (key.startsWith(channelPrefix)) channelIds.push(key);
-            }
-          }
-
-          for (const channelId of channelIds) {
-            const target = navNodes.get(channelId);
-            if (!target || !resolveNodeRef(target)) {
-              continue;
-            }
-
-            if (focusNode(target, () => e.preventDefault(), !isTvMode)) {
-              focusedIdRef.current = target.id;
-              emitFocusedId(target.id);
-              return true;
-            }
-          }
-
-          return false;
-        };
-
-        // P1: Otimizacao de performance - evitar Array.from e sort geometrico
-        const groupIds: string[] = [];
-        for (const key of navNodes.keys()) {
-          if (key.startsWith(prefix)) groupIds.push(key);
-        }
-
-        const currentIdx = groupIds.indexOf(currentFocusedId);
-
-        if (key === 'ArrowDown' || key === 'ArrowUp') {
-          const nextIdx = key === 'ArrowDown'
-            ? Math.min(groupIds.length - 1, currentIdx + 1)
-            : Math.max(0, currentIdx - 1);
-          const targetId = groupIds[nextIdx];
-          if (targetId && targetId !== currentFocusedId) {
-            const target = navNodes.get(targetId);
-            if (target && focusNode(target, () => e.preventDefault(), !isTvMode)) {
-              focusedIdRef.current = target.id;
-              emitFocusedId(target.id);
-              return;
-            }
-          }
-          e.preventDefault();
-          return; // block scroll even if at boundary
-        }
-
-        if (key === 'Enter') {
-          e.preventDefault();
-          e.stopImmediatePropagation();
-          if (currentNode.onEnter) {
-            currentNode.onEnter();
-          }
-          if (prefix === 'tv-sidebar-group-') {
-            requestAnimationFrame(() => {
-              if (!attemptFocusChannelFromGroup()) {
-                requestAnimationFrame(() => {
-                  attemptFocusChannelFromGroup();
-                });
-              }
-            });
-          }
-          return;
-        }
-
-        if (key === 'ArrowRight') {
-          if (!attemptFocusChannelFromGroup()) {
-            // Se não encontrou canais imediatamente (ex: categoria mudando), tenta no próximo frame
-            requestAnimationFrame(() => {
-              attemptFocusChannelFromGroup();
-            });
-          }
-          e.preventDefault();
-          return;
-        }
-
-        if (key === 'ArrowLeft') {
-          // Move back to sidebar menu
-          const activeMenuId = `menu-${useStore.getState().activeFilter || 'home'}`;
-          const menuCandidates = [activeMenuId, 'menu-home', 'menu-live', 'menu-search'];
-          for (const mid of menuCandidates) {
-            const target = navNodes.get(mid);
-            if (target && focusNode(target, () => e.preventDefault(), !isTvMode)) {
-              focusedIdRef.current = target.id;
-              emitFocusedId(target.id);
-              return;
-            }
-          }
-        }
-      }
-
-      // Fast path for LiveTV channels (tv-channel-* ou tv-sidebar-channel-*) — index-based nav
-      // ============================================================
-      if (currentFocusedId.startsWith('tv-channel-') || currentFocusedId.startsWith('tv-sidebar-channel-')) {
-        const prefix = currentFocusedId.startsWith('tv-sidebar-channel-') ? 'tv-sidebar-channel-' : 'tv-channel-';
-        const groupPrefix = prefix === 'tv-sidebar-channel-' ? 'tv-sidebar-group-' : 'tv-group-';
-
-        // Ordem de navegação precisa seguir o DOM visível para não "saltar" ao topo.
-        // Em virtualização, a ordem do Map pode não refletir os itens em tela.
-        const channelIds: string[] = [];
-        if (typeof document !== 'undefined') {
-          const visibleChannelNodes = Array.from(
-            document.querySelectorAll<HTMLElement>(`[data-nav-id^="${prefix}"]`),
-          )
-            .filter((node) => Boolean(node.dataset.navId))
-            .sort((left, right) => {
-              const leftRect = left.getBoundingClientRect();
-              const rightRect = right.getBoundingClientRect();
-              const topDiff = leftRect.top - rightRect.top;
-              if (Math.abs(topDiff) > 1) return topDiff;
-              return leftRect.left - rightRect.left;
-            });
-
-          for (const node of visibleChannelNodes) {
-            const navId = node.dataset.navId;
-            if (!navId) continue;
-            channelIds.push(navId);
-          }
-        }
-
-        if (channelIds.length === 0) {
-          for (const key of navNodes.keys()) {
-            if (key.startsWith(prefix)) channelIds.push(key);
-          }
-        }
-        const currentIdx = channelIds.indexOf(currentFocusedId);
-
-        if (key === 'ArrowDown' || key === 'ArrowUp') {
-          if (currentIdx >= 0) {
-            const nextIdx = key === 'ArrowDown'
-              ? Math.min(channelIds.length - 1, currentIdx + 1)
-              : Math.max(0, currentIdx - 1);
-            const targetId = channelIds[nextIdx];
-            if (targetId && targetId !== currentFocusedId) {
-              const target = navNodes.get(targetId);
-              if (target && focusNode(target, () => e.preventDefault(), !isTvMode)) {
-                focusedIdRef.current = target.id;
-                emitFocusedId(target.id);
-                return;
-              }
-            }
-            e.preventDefault();
-            return; // block scroll even if at boundary
-          }
-          // Se o foco atual ainda não foi mapeado nesta lista visível (timing de virtualização),
-          // deixamos o fallback geométrico abaixo escolher o vizinho correto, em vez de forçar topo.
-        }
-
-        if (key === 'Enter') {
-          e.preventDefault();
-          e.stopImmediatePropagation();
-          if (currentNode.onEnter) {
-            currentNode.onEnter();
-          }
-          return;
-        }
-
-        if (key === 'ArrowLeft') {
-          // Move back to the groups column — pick the currently active group
-          const groupIds = Array.from(navNodes.keys()).filter(k => k.startsWith(groupPrefix));
-          if (groupIds.length > 0) {
-            // Try to find the currently selected group first
-            for (const gid of groupIds) {
-              const el = findElementByNavId(gid);
-              if (el && el.classList.contains('active')) {
-                const target = navNodes.get(gid);
-                if (target && focusNode(target, () => e.preventDefault(), !isTvMode)) {
-                  focusedIdRef.current = target.id;
-                  emitFocusedId(target.id);
-                  return;
-                }
-              }
-            }
-            // Fallback: first group
-            const target = navNodes.get(groupIds[0]);
-            if (target && focusNode(target, () => e.preventDefault(), !isTvMode)) {
-              focusedIdRef.current = target.id;
-              emitFocusedId(target.id);
-              return;
-            }
-          }
-        }
-
-        if (key === 'ArrowRight') {
-          // Move to the preview player
-          const prevTarget = navNodes.get('tv-preview-player');
-          if (prevTarget && focusNode(prevTarget, () => e.preventDefault(), !isTvMode)) {
-            focusedIdRef.current = prevTarget.id;
-            emitFocusedId(prevTarget.id);
-            return;
-          }
-        }
-      }
-
-      // ============================================================
-      // Fast path for preview player (tv-preview-player)
-      // ============================================================
-      if (currentFocusedId === 'tv-preview-player') {
-        if (key === 'ArrowLeft') {
-          // Move back to channels
-          const channelIds = Array.from(navNodes.keys()).filter(k => k.startsWith('tv-channel-'));
-          if (channelIds.length > 0) {
-            const target = navNodes.get(channelIds[0]);
-            if (target && focusNode(target, () => e.preventDefault(), !isTvMode)) {
-              focusedIdRef.current = target.id;
-              emitFocusedId(target.id);
-              return;
-            }
-          }
-        }
-        if (key === 'Enter') {
-          if (currentNode.onEnter) {
-            e.preventDefault();
-            currentNode.onEnter();
-            return;
-          }
-        }
-      }
 
       // Fast path for Hero button navigation (D-Pad navigation from hero-play / hero-info).
-      if (currentNode.section === 'hero' && (key === 'ArrowDown' || key === 'ArrowLeft' || key === 'ArrowRight')) {
+      if (currentNode?.section === 'hero' && (key === 'ArrowDown' || key === 'ArrowLeft' || key === 'ArrowRight')) {
         const candidateIds: string[] = [];
 
         if (key === 'ArrowDown') {
@@ -874,7 +628,7 @@ export const useTvNavigation = (options?: { onBack?: () => void; isActive?: bool
       let bestNode: NavNode | null = null;
       let minDistance = Infinity;
 
-      const currentSection = currentNode.section;
+      const currentSection = currentNode?.section;
       const isCurrentModalSection = String(currentSection || '').startsWith('modal');
       for (const node of navNodes.values()) {
         if (node.id === currentFocusedId) continue;
@@ -922,7 +676,7 @@ export const useTvNavigation = (options?: { onBack?: () => void; isActive?: bool
       }
 
       if (key === 'Enter') {
-        if (currentNode.onEnter) {
+        if (currentNode?.onEnter) {
           e.preventDefault();
           currentNode.onEnter();
           return;

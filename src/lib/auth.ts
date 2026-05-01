@@ -23,7 +23,7 @@ export interface SessionSnapshot {
 }
 
 const PROFILE_LOOKUP_RETRY_DELAYS_MS = [0, 120, 300] as const;
-const AUTH_REQUEST_TIMEOUT_MS = 30_000;
+const AUTH_REQUEST_TIMEOUT_MS = 10_000;
 
 function withTimeout<T>(
   promiseLike: PromiseLike<T>,

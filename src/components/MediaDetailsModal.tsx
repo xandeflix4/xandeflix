@@ -3,7 +3,7 @@ import { View, Text, StyleSheet, TouchableHighlight, Image, ScrollView } from 'r
 import { motion } from 'motion/react';
 import { Play, Star, Loader2, Heart, Clapperboard, X, ChevronDown } from 'lucide-react';
 import { Media } from '../types';
-import { useTMDB } from '../hooks/useTMDB';
+import { useTMDB, useTMDBSeason } from '../hooks/useTMDB';
 import { useEmbeddableTrailerKey } from '../hooks/useEmbeddableTrailerKey';
 import { useResponsiveLayout } from '../hooks/useResponsiveLayout';
 import { useStore } from '../store/useStore';
@@ -165,6 +165,15 @@ export const MediaDetailsPage: React.FC<MediaDetailsPageProps> = ({
     ensureTopDetailsVisible(true);
   }, [ensureTopDetailsVisible, isTopDetailsFocused]);
 
+  useEffect(() => {
+    if (shouldEnableTvNav) {
+      const timer = setTimeout(() => {
+        setFocusedId('details-play');
+      }, 100);
+      return () => clearTimeout(timer);
+    }
+  }, [media.id, shouldEnableTvNav, setFocusedId]);
+
   const watchHistory = useStore(state => state.watchHistory);
   const playbackProgress = useStore(state => state.playbackProgress);
   const favorites = useStore(state => state.favorites);
@@ -258,7 +267,11 @@ export const MediaDetailsPage: React.FC<MediaDetailsPageProps> = ({
     if (media.type === 'movie') return 'movie';
     return mergedSeriesSeasons.length > 0 ? 'series' : 'movie';
   }, [media.type, mergedSeriesSeasons.length]);
-  const { data: tmdbData, loading: tmdbLoading } = useTMDB(media.title, tmdbLookupType, { categoryHint: media.category });
+  const { data: tmdbData, loading: tmdbLoading } = useTMDB(media.title, tmdbLookupType, { categoryHint: media.category, yearHint: media.year });
+  const { data: tmdbEpisodes } = useTMDBSeason(
+    tmdbLookupType === 'series' ? tmdbData?.id : undefined,
+    selectedSeason ?? undefined,
+  );
   const favoriteKey = media.videoUrl || `media:${media.id}`;
   const isFavorite = favorites.includes(favoriteKey) || favorites.includes(media.id);
 
@@ -632,7 +645,7 @@ export const MediaDetailsPage: React.FC<MediaDetailsPageProps> = ({
         right: 0,
         bottom: 0,
         zIndex: 250,
-        backgroundColor: 'transparent',
+        backgroundColor: '#050505',
         display: 'flex',
         flexDirection: 'column',
         transition: 'left 220ms ease-out',
@@ -979,7 +992,6 @@ export const MediaDetailsPage: React.FC<MediaDetailsPageProps> = ({
                  ref={(el) => { if (el) registerNode('season-selector', el, 'modal', {
                     onFocus: () => {},
                     onEnter: () => setIsSeasonDropdownOpen(prev => !prev),
-                    disableAutoScroll: true
                  }); }}
                  style={{
                    backgroundColor: 'rgba(255,255,255,0.08)',
@@ -1029,7 +1041,6 @@ export const MediaDetailsPage: React.FC<MediaDetailsPageProps> = ({
                               setIsSeasonDropdownOpen(false);
                               setFocusedId('season-selector');
                            },
-                           disableAutoScroll: true
                         }); }}
                         onClick={() => {
                            setSelectedSeason(season.seasonNumber);
@@ -1053,86 +1064,149 @@ export const MediaDetailsPage: React.FC<MediaDetailsPageProps> = ({
                )}
              </div>
 
-             <div style={styles.episodesGrid as any}>
-               {selectedSeasonEpisodes.map((ep, idx) => {
-                 const currentPos = watchHistory[ep.videoUrl];
-                 const isStarted = Boolean(currentPos && currentPos > 10);
+              <div
+                className="custom-scrollbar"
+                style={{
+                  display: 'flex',
+                  flexDirection: 'row',
+                  gap: 16,
+                  width: '100%',
+                  overflowX: 'auto',
+                  paddingBottom: 24,
+                  paddingTop: 8,
+                }}
+              >
+                {selectedSeasonEpisodes.map((ep, idx) => {
+                  const currentPos = watchHistory[ep.videoUrl];
+                  const isStarted = Boolean(currentPos && currentPos > 10);
+                  const isFocused = focusedId === `details-episode-${ep.id}`;
 
-                 return (
-                 <div
-                   key={ep.id}
-                   role="button"
-                   tabIndex={0}
-                   data-nav-id={`details-episode-${ep.id}`}
-                   ref={(el) => { if (el) registerNode(`details-episode-${ep.id}`, el, 'modal-episodes', {
-                     onFocus: () => {},
-                     disableAutoScroll: true,
-                     onEnter: () => onPlay({
-                       ...media,
-                       videoUrl: ep.videoUrl,
-                       title: `${media.title} - ${ep.title}`,
-                       currentEpisode: ep,
-                       currentSeasonNumber: selectedSeason,
-                      }),
-                    }); } }
-                   onClick={() => onPlay({
-                     ...media,
-                     videoUrl: ep.videoUrl,
-                     title: `${media.title} - ${ep.title}`,
-                     currentEpisode: ep,
-                     currentSeasonNumber: selectedSeason,
-                   })}
-                   style={{
-                     cursor: 'pointer',
-                     borderRadius: 8,
-                     outline: 'none',
-                   }}
-                 >
-                   <View style={[styles.episodeCard]}>
-                     <View style={[styles.episodeInner, { overflow: 'hidden' }]}>
-                       <View style={[styles.episodeIndex, isStarted ? { opacity: 0.5 } : undefined]}>
-                         <Text style={styles.episodeIndexText}>{idx + 1}</Text>
-                       </View>
-                       <View style={styles.episodeInfo}>
-                         <Text style={[styles.episodeTitle, isStarted ? { color: '#E50914' } : undefined]}>{ep.title}</Text>
-                         <Text style={styles.episodeSubtitle}>
-                           Episódio {ep.episodeNumber} {isStarted ? `• Em andamento (${Math.floor(currentPos / 60)}m)` : ''}
-                         </Text>
-                       </View>
-                       <View style={styles.episodePlayIcon}>
-                         <Play size={20} color="white" />
-                        </View>
-                        {(() => {
-                            const pData = playbackProgress[ep.videoUrl] || (ep.id ? playbackProgress[ep.id] : null);
-                            if (!pData || !pData.duration || pData.currentTime < 10) return null;
-                            const pct = Math.min(100, Math.max(0, (pData.currentTime / pData.duration) * 100));
-                            return (
-                              <View
+                  return (
+                  <div
+                    key={ep.id}
+                    role="button"
+                    tabIndex={0}
+                    data-nav-id={`details-episode-${ep.id}`}
+                    ref={(el) => { if (el) registerNode(`details-episode-${ep.id}`, el, 'modal-episodes', {
+                      onFocus: () => {},
+                      onEnter: () => onPlay({
+                        ...media,
+                        videoUrl: ep.videoUrl,
+                        title: `${media.title} - ${ep.title}`,
+                        currentEpisode: ep,
+                        currentSeasonNumber: selectedSeason,
+                       }),
+                     }); } }
+                    onClick={() => onPlay({
+                      ...media,
+                      videoUrl: ep.videoUrl,
+                      title: `${media.title} - ${ep.title}`,
+                      currentEpisode: ep,
+                      currentSeasonNumber: selectedSeason,
+                    })}
+                    style={{
+                      cursor: 'pointer',
+                      outline: 'none',
+                      flexShrink: 0,
+                      width: 240,
+                      display: 'flex',
+                      flexDirection: 'column',
+                      gap: 8,
+                      transform: isFocused ? 'scale(1.05)' : 'scale(1)',
+                      transition: 'transform 0.2s',
+                    }}
+                  >
+                    <div style={{
+                      width: '100%',
+                      aspectRatio: '16/9',
+                      borderRadius: 8,
+                      overflow: 'hidden',
+                      position: 'relative',
+                      backgroundColor: 'rgba(255,255,255,0.05)',
+                      backgroundImage: `url(${displayData.backdrop || displayData.thumbnail || ''})`,
+                      backgroundSize: 'cover',
+                      backgroundPosition: 'center',
+                      border: isFocused ? '2px solid white' : '2px solid transparent',
+                    }}>
+                      {(() => {
+                        const tmdbEp = tmdbEpisodes.find(te => te.episode_number === ep.episodeNumber);
+                        if (tmdbEp?.still_path) {
+                          return (
+                            <img
+                              src={tmdbEp.still_path}
+                              alt={ep.title}
+                              style={{ width: '100%', height: '100%', objectFit: 'cover' }}
+                            />
+                          );
+                        }
+                        return null;
+                      })()}
+                      <div style={{
+                        position: 'absolute',
+                        inset: 0,
+                        backgroundColor: 'rgba(0,0,0,0.3)',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                      }}>
+                        <Play size={32} color="white" opacity={isFocused ? 1 : 0.6} />
+                      </div>
+                      <div style={{
+                        position: 'absolute',
+                        top: 8,
+                        left: 8,
+                        backgroundColor: 'rgba(0,0,0,0.7)',
+                        padding: '2px 8px',
+                        borderRadius: 4,
+                        color: 'white',
+                        fontSize: 14,
+                        fontWeight: 'bold',
+                        fontFamily: 'Outfit',
+                      }}>
+                        {idx + 1}
+                      </div>
+
+                      {(() => {
+                          const pData = playbackProgress[ep.videoUrl] || (ep.id ? playbackProgress[ep.id] : null);
+                          if (!pData || !pData.duration || pData.currentTime < 10) return null;
+                          const pct = Math.min(100, Math.max(0, (pData.currentTime / pData.duration) * 100));
+                          return (
+                            <div
+                              style={{
+                                position: 'absolute',
+                                bottom: 0,
+                                left: 0,
+                                right: 0,
+                                height: 4,
+                                backgroundColor: 'rgba(255,255,255,0.2)'
+                              }}
+                            >
+                              <div
                                 style={{
-                                  position: 'absolute',
-                                  bottom: 0,
-                                  left: 0,
-                                  right: 0,
-                                  height: 3,
-                                  backgroundColor: 'rgba(255,255,255,0.1)'
+                                  width: `${pct}%`,
+                                  height: '100%',
+                                  backgroundColor: '#E50914'
                                 }}
-                              >
-                                <View
-                                  style={{
-                                    width: `${pct}%`,
-                                    height: '100%',
-                                    backgroundColor: '#E50914'
-                                  }}
-                                />
-                              </View>
-                            );
-                         })()}
-                       </View>
-                     </View>
-                   </div>
-                 );
-               })}
-             </div>
+                              />
+                            </div>
+                          );
+                       })()}
+                    </div>
+                    
+                    <div style={{ display: 'flex', flexDirection: 'column' }}>
+                      <span style={{ color: 'white', fontSize: 14, fontWeight: 'bold', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', fontFamily: 'Outfit' }}>
+                        {ep.title}
+                      </span>
+                      {isStarted && (
+                        <span style={{ color: '#E50914', fontSize: 12, marginTop: 4, fontFamily: 'Outfit' }}>
+                          Em andamento ({Math.floor(currentPos / 60)}m)
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                  );
+                })}
+              </div>
           </div>
         )}
 
