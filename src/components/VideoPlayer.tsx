@@ -771,6 +771,7 @@ export const VideoPlayer = React.memo(
       !disableEmbeddedNativePreview &&
       isPreview;
     const shouldUseNativeBridgePlayer = shouldUseNativePlayer || shouldUseEmbeddedNativePreview;
+    const isAppActive = useStore(state => state.isAppActive);
     const desiredNativeSourceKey = useMemo(
       () =>
         buildNativeSourceKey({
@@ -2199,6 +2200,30 @@ export const VideoPlayer = React.memo(
     useEffect(() => {
       setupNativePlayerRef.current = setupNativePlayer;
     }, [setupNativePlayer]);
+
+    useEffect(() => {
+      if (!isAppActive) {
+        console.warn('[VideoPlayer] App em background detectado. Pausando midia...');
+        
+        // Pipeline Nativa
+        if (shouldUseNativeBridgePlayer && openedPlayerRef.current) {
+          void teardownNativeBridgeSession();
+        }
+
+        // Pipeline Web (Preview ou Fallback)
+        const video = previewVideoRef.current;
+        if (video && !video.paused) {
+          video.pause();
+        }
+      } else {
+        // Quando volta para o foreground, o useEffect do native player já tenta re-iniciar
+        // Mas para o web player (preview), podemos tentar dar play novamente se estava aberto
+        const video = previewVideoRef.current;
+        if (video && video.paused && !video.ended && video.readyState >= 2) {
+           video.play().catch(e => console.warn('[VideoPlayer] Falha ao retomar play auto:', e));
+        }
+      }
+    }, [isAppActive, shouldUseNativeBridgePlayer, teardownNativeBridgeSession]);
 
     useEffect(() => {
       let appStateListener: Promise<PluginListenerHandle> | null = null;

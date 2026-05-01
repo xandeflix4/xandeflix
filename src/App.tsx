@@ -220,11 +220,23 @@ export default function App() {
 
         // Se o player estiver aberto, fecha o player primeiro
         if (currentPlayer === 'fullscreen' || currentPlayer === 'minimized') {
+          const activeMedia = currentState.playingMedia;
+          if (activeMedia?.type === 'live') {
+            currentState.setLastClosedLiveMedia(activeMedia);
+          }
+          
           currentState.setIsChannelBrowserOpen(false);
           currentState.setFocusedId(null);
           currentState.setPlayerMode('closed');
           currentState.setActiveVideoUrl(null);
           currentState.setPlayingMedia(null);
+          return;
+        }
+
+        // Se estiver no Live TV, volta direto para Home (requisito do usuário)
+        if (currentFilter === 'live' || currentFilter === 'sports') {
+          currentState.setSelectedCategoryName(null);
+          currentState.setActiveFilter('home');
           return;
         }
 
@@ -234,7 +246,7 @@ export default function App() {
           return;
         }
 
-        // Se uma categoria está expandida, volta para a lista de categorias
+        // Se uma categoria está expandida (VOD), volta para a lista de categorias
         if (currentCategory !== null) {
           currentState.setSelectedCategoryName(null);
           return;
@@ -261,6 +273,7 @@ export default function App() {
       void enforceFullscreen();
 
       const appStateListener = CapacitorApp.addListener('appStateChange', ({ isActive }) => {
+        useStore.getState().setIsAppActive(isActive);
         if (isActive) {
           void enforceFullscreen();
         }

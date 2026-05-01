@@ -8,6 +8,7 @@ import { useEmbeddableTrailerKey } from '../hooks/useEmbeddableTrailerKey';
 import { useResponsiveLayout } from '../hooks/useResponsiveLayout';
 import type { TMDBData } from '../lib/tmdb';
 import { useTvNavigation } from '../hooks/useTvNavigation';
+import { useStore } from '../store/useStore';
 
 interface HeroSectionProps {
   media: Media | null;
@@ -25,6 +26,9 @@ interface HeroSectionProps {
   isVisibleInList?: boolean;
   onTrailerError?: (media: Media) => void;
 }
+
+const HERO_TRAILER_DELAY_MS = 250;
+const HERO_TRAILER_BOOT_TIMEOUT_MS = 3800;
 
 const truncateWordsWithEllipsis = (value: string, maxWords: number): string => {
   const normalized = String(value || '').replace(/\n/g, ' ').trim().replace(/\s+/g, ' ');
@@ -55,7 +59,10 @@ export const HeroSection: React.FC<HeroSectionProps> = React.memo(({
   const infoBtnRef = useRef<HTMLDivElement | null>(null);
   const heroViewportRef = useRef<HTMLDivElement | null>(null);
   const trailerIframeRef = useRef<HTMLIFrameElement | null>(null);
+  const trailerHandshakeIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const trailerHandshakeStopTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const touchStartRef = useRef<{ x: number; y: number } | null>(null);
+  const isAppActive = useStore(state => state.isAppActive);
 
   const [isHeroInViewport, setIsHeroInViewport] = useState(true);
   const [showTrailer, setShowTrailer] = useState(false);
@@ -148,23 +155,36 @@ export const HeroSection: React.FC<HeroSectionProps> = React.memo(({
     setShowTrailer(false);
     setTrailerStatus('idle');
 
-    if (!embeddableTrailerKey || !isVisibleInList || !isHeroInViewport || !isAutoRotating) {
+    if (!embeddableTrailerKey || !isVisibleInList || !isHeroInViewport || !isAutoRotating || !isAppActive) {
       return;
     }
 
     const timer = window.setTimeout(() => {
       setTrailerStatus('loading');
       setShowTrailer(true);
-    }, 3000);
+    }, HERO_TRAILER_DELAY_MS);
 
     return () => window.clearTimeout(timer);
-  }, [displayData?.id, embeddableTrailerKey, isVisibleInList, isHeroInViewport, isAutoRotating]);
+  }, [displayData?.id, embeddableTrailerKey, isVisibleInList, isHeroInViewport, isAutoRotating, isAppActive]);
 
   useEffect(() => {
     if (trailerStatus === 'failed' && onTrailerError && media) {
       onTrailerError(media);
     }
   }, [trailerStatus, onTrailerError, media]);
+
+  useEffect(() => {
+    return () => {
+      if (trailerHandshakeIntervalRef.current) {
+        clearInterval(trailerHandshakeIntervalRef.current);
+        trailerHandshakeIntervalRef.current = null;
+      }
+      if (trailerHandshakeStopTimeoutRef.current) {
+        clearTimeout(trailerHandshakeStopTimeoutRef.current);
+        trailerHandshakeStopTimeoutRef.current = null;
+      }
+    };
+  }, []);
 
   useEffect(() => {
     if (!embeddableTrailerKey) {
@@ -215,8 +235,7 @@ export const HeroSection: React.FC<HeroSectionProps> = React.memo(({
     return () => cleanups.forEach((cleanup) => cleanup?.());
   }, [displayData, media, onFocus, onInfo, onPlay, registerNode]);
 
-  if (!displayData) return null;
-  const canPlayNow = Boolean(String(displayData.videoUrl || '').trim());
+  const canPlayNow = Boolean(String(displayData?.videoUrl || '').trim());
 
   const backgroundUri = stableBackgroundUri || preferredBackgroundUri || '';
   const shouldPlayTrailer =
@@ -224,13 +243,92 @@ export const HeroSection: React.FC<HeroSectionProps> = React.memo(({
     && isHeroInViewport
     && isVisibleInList
     && isAutoRotating
+    && isAppActive
     && showTrailer;
 
   const trailerOrigin = typeof window !== 'undefined' ? `&origin=${encodeURIComponent(window.location.origin)}` : '';
   const trailerUrl = shouldPlayTrailer
-    ? `https://www.youtube.com/embed/${embeddableTrailerKey}?autoplay=1&mute=0&controls=0&modestbranding=1&loop=1&playlist=${embeddableTrailerKey}&playsinline=1&rel=0&iv_load_policy=3&fs=0&enablejsapi=1${trailerOrigin}`
+    ? `https://www.youtube-nocookie.com/embed/${embeddableTrailerKey}?autoplay=1&mute=1&controls=0&loop=1&playlist=${embeddableTrailerKey}&playsinline=1&rel=0&iv_load_policy=3&fs=0&disablekb=1&cc_load_policy=0&enablejsapi=1&playerapiid=hero-trailer-player${trailerOrigin}`
     : '';
   const trailerReady = shouldPlayTrailer && trailerStatus === 'ready';
+
+  useEffect(() => {
+    if (shouldPlayTrailer) return;
+    if (trailerHandshakeIntervalRef.current) {
+      clearInterval(trailerHandshakeIntervalRef.current);
+      trailerHandshakeIntervalRef.current = null;
+    }
+    if (trailerHandshakeStopTimeoutRef.current) {
+      clearTimeout(trailerHandshakeStopTimeoutRef.current);
+      trailerHandshakeStopTimeoutRef.current = null;
+    }
+  }, [shouldPlayTrailer]);
+
+  useEffect(() => {
+    if (!shouldPlayTrailer || trailerStatus === 'failed') return;
+
+    const handleYTMessage = (event: MessageEvent) => {
+      const origin = String(event.origin || '');
+      if (!origin.includes('youtube.com') && !origin.includes('youtube-nocookie.com')) return;
+      const activeFrameWindow = trailerIframeRef.current?.contentWindow;
+      if (!activeFrameWindow || event.source !== activeFrameWindow) return;
+
+      let payload: any = event.data;
+      if (typeof payload === 'string') {
+        try {
+          payload = JSON.parse(payload);
+        } catch {
+          return;
+        }
+      }
+      if (!payload || typeof payload !== 'object') return;
+
+      if (payload.event === 'onAutoplayBlocked') {
+        if (trailerHandshakeIntervalRef.current) {
+          clearInterval(trailerHandshakeIntervalRef.current);
+          trailerHandshakeIntervalRef.current = null;
+        }
+        if (trailerHandshakeStopTimeoutRef.current) {
+          clearTimeout(trailerHandshakeStopTimeoutRef.current);
+          trailerHandshakeStopTimeoutRef.current = null;
+        }
+        setTrailerStatus('failed');
+        return;
+      }
+
+      if (payload.event === 'onReady' || payload.event === 'initialDelivery') {
+        const frame = trailerIframeRef.current;
+        const target = frame?.contentWindow;
+        if (target) {
+          target.postMessage(
+            JSON.stringify({ event: 'command', func: 'mute', args: [] }),
+            '*',
+          );
+          target.postMessage(
+            JSON.stringify({ event: 'command', func: 'playVideo', args: [] }),
+            '*',
+          );
+        }
+      }
+
+      if (payload.event === 'infoDelivery' && payload.info && payload.info.playerState === 1) {
+        if (trailerHandshakeIntervalRef.current) {
+          clearInterval(trailerHandshakeIntervalRef.current);
+          trailerHandshakeIntervalRef.current = null;
+        }
+        if (trailerHandshakeStopTimeoutRef.current) {
+          clearTimeout(trailerHandshakeStopTimeoutRef.current);
+          trailerHandshakeStopTimeoutRef.current = null;
+        }
+        setTrailerStatus('ready');
+      }
+    };
+
+    window.addEventListener('message', handleYTMessage);
+    return () => window.removeEventListener('message', handleYTMessage);
+  }, [shouldPlayTrailer, trailerStatus]);
+
+  if (!displayData) return null;
 
   const viewportWidth = Math.max(layout.contentMaxWidth || layout.width, layout.width);
   const baseHeroHeight = Math.round(
@@ -369,17 +467,60 @@ export const HeroSection: React.FC<HeroSectionProps> = React.memo(({
                   src={trailerUrl}
                   allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
                   allowFullScreen={false}
+                  tabIndex={-1}
+                  aria-hidden="true"
+                  loading="eager"
                   style={{
-                    width: '100%',
-                    height: '100%',
+                    position: 'absolute',
+                    top: '-15%',
+                    left: '-15%',
+                    width: '130%',
+                    height: '130%',
                     border: 'none',
                     pointerEvents: 'none',
+                    transform: 'translateZ(0)',
                     opacity: trailerReady ? 1 : 0,
                     transition: 'opacity 760ms ease',
-                    transform: layout.isTvProfile ? 'scale(1.08)' : 'scale(1.04)',
-                    transformOrigin: 'left center',
                   }}
-                  onLoad={() => setTrailerStatus('ready')}
+                  onLoad={() => {
+                    const frame = trailerIframeRef.current;
+                    const target = frame?.contentWindow;
+                    if (!target) return;
+
+                    if (trailerHandshakeIntervalRef.current) {
+                      clearInterval(trailerHandshakeIntervalRef.current);
+                      trailerHandshakeIntervalRef.current = null;
+                    }
+                    if (trailerHandshakeStopTimeoutRef.current) {
+                      clearTimeout(trailerHandshakeStopTimeoutRef.current);
+                      trailerHandshakeStopTimeoutRef.current = null;
+                    }
+
+                    const sendHandshake = () => {
+                      target.postMessage(
+                        JSON.stringify({ event: 'listening', id: 1, channel: 'widget' }),
+                        '*',
+                      );
+                      target.postMessage(
+                        JSON.stringify({ event: 'command', func: 'mute', args: [] }),
+                        '*',
+                      );
+                      target.postMessage(
+                        JSON.stringify({ event: 'command', func: 'playVideo', args: [] }),
+                        '*',
+                      );
+                    };
+
+                    sendHandshake();
+                    trailerHandshakeIntervalRef.current = setInterval(sendHandshake, 300);
+                    trailerHandshakeStopTimeoutRef.current = setTimeout(() => {
+                      if (trailerHandshakeIntervalRef.current) {
+                        clearInterval(trailerHandshakeIntervalRef.current);
+                        trailerHandshakeIntervalRef.current = null;
+                      }
+                      setTrailerStatus((prev) => (prev === 'ready' ? prev : 'failed'));
+                    }, HERO_TRAILER_BOOT_TIMEOUT_MS);
+                  }}
                   onError={() => setTrailerStatus('failed')}
                   title={`Trailer de ${displayData.title}`}
                 />

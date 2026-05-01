@@ -138,6 +138,7 @@ const GroupItem = React.memo(({
         if (node) {
           registerNode(`tv-group-${category.id}`, node as any, 'body', {
             onFocus: () => {
+              setFocusColumn('groups');
               applyCategorySelectionRef.current(categoryIdRef.current);
               focusedGroupIndexRef.current = indexRef.current;
             },
@@ -1268,6 +1269,7 @@ export const LiveTVGrid: React.FC<LiveTVGridProps> = ({
     channelVirtualizer.scrollToIndex(safeIndex, { align: 'center' });
 
     if (nextChannel) {
+      setFocusColumn('channels');
       focusNavIdWhenMounted(`tv-channel-${nextChannel.id}`);
     }
   }, [channelVirtualizer, filteredItems, focusNavIdWhenMounted, loadMoreChannels]);
@@ -1300,6 +1302,7 @@ export const LiveTVGrid: React.FC<LiveTVGridProps> = ({
 
     const targetGroup = liveCategories[safeIndex];
     if (targetGroup) {
+      setFocusColumn('groups');
       focusNavIdWhenMounted(`tv-group-${targetGroup.id}`);
     }
   }, [focusNavIdWhenMounted, groupVirtualizer, liveCategories]);

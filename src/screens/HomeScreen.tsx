@@ -72,13 +72,13 @@ const normalizeTMDBType = (type: string | undefined): 'movie' | 'series' | null 
 const _isTvBoot = detectTvEnvironment();
 const TMDB_HOME_HERO_LIMIT = _isTvBoot ? 16 : 24;
 const TMDB_HOME_ROW_LIMIT = _isTvBoot ? 28 : 40;
-const HOME_ARTWORK_PREFETCH_ITEM_LIMIT = _isTvBoot ? 24 : 60;
-const HOME_ARTWORK_DIRECT_IMAGE_LIMIT = _isTvBoot ? 36 : 90;
-const HOME_ARTWORK_PREFETCH_CONCURRENCY = _isTvBoot ? 3 : 6;
-const HOME_ARTWORK_PREFETCH_TIMEOUT_MS = _isTvBoot ? 9000 : 18000;
-const HOME_ARTWORK_CRITICAL_CATEGORY_LIMIT = _isTvBoot ? 3 : 4;
-const HOME_ARTWORK_CRITICAL_ITEMS_PER_CATEGORY = _isTvBoot ? 6 : 8;
-const HOME_CATEGORY_RANK_CANDIDATE_LIMIT = _isTvBoot ? 140 : 220;
+const HOME_ARTWORK_PREFETCH_ITEM_LIMIT = _isTvBoot ? 60 : 80;
+const HOME_ARTWORK_DIRECT_IMAGE_LIMIT = _isTvBoot ? 80 : 120;
+const HOME_ARTWORK_PREFETCH_CONCURRENCY = _isTvBoot ? 6 : 8;
+const HOME_ARTWORK_PREFETCH_TIMEOUT_MS = _isTvBoot ? 15000 : 25000;
+const HOME_ARTWORK_CRITICAL_CATEGORY_LIMIT = _isTvBoot ? 5 : 6;
+const HOME_ARTWORK_CRITICAL_ITEMS_PER_CATEGORY = _isTvBoot ? 12 : 16;
+const HOME_CATEGORY_RANK_CANDIDATE_LIMIT = _isTvBoot ? 250 : 400;
 
 const isLikelyPlaceholderArtwork = (url: string): boolean => {
   const normalized = String(url || '').trim().toLowerCase();
@@ -578,7 +578,8 @@ const HomeScreen: React.FC<{ onLogout: () => void }> = ({ onLogout }) => {
     // No state update — the sidebar CSS transition handles the visual change.
     // This ref is read only by the back-handler and the MediaDetailsPage offset.
   }, []);
-  const [lastClosedLiveMedia, setLastClosedLiveMedia] = useState<Media | null>(null);
+  const lastClosedLiveMedia = useStore((state) => state.lastClosedLiveMedia);
+  const setLastClosedLiveMedia = useStore((state) => state.setLastClosedLiveMedia);
   const [heroPreloadedTMDB, setHeroPreloadedTMDB] = useState<Record<string, TMDBData>>({});
   const [cardPreloadedTMDB, setCardPreloadedTMDB] = useState<Record<string, TMDBData>>({});
   const [cardTMDBMissedByKey, setCardTMDBMissedByKey] = useState<Record<string, true>>({});
@@ -598,6 +599,19 @@ const HomeScreen: React.FC<{ onLogout: () => void }> = ({ onLogout }) => {
   const cardPreloadScopeRef = useRef<string>('');
   const searchCatalogRequestRef = useRef(0);
   const searchResultsCacheRef = useRef<Map<string, Media[]>>(new Map());
+
+  // Safety timeout for the loading gate
+  useEffect(() => {
+    if (isPreparingInitialArtwork) {
+      const timer = setTimeout(() => {
+        if (!import.meta.env.DEV) {
+          console.warn('[HomeScreen] Safety timeout reached for artwork preloading. Unlocking UI.');
+        }
+        setIsPreparingInitialArtwork(false);
+      }, 35000); // 35 seconds max for preloading artwork
+      return () => clearTimeout(timer);
+    }
+  }, [isPreparingInitialArtwork]);
 
   const handleTrailerError = useCallback((media: Media) => {
     console.warn(`[Trailer] Video indisponivel para ${media.title}. Removendo do Hero.`);
@@ -1135,6 +1149,7 @@ const HomeScreen: React.FC<{ onLogout: () => void }> = ({ onLogout }) => {
     setVideoType(media.type as any);
     setIsAutoRotating(false);
     setIsDetailsVisible(false);
+    setDetailsMedia(null);
     setPlayerMode('fullscreen');
   }, [clearAutoRotateResumeTimer, setFocusedId, setIsChannelBrowserOpen, setDetailsMedia, setPlayerMode]);
 
@@ -1200,6 +1215,16 @@ const HomeScreen: React.FC<{ onLogout: () => void }> = ({ onLogout }) => {
     }
   }, [setActiveFilter, layout.isTvProfile, setIsSettingsVisible]);
 
+  // P0: Garantir que o scroll volte ao topo ao mudar para Home (padrão TV)
+  useEffect(() => {
+    if (activeFilter === 'home' && scrollRef.current) {
+      const scrollAny = scrollRef.current as any;
+      if (typeof scrollAny.scrollTo === 'function') {
+        scrollAny.scrollTo({ top: 0, behavior: layout.isTvProfile ? 'auto' : 'smooth' });
+      }
+    }
+  }, [activeFilter, layout.isTvProfile]);
+
   const handleHeroFocus = useCallback((_id: string) => {
     setIsAutoRotating(false);
     scheduleHeroAutoRotateResume(layout.isTvProfile ? 12000 : 9000);
@@ -1262,6 +1287,7 @@ const HomeScreen: React.FC<{ onLogout: () => void }> = ({ onLogout }) => {
       .join('|');
 
     if (cardPreloadScopeRef.current === preloadScope) {
+      setIsPreparingInitialArtwork(false);
       return;
     }
 
@@ -2004,22 +2030,28 @@ const HomeScreen: React.FC<{ onLogout: () => void }> = ({ onLogout }) => {
         ? 'Loading Catalog...'
         : playlistStatus === 'loading_playlist'
         ? 'Carregando catalogo IPTV...'
+        : isPreparingInitialArtwork
+        ? 'Otimizando capas e posters...'
         : (playlistError?.message || 'Preparando sistema...');
+
   const loadingDetails =
     latestPlaylistLog
     || playlistError?.details
     || 'Aguarde. Estamos sincronizando seus canais e categorias.';
 
   const isPlaylistStillBooting =
-    catalogPreviewCategories.length === 0
+    (catalogPreviewCategories.length === 0 || isPreparingInitialArtwork)
     && (
       loading
       || playlistStatus === 'loading_user_info'
       || playlistStatus === 'loading_playlist'
+      || isPreparingInitialArtwork
       || (!playlistError && playlistStatus === 'idle')
     );
+
   const hasBlockingPlaylistError =
     !!playlistError && catalogPreviewCategories.length === 0 && !isPlaylistStillBooting;
+
   const hasCatalogButEmptyView =
     catalogPreviewCategories.length > 0
     && !loading
@@ -2075,22 +2107,17 @@ const HomeScreen: React.FC<{ onLogout: () => void }> = ({ onLogout }) => {
     }
   }, [loading, isTvMode, isHomeNavActive, activeFilter, setFocusedId]);
 
-  if (catalogPreviewCategories.length === 0 && !hasBlockingPlaylistError) {
-    return (
-      <LoadingScreen
-        message={loadingMessage}
-        details={loadingDetails}
-        progress={playlistProgress}
-        logs={playlistLogs}
-      />
+  const isSourceOffline = useMemo(() => {
+    return hasBlockingPlaylistError && (
+       playlistError?.message?.includes('Fonte de Sinal') 
+       || playlistError?.details?.includes('não respondeu')
+       || playlistError?.details?.includes('tempo limite')
+       || playlistError?.details?.includes('Tempo limite')
     );
-  }
+  }, [hasBlockingPlaylistError, playlistError]);
 
-  if (hasBlockingPlaylistError) {
-    const isSourceOffline = playlistError?.message?.includes('Fonte de Sinal') 
-      || playlistError?.details?.includes('não respondeu')
-      || playlistError?.details?.includes('tempo limite')
-      || playlistError?.details?.includes('Tempo limite');
+  const blockingErrorView = useMemo(() => {
+    if (!hasBlockingPlaylistError) return null;
     
     return (
       <div
@@ -2333,9 +2360,10 @@ const HomeScreen: React.FC<{ onLogout: () => void }> = ({ onLogout }) => {
         </div>
       </div>
     );
-  }
+  }, [hasBlockingPlaylistError, isSourceOffline, playlistError, handleRetryPlaylist, onLogout]);
 
-  if (hasCatalogButEmptyView) {
+  const catalogEmptyView = useMemo(() => {
+    if (!hasCatalogButEmptyView) return null;
     return (
       <View style={styles.container}>
         <View style={styles.errorStateContainer}>
@@ -2382,7 +2410,7 @@ const HomeScreen: React.FC<{ onLogout: () => void }> = ({ onLogout }) => {
         </View>
       </View>
     );
-  }
+  }, [hasCatalogButEmptyView, totalMediaItems, liveItemsCount, movieItemsCount, seriesItemsCount, handleRetryPlaylist, setActiveFilter]);
 
   const isAnyOverlayActive = isDetailsVisible || !!gridCategory || isSettingsVisible;
   const shouldBlockBaseInteractions = isDetailsVisible || !!gridCategory || isSettingsVisible;
@@ -2395,6 +2423,25 @@ const HomeScreen: React.FC<{ onLogout: () => void }> = ({ onLogout }) => {
     ? Math.max(24, Math.min(34, Math.round(layout.width * 0.021)))
     : 22;
   const shouldHideBaseContent = isFullscreenPlayerActive;
+
+  if ((catalogPreviewCategories.length === 0 || isPreparingInitialArtwork) && !hasBlockingPlaylistError) {
+    return (
+      <LoadingScreen
+        message={loadingMessage}
+        details={loadingDetails}
+        progress={playlistProgress}
+        logs={playlistLogs}
+      />
+    );
+  }
+
+  if (hasBlockingPlaylistError) {
+    return blockingErrorView;
+  }
+
+  if (hasCatalogButEmptyView) {
+    return catalogEmptyView;
+  }
 
   return (
     <View style={styles.container}>
